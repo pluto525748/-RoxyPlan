@@ -1,22 +1,19 @@
 # Modules
 
-This directory is reserved for feature modules.
+This directory contains reusable feature modules.
 
-## Purpose
+## Current Modules
 
-`modules/` is the future home for feature-specific logic that should remain reusable and isolated from app entry points.
+- `llm_client.py`: OpenAI-compatible chat completions client.
 
-Keeping features here will make V1, V2, and V3 easier to extend without turning the backend or frontend into a mixed pile of unrelated responsibilities.
+## LLM Client
 
-## Planned Modules
+The LLM client reads connection settings from the root `config.json` file.
 
-- `chat`: text conversation flow
-- `memory`: long-term memory management
-- `voice`: STT and TTS capabilities
-- `knowledge`: document ingestion and knowledge feeding
+Supported configuration fields:
 
-## Current Status
+- `base_url`
+- `api_key`
+- `model`
 
-No module business code has been added.
-
-Do not add chat, memory, voice, or knowledge ingestion implementation during the documentation-only stage.
+The client does not hardcode a model or provider. It can be used with OpenAI-compatible services such as OpenAI, DeepSeek, or SiliconFlow when configured with the correct endpoint and model.

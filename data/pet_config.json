@@ -1,0 +1,16 @@
+{
+  "pet_enabled": true,
+  "pet_scale": 1.0,
+  "pet_always_on_top": true,
+  "pet_position": "bottom_right",
+  "auto_tips_enabled": true,
+  "auto_tips_min_minutes": 5,
+  "auto_tips_max_minutes": 15,
+  "test_mode": true,
+  "study_reminder_seconds_test": 10,
+  "sleep_seconds_test": 30,
+  "study_reminder_minutes": 25,
+  "sleep_minutes": 20,
+  "use_pet_asset": true,
+  "pet_asset_path": "assets/pet/roxy_pet_transparent.png"
+}
