@@ -1,19 +1,24 @@
-# Long-Term Memory Plan
+# Long-Term Memory
 
-## File
+## 当前状态
 
-`memory.json`
+V0.7 已实现基础本地长期记忆原型：
 
-## Purpose
+- 保存用户昵称
+- 保存用户明确要求记住的文本条目
+- 支持查看和删除已保存条目
+- 在模型提示上下文中提供基础记忆信息
 
-The memory file stores stable, long-term information that Roxy should remember across sessions.
+## 当前边界
 
-## Initial Shape
+- 使用本地 JSON 数据，不使用数据库
+- 不自动推断或批量保存敏感信息
+- 记忆提取、冲突处理、过期规则和重要度排序尚未实现
+- 本地记忆属于私有运行数据，不应提交到公开仓库
 
-- `version`: memory schema version
-- `profile`: user and companion profile data
-- `memories`: long-term memory entries
+## 计划中
 
-## Notes
-
-The current file is only a skeleton. Memory extraction, update rules, and recall logic will be designed during implementation.
+- 明确记忆分类、更新和遗忘规则
+- 增加用户确认与可编辑能力
+- 区分长期记忆、聊天历史和知识文件
+- 增加敏感信息保护和导出/清理流程

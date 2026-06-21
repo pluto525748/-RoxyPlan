@@ -1,32 +1,40 @@
-# Docs
+# RoxyPlan 文档
 
-This directory contains project planning and design documents.
+本目录记录 RoxyPlan 的产品设计、架构边界、阶段路线和后续能力规划。
 
-## Purpose
+## 当前阶段
 
-`docs/` is the source of truth for product direction, architecture boundaries, staged roadmap, and memory design before implementation begins.
+项目当前处于 **V0.7 桌宠交互系统原型阶段**。
 
-## Current Documents
+已实现的原型能力包括：
 
-- `product_design.md`: complete product design document
-- `roxy_personality.md`: Roxy personality, emotion, companion, supervision, memory, and safety rules
-- `knowledge_feed_design.md`: document ingestion, extraction, storage, retrieval, and conversation usage design
-- `memory_design.md`: long-term memory categories, memory.json structure, and field definitions
-- `growth_system.md`: growth journal records, page structure, weekly reports, and monthly reports
-- `pet_interaction.md`: desktop pet states, click, context menu, hover, and notification behavior
-- `mvp_plan.md`: product management analysis, MVP scope, and V1-V3 release plan
-- `voice_system.md`: STT, TTS, local deployment, API options, and V1-V3 voice roadmap
-- `mobile_design.md`: mobile browser page structure, navigation, and data synchronization design
-- `data_architecture.md`: SQLite, memory.json, knowledge base, chat history, and growth log storage boundaries
-- `business_analysis.md`: AI product manager analysis of demand, competitors, differentiation, monetization, and MVP validation
-- `project_review.md`: senior AI product review of overdesign, risks, technical difficulty, unnecessary features, and MVP scope
-- `product_roadmap.md`: trimmed product roadmap from V0.1 to V1.0 with one core capability per version
-- `ROADMAP.md`: V1, V2, V3, and future direction
-- `ARCHITECTURE.md`: current system boundaries and data plan
-- `MEMORY.md`: long-term memory file planning
+- PySide6 桌面角色与轻量聊天窗口
+- 透明背景图片加载和桌面常驻
+- 随机气泡提示与 88 条本地提示语
+- `jump`、`nod`、`thinking / shake`、`study / scale`、`sleep / wake` 状态动作
+- 本地人格数据与基础长期记忆读写
+- Ollama / Qwen 本地模型调用尝试
+- QThread / Worker 异步回复
+- 基础测试脚本和 Windows 启动脚本
 
-## Rules
+## 文档索引
 
-- Keep documents clear and implementation-neutral.
-- Prefer decisions and boundaries over code snippets.
-- Update documentation before adding major new project structure.
+- `product_design.md`：产品定位和完整体验设想
+- `roxy_personality.md`：Roxy 人格、表达和安全边界
+- `pet_interaction.md`：桌宠状态和交互设计
+- `ROADMAP.md`：当前阶段与后续路线
+- `ARCHITECTURE.md`：现有模块边界和数据流
+- `MEMORY.md`：长期记忆原型说明
+- `knowledge_feed_design.md`：知识文件解析、检索和引用规划
+- `growth_system.md`：成长记录、周报和月报规划
+- `memory_design.md`：长期记忆分类和字段设计
+- `voice_system.md`：语音能力规划
+- `mobile_design.md`：移动端轻量访问规划
+- `data_architecture.md`：长期数据架构设想
+- `mvp_plan.md`、`product_roadmap.md`：阶段范围和版本规划
+
+## 阅读说明
+
+- 标记为“已实现”的内容对应当前 V0.7 原型。
+- 设计文档中的数据库、语音、完整知识库、移动端和复杂成长系统仍属于计划中能力。
+- 文档描述的是原型演进方向，不代表完整商业产品承诺。

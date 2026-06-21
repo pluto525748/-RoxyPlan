@@ -407,14 +407,14 @@ Roxy 需要长期监督用户成长，但 AI 回复可能：
 
 难点：
 
-- SQLite、memory.json、growth_log、chat_history、knowledge_base 的边界。
+- SQLite、本地长期记忆文件、growth_log、chat_history、knowledge_base 的边界。
 - 数据迁移。
 - 数据导出。
 - 隐私删除。
 
 产品建议：
 
-- MVP 只需要 SQLite + memory.json。
+- MVP 只需要 SQLite + 本地长期记忆文件。
 - knowledge_base、chat_history 导出、growth_log 导出延后。
 
 ### 4.5 知识库检索

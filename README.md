@@ -1,73 +1,94 @@
 # RoxyPlan
 
-RoxyPlan is a long-term growth companion AI desktop pet.
+RoxyPlan 是一个基于 Python 和 PySide6 实现的桌面端 AI 交互 Demo，围绕学习提醒、桌面陪伴、情绪支持和本地大模型调用进行原型验证。
 
-Chinese name: 洛琪希计划.
+项目当前处于 **V0.7 原型阶段**，用于验证桌面角色、轻量聊天、状态动作和本地模型交互体验，并非完整商业产品。
 
-## Positioning
+## 项目截图
 
-RoxyPlan is designed to be a companion that stays with the user for a long time, remembers useful context, and grows through conversation, voice interaction, and user-fed knowledge.
+![RoxyPlan Desktop Pet](docs/images/roxy_desktop_pet.png)
 
-The project root should remain stable as `RoxyPlan`. Product versions, feature stages, and platform variants should be represented inside documents, modules, branches, or release tags instead of being added to the root directory name.
+## 技术栈
 
-## Current Status
+- Python
+- PySide6
+- JSON 本地配置
+- Ollama / Qwen 本地模型调用尝试
+- Git / GitHub
+- AI 辅助开发与调试
 
-This repository is currently a documentation-only project skeleton.
+## 已实现功能
 
-No business code has been added.
+- 桌面角色显示与透明背景图片加载
+- 轻量聊天窗口与中英文文本输入
+- 本地提示语系统，当前包含 88 条提示语
+- 独立角色人格配置
+- 桌宠气泡提示
+- 点击触发 `jump` 动作
+- 气泡触发 `nod` 动作
+- 思考状态 `thinking / shake`
+- 学习提醒 `study reminder / scale`
+- 睡眠状态 `sleep` 与点击唤醒 `wake`
+- QThread / Worker 避免模型回复时阻塞 Qt 主线程
+- `roxy.bat` 一键启动
+- 基础测试脚本
 
-Do not add framework implementations, desktop pet behavior, database logic, or AI integration until the implementation phase starts.
+## 项目结构
 
-## Roadmap
+```text
+RoxyPlan/
+├─ assets/      # 桌宠图片资源
+├─ data/        # 提示语、人格与本地运行数据
+├─ docs/        # 产品、架构和路线文档
+├─ frontend/    # 桌宠窗口、聊天界面和动作控制
+├─ modules/     # 模型调用等可复用模块
+└─ tests/       # 基础测试脚本
+```
 
-### V1: Desktop Pet and Text Chat
+## Windows 运行方式
 
-- Desktop pet avatar
-- Click to open chat window
-- SQLite chat history
-- `memory.json` long-term memory
+1. 创建并激活 Python 虚拟环境。
+2. 安装依赖：
 
-### V2: Voice Interaction
+```powershell
+pip install -r requirements.txt
+```
 
-- Voice chat
-- TTS voice playback
-- STT voice recognition
+3. 使用启动脚本：
 
-### V3: Knowledge Feeding
+```powershell
+.\roxy.bat
+```
 
-- Knowledge feeding system
-- PDF support
-- Word support
-- PPT support
-- TXT support
+也可以直接运行：
 
-## Project Structure
+```powershell
+.\.venv\Scripts\python.exe -u frontend\pet_app.py
+```
 
-- `backend/`: backend boundary for future services, APIs, persistence coordination, and memory coordination
-- `frontend/`: frontend boundary for the future desktop pet avatar, chat window, and interaction UI
-- `modules/`: reusable feature module boundary for chat, memory, voice, and knowledge ingestion
-- `data/`: local runtime data boundary for memory files, SQLite files, uploads, and parsed knowledge cache
-- `docs/`: planning, architecture, roadmap, memory, and product documents
-- `tests/`: future validation boundary for backend, frontend, modules, memory, and knowledge ingestion
+本地模型聊天属于可选实验能力，需要用户自行准备本地 Ollama 服务与兼容模型。
 
-## Key Files
+## 项目亮点
 
-- `memory.json`: initial long-term memory skeleton
-- `requirements.txt`: dependency placeholder for future Python work
-- `AGENTS.md`: collaboration rules and project boundaries for coding agents
-- `.gitignore`: ignores common local, runtime, and generated files
+- 从静态聊天窗口逐步演进为带状态系统的桌宠原型
+- 将提示语、人格和桌宠设置拆分为独立 JSON 数据
+- 使用 QThread / Worker 保持模型请求期间的界面响应
+- 已形成点击、气泡、思考、提醒、睡眠与唤醒的基础交互闭环
+- 保持桌面端轻量实现，便于持续验证交互体验
 
-## Documentation
+## 当前阶段
 
-- `docs/ROADMAP.md`: staged product plan
-- `docs/ARCHITECTURE.md`: current architecture boundaries
-- `docs/MEMORY.md`: long-term memory planning notes
+V0.7 聚焦桌宠交互系统和本地模型聊天验证。现阶段仍有原型代码、调试日志和简化的数据处理方式，不代表最终架构或产品完成度。
 
-## Implementation Guardrails
+## 后续计划
 
-- Keep the root directory name as `RoxyPlan`.
-- Keep version and platform names out of the root directory name.
-- Do not add business code during documentation-only planning.
-- Do not introduce backend frameworks until backend implementation begins.
-- Do not implement desktop pet behavior until frontend implementation begins.
-- Do not implement database logic until persistence design is approved.
+- 持续优化聊天界面与展示效果
+- 增强长期记忆规则和隐私边界
+- 改进本地知识文件读取
+- 加入更自然的动作表现
+- 探索 Live2D、多帧动画和骨骼动画
+- 探索移动端轻量访问
+
+## 隐私说明
+
+本项目包含本地运行数据和模型连接设置。公开仓库提交前，应确认个人记忆、聊天记录、密钥、本地模型设置和临时测试文件均未被纳入版本控制。

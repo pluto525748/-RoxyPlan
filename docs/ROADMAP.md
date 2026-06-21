@@ -1,34 +1,43 @@
 # RoxyPlan Roadmap
 
-## V1: Desktop Pet and Text Chat
+## 当前：V0.7 桌宠交互原型
 
-- Desktop pet avatar
-- Click avatar to open chat window
-- SQLite chat history
-- `memory.json` long-term memory
+已实现：
 
-Goal: establish the smallest usable companion experience.
+- PySide6 桌面角色和轻量聊天窗口
+- 透明背景桌宠图片
+- 鼠标拖动、缩放、右键菜单和聊天入口
+- 随机气泡提示与本地人格数据
+- `jump`、`nod`、`thinking / shake`、`study / scale`、`sleep / wake`
+- QThread / Worker 异步模型回复
+- Ollama / Qwen 本地调用尝试
+- 基础长期记忆读写与 TXT 文件名扫描
+- Windows 启动脚本和基础测试
 
-## V2: Voice Interaction
+## 下一阶段：V1 稳定化
 
-- Voice chat
-- TTS voice playback
-- STT voice recognition
+计划中：
 
-Goal: make Roxy feel more present through spoken interaction.
+- 清理原型代码和调试输出
+- 完善聊天记录与长期记忆规则
+- 加强设置、异常提示和隐私边界
+- 增加更可靠的自动化测试
+- 优化桌宠图片、动作节奏和多屏体验
 
-## V3: Knowledge Feeding
+## V2：自然交互
 
-- PDF ingestion
-- Word ingestion
-- PPT ingestion
-- TXT ingestion
+计划中：
 
-Goal: allow the user to feed Roxy personal knowledge and project context.
+- 语音输入与语音播报
+- 多帧动画、Live2D 或骨骼动画探索
+- 更细致的状态切换和反馈
 
-## Future Directions
+## V3：知识与成长
 
-- Mobile version
-- Multi-device memory sync
-- Richer avatar animation
-- Persona and growth system
+计划中：
+
+- 文档解析和可追溯知识检索
+- 成长记录、周报与月报
+- 移动端轻量访问
+
+路线会根据原型测试结果调整，不代表固定交付承诺。

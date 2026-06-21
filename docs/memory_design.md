@@ -37,9 +37,9 @@ RoxyPlan 的长期记忆分为七类：
 
 每类记忆的用途不同，敏感程度也不同。系统不应把所有信息都放进同一个无结构列表。
 
-## 3. memory.json 总体结构
+## 3. 本地长期记忆文件 总体结构
 
-`memory.json` 建议采用以下顶层结构：
+本地长期记忆文件 建议采用以下顶层结构：
 
 ```json
 {
@@ -490,7 +490,7 @@ RoxyPlan 的长期记忆分为七类：
 - `source`：来源，例如 user_confirmed、manual_edit、review_update。
 - `created_at`：事件时间。
 
-## 13. 完整 memory.json 示例结构
+## 13. 完整 本地长期记忆文件 示例结构
 
 ```json
 {

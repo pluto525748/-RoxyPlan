@@ -1,24 +1,31 @@
 # RoxyPlan Architecture
 
-## Overview
+## 当前架构（V0.7）
 
-RoxyPlan is split into a frontend desktop pet interface, a backend service layer, reusable feature modules, and local data storage.
+RoxyPlan 当前是单机 Python / PySide6 原型，重点验证桌宠、聊天、状态动作和本地模型交互。
 
-## Boundaries
+## 模块边界
 
-- `frontend/`: visual desktop pet, chat window, and user interactions
-- `backend/`: APIs, persistence coordination, and service entry points
-- `modules/`: isolated feature areas such as chat, memory, voice, and knowledge ingestion
-- `data/`: local runtime data and user-owned storage
-- `docs/`: product and architecture documentation
-- `tests/`: validation for each feature area
+- `frontend/`：桌宠窗口、聊天界面、气泡和动作控制
+- `modules/`：模型调用等可复用功能
+- `data/`：本地提示语、人格数据和运行数据
+- `assets/`：桌宠图片资源
+- `docs/`：产品、架构和路线文档
+- `tests/`：基础逻辑测试
+- `backend/`：预留边界，当前未形成独立后端服务
 
-## Data Plan
+## 当前数据流
 
-- SQLite stores chat history and structured conversation records.
-- `memory.json` stores long-term companion memory.
-- Future knowledge files can be staged under `data/` before parsing.
+1. 桌宠和聊天窗口由同一个 PySide6 应用启动。
+2. 聊天窗口读取本地人格、长期记忆和知识文件名。
+3. 普通消息通过模型调用模块发送到已配置的兼容接口。
+4. QThread / Worker 执行模型请求，主线程继续播放 thinking 动作。
+5. 桌宠配置和提示语保持为独立 JSON 数据。
 
-## Implementation Rule
+## 已实现与计划中
 
-This document describes structure only. No business logic has been implemented yet.
+已实现：桌宠 UI、聊天、状态动作、本地 JSON 数据、基础模型调用和测试脚本。
+
+计划中：独立后端服务、数据库聊天历史、完整文档解析、语音、移动端和跨设备同步。
+
+当前架构服务于原型验证，后续在需求稳定后再评估服务拆分和持久化方案。

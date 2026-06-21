@@ -8,6 +8,9 @@ logs/
 *.log
 
 memory.json
+config.json
+test_gemini.py
+data/knowledge/
 .env
 apikey.txt
 api_key.txt
