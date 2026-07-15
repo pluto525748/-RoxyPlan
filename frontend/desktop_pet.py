@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -10,13 +11,20 @@ from PySide6.QtCore import Property, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
+from frontend.pet_action_manager import PetActionManager
 from frontend.pet_actions import PetActionController
 from frontend.pet_bubble import PetBubble
+from frontend.growth_dialog import GrowthDialog
+from frontend.settings_dialog import SettingsDialog
+from modules.growth_manager import GrowthManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PET_CONFIG_FILE = PROJECT_ROOT / "data" / "pet_config.json"
 PET_TIPS_FILE = PROJECT_ROOT / "data" / "pet_tips.json"
+DANCE_FRAMES_DIR = PROJECT_ROOT / "assets" / "pet" / "dance"
+DANCE_FRAME_DURATIONS_MS = (120, 110, 100, 110, 90, 140, 90, 140)
+DANCE_LOOP_COUNT = 3
 
 DEFAULT_CONFIG: Dict[str, object] = {
     "pet_enabled": True,
@@ -31,6 +39,7 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "sleep_seconds_test": 30,
     "study_reminder_minutes": 25,
     "sleep_minutes": 20,
+    "model_name": "qwen3:4b",
     "use_pet_asset": True,
     "pet_asset_path": "assets/pet/roxy_pet_transparent.png",
 }
@@ -72,12 +81,17 @@ class DesktopPet(QWidget):
         print("[PET] DesktopPet init", flush=True)
         self.chat_factory = chat_factory
         self.chat_window: Optional[QWidget] = None
+        self.settings_dialog: Optional[SettingsDialog] = None
+        self.growth_dialog: Optional[GrowthDialog] = None
+        self.growth_service = GrowthManager()
+        self.growth_manager = self.growth_service
         self.config = self._load_config()
         self.tips = self._load_tips()
         self._state = "idle"
         self._is_blinking = False
         self._drag_offset: Optional[QPoint] = None
         self._dragging = False
+        self._woke_from_sleep_on_press = False
         self._visual_offset = QPoint(0, 0)
         self._body_tilt = 0.0
         self._wand_angle = 0.0
@@ -88,9 +102,14 @@ class DesktopPet(QWidget):
         self._base_size = QSize(168, 190)
         self._asset_pixmap: Optional[QPixmap] = None
         self._asset_path: Optional[Path] = None
+        self._dance_frames: List[QPixmap] = []
+        self._dance_frame_index = 0
+        self._dance_completed_loops = 0
+        self._dance_pixmap: Optional[QPixmap] = None
 
         self.bubble = PetBubble()
         self.actions = PetActionController(self)
+        self.action_manager = PetActionManager(self)
         self.auto_tip_timer = QTimer(self)
         self.auto_tip_timer.setSingleShot(True)
         self.auto_tip_timer.timeout.connect(self._show_auto_tip)
@@ -98,6 +117,9 @@ class DesktopPet(QWidget):
         self.study_reminder_timer.timeout.connect(self._trigger_study_reminder)
         self.sleep_check_timer = QTimer(self)
         self.sleep_check_timer.timeout.connect(self._check_sleep_timeout)
+        self.dance_timer = QTimer(self)
+        self.dance_timer.setSingleShot(True)
+        self.dance_timer.timeout.connect(self._advance_dance_frame)
 
         self.setWindowTitle("RoxyPlan Desktop Pet")
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -162,9 +184,22 @@ class DesktopPet(QWidget):
 
     talkNod = Property(QPoint, get_talk_nod, set_talk_nod)
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, from_manager: bool = False) -> None:
         if state not in PET_STATES:
             raise ValueError(f"Unknown pet state: {state}")
+
+        if not from_manager:
+            if state == "idle":
+                self.action_manager.restore_idle()
+            elif state == "happy":
+                self.action_manager.play_action("jump")
+            elif state == "thinking":
+                self.action_manager.play_action("shake")
+            elif state == "study":
+                self.action_manager.play_action("study_reminder")
+            elif state == "sleep":
+                self.action_manager.play_action("sleep")
+            return
 
         if state == "idle":
             self.setWindowOpacity(1.0)
@@ -186,20 +221,27 @@ class DesktopPet(QWidget):
     def start_thinking(self) -> None:
         self.record_interaction()
         print("[STATE] thinking start", flush=True)
+        self.action_manager.set_state("thinking")
         self.mark_state("thinking")
         self.actions.start_thinking()
 
     def stop_thinking(self) -> None:
         print("[STATE] thinking stop", flush=True)
         self.actions.stop_thinking()
-        self.set_state("idle")
+        self.action_manager.stop_state("thinking")
 
-    def record_interaction(self) -> None:
+    def record_interaction(self) -> bool:
         self._last_interaction_at = time.monotonic()
         if self._is_sleeping:
             self.wake()
+            return True
+        return False
 
-    def wake(self) -> None:
+    def wake(self, from_manager: bool = False) -> None:
+        if not from_manager:
+            self.action_manager.play_action("wake")
+            return
+
         if not self._is_sleeping and self.state != "sleep":
             return
 
@@ -208,7 +250,7 @@ class DesktopPet(QWidget):
         self.setWindowOpacity(1.0)
         self.visualOffset = QPoint(0, 0)
         self.bodyScale = 1.0
-        self.set_state("idle")
+        self.set_state("idle", from_manager=True)
 
     def mark_state(self, state: str) -> None:
         if state in PET_STATES:
@@ -225,7 +267,7 @@ class DesktopPet(QWidget):
         duration = duration_ms if duration_ms is not None else random.randint(5000, 8000)
         print(f"[TIP] show: {text}", flush=True)
         self.bubble.show_message(text, self.frameGeometry(), duration)
-        self.actions.speaking_nod()
+        self.action_manager.play_action("nod")
 
     def show_random_encouragement(self) -> None:
         self.show_bubble(random.choice(self.tips or ENCOURAGEMENTS))
@@ -258,33 +300,112 @@ class DesktopPet(QWidget):
         self.chat_window.raise_()
         self.chat_window.activateWindow()
 
-    def contextMenuEvent(self, event) -> None:  # noqa: N802
-        menu = QMenu(self)
-        open_chat_action = menu.addAction("打开聊天")
-        study_action = menu.addAction("触发学习提醒")
-        top_action = menu.addAction("取消置顶" if self.config.get("pet_always_on_top") else "保持置顶")
-        menu.addSeparator()
-        zoom_in_action = menu.addAction("放大")
-        zoom_out_action = menu.addAction("缩小")
-        hide_bubble_action = menu.addAction("隐藏气泡")
-        menu.addSeparator()
-        quit_action = menu.addAction("退出桌宠")
+    def open_settings_dialog(self) -> None:
+        self.record_interaction()
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self)
+            self.settings_dialog.settings_saved.connect(self.apply_saved_settings)
+            self.settings_dialog.finished.connect(self._clear_settings_dialog)
 
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def _clear_settings_dialog(self) -> None:
+        self.settings_dialog = None
+
+    def open_growth_dialog(self) -> None:
+        self.record_interaction()
+        if self.growth_dialog is None:
+            self.growth_dialog = GrowthDialog(self.growth_service, self)
+            self.growth_dialog.finished.connect(self._clear_growth_dialog)
+
+        self.growth_dialog.refresh_all()
+        self.growth_dialog.show()
+        self.growth_dialog.raise_()
+        self.growth_dialog.activateWindow()
+
+    def _clear_growth_dialog(self) -> None:
+        self.growth_dialog = None
+
+    def apply_saved_settings(self, config: Dict[str, object]) -> None:
+        old_center = self.geometry().center()
+        old_scale = float(self.config.get("pet_scale", 1.0))
+        old_always_on_top = bool(self.config.get("pet_always_on_top", True))
+        self.config.update(config)
+
+        if float(self.config.get("pet_scale", 1.0)) != old_scale:
+            self._resize_for_scale()
+            self.move(old_center - QPoint(self.width() // 2, self.height() // 2))
+
+        if bool(self.config.get("pet_always_on_top", True)) != old_always_on_top:
+            self._apply_window_flags()
+            self.show()
+
+        self._restart_auto_tip_timer()
+        self._start_study_reminder_timer()
+        self._last_interaction_at = time.monotonic()
+        print("[SETTINGS] pet settings applied", flush=True)
+
+    def start_dance(self) -> bool:
+        return self.action_manager.play_action("dance")
+
+    def _start_dance_frames(self) -> bool:
+        self.record_interaction()
+        print("[ACTION] dance", flush=True)
+        frames = self._load_dance_frames()
+        if len(frames) < 2:
+            print("[ACTION] dance frames missing", flush=True)
+            self.show_bubble("还没有舞蹈动作素材哦。")
+            return False
+
+        if self.dance_timer.isActive():
+            self._stop_dance_frames()
+
+        print("[ACTION] dance frames start", flush=True)
+        self._dance_frames = frames
+        self._dance_frame_index = 0
+        self._dance_completed_loops = 0
+        self._dance_pixmap = self._dance_frames[0]
+        self.dance_timer.start(self._dance_frame_duration(0))
+        self.update()
+        return True
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        menu, actions = self._create_context_menu()
         chosen = menu.exec(event.globalPos())
-        if chosen == open_chat_action:
+        if chosen == actions["chat"]:
             self.open_chat_window()
-        elif chosen == study_action:
-            self.set_state("study")
-        elif chosen == top_action:
-            self.toggle_always_on_top()
-        elif chosen == zoom_in_action:
-            self.change_scale(0.1)
-        elif chosen == zoom_out_action:
-            self.change_scale(-0.1)
-        elif chosen == hide_bubble_action:
-            self.bubble.hide()
-        elif chosen == quit_action:
+        elif chosen == actions["growth"]:
+            self.open_growth_dialog()
+        elif chosen == actions["settings"]:
+            self.open_settings_dialog()
+        elif chosen == actions["dance"]:
+            self.start_dance()
+        elif chosen == actions["encourage"]:
+            self.action_manager.play_action("jump")
+        elif chosen == actions["sleep"]:
+            self.action_manager.play_action("sleep")
+        elif chosen == actions["wake"]:
+            self.action_manager.play_action("wake")
+        elif chosen == actions["quit"]:
             QApplication.quit()
+
+    def _create_context_menu(self):
+        menu = QMenu(self)
+        actions = {
+            "chat": menu.addAction("打开聊天"),
+            "growth": menu.addAction("成长面板"),
+            "settings": menu.addAction("设置"),
+            "dance": menu.addAction("跳舞一下"),
+        }
+        menu.addSeparator()
+        actions["encourage"] = menu.addAction("立即鼓励我")
+        actions["sleep"] = menu.addAction("进入睡眠")
+        actions["wake"] = menu.addAction("唤醒")
+        menu.addSeparator()
+        actions["quit"] = menu.addAction("退出 Roxy")
+        return menu, actions
 
     def toggle_always_on_top(self) -> None:
         self.config["pet_always_on_top"] = not bool(self.config.get("pet_always_on_top"))
@@ -302,7 +423,7 @@ class DesktopPet(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
-            self.record_interaction()
+            self._woke_from_sleep_on_press = self.record_interaction()
             self._drag_offset = self._event_global_pos(event) - self.frameGeometry().topLeft()
             self._dragging = False
             self.setCursor(Qt.ClosedHandCursor)
@@ -323,8 +444,10 @@ class DesktopPet(QWidget):
             self._dragging = False
             self.setCursor(Qt.OpenHandCursor)
             if not was_dragging:
-                self.record_interaction()
-                self.set_state("happy")
+                woke_from_sleep = self._woke_from_sleep_on_press or self.record_interaction()
+                self._woke_from_sleep_on_press = False
+                if not woke_from_sleep:
+                    self.action_manager.play_action("jump")
             event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
@@ -469,10 +592,10 @@ class DesktopPet(QWidget):
         painter.drawText(QRectF(54, 146, 60, 16), Qt.AlignCenter, "Roxy")
 
     def _draw_asset_if_enabled(self, painter: QPainter) -> bool:
-        if not self.config.get("use_pet_asset", False):
+        if self._dance_pixmap is None and not self.config.get("use_pet_asset", False):
             return False
 
-        pixmap = self._load_asset_pixmap()
+        pixmap = self._dance_pixmap if self._dance_pixmap is not None else self._load_asset_pixmap()
         if pixmap is None or pixmap.isNull():
             return False
 
@@ -518,6 +641,57 @@ class DesktopPet(QWidget):
         self._asset_pixmap = pixmap
         return pixmap
 
+    def _load_dance_frames(self) -> List[QPixmap]:
+        if not DANCE_FRAMES_DIR.exists():
+            return []
+
+        frames: List[QPixmap] = []
+        for path in sorted(DANCE_FRAMES_DIR.glob("dance_*.png"), key=self._dance_frame_sort_key):
+            pixmap = QPixmap(str(path))
+            if not pixmap.isNull():
+                frames.append(pixmap)
+        return frames
+
+    def _dance_frame_sort_key(self, path: Path) -> tuple[int, str]:
+        match = re.search(r"dance_(\d+)", path.stem)
+        frame_number = int(match.group(1)) if match else 999999
+        return frame_number, path.name.lower()
+
+    def _advance_dance_frame(self) -> None:
+        if not self._dance_frames:
+            self._stop_dance_frames()
+            return
+
+        self._dance_frame_index += 1
+        if self._dance_frame_index >= len(self._dance_frames):
+            self._dance_frame_index = 0
+            self._dance_completed_loops += 1
+            if self._dance_completed_loops >= DANCE_LOOP_COUNT:
+                self._stop_dance_frames()
+                return
+
+        self._dance_pixmap = self._dance_frames[self._dance_frame_index]
+        self.update()
+        self.dance_timer.start(self._dance_frame_duration(self._dance_frame_index))
+
+    def _dance_frame_duration(self, frame_index: int) -> int:
+        if frame_index < len(DANCE_FRAME_DURATIONS_MS):
+            return DANCE_FRAME_DURATIONS_MS[frame_index]
+        return 100
+
+    def _stop_dance_frames(self) -> None:
+        if self.dance_timer.isActive():
+            self.dance_timer.stop()
+        had_frames = bool(self._dance_frames) or self._dance_pixmap is not None
+        self._dance_frames = []
+        self._dance_frame_index = 0
+        self._dance_completed_loops = 0
+        self._dance_pixmap = None
+        self.update()
+        if had_frames:
+            print("[ACTION] dance frames stop", flush=True)
+            self.action_manager.restore_idle()
+
     def _event_global_pos(self, event) -> QPoint:
         if hasattr(event, "globalPosition"):
             return event.globalPosition().toPoint()
@@ -547,6 +721,11 @@ class DesktopPet(QWidget):
 
         self.auto_tip_timer.start(random.randint(min_minutes, max_minutes) * 60 * 1000)
 
+    def _restart_auto_tip_timer(self) -> None:
+        self.auto_tip_timer.stop()
+        if self.config.get("auto_tips_enabled", True):
+            self._schedule_next_auto_tip()
+
     def _show_auto_tip(self) -> None:
         self.show_bubble(random.choice(self.tips or DEFAULT_TIPS), record_interaction=False)
         self._schedule_next_auto_tip()
@@ -556,20 +735,20 @@ class DesktopPet(QWidget):
         self.study_reminder_timer.start(max(1, interval_seconds) * 1000)
 
     def _trigger_study_reminder(self) -> None:
-        if self.state == "sleep":
+        if self.action_manager.current_state == "sleeping":
             return
 
         print("[REMINDER] study reminder triggered", flush=True)
-        self.actions.study_reminder()
+        self.action_manager.play_action("study_reminder")
 
     def _check_sleep_timeout(self) -> None:
-        if self._is_sleeping or self.state == "thinking":
+        if self._is_sleeping or self.action_manager.current_state in {"thinking", "dancing"}:
             return
 
         if time.monotonic() - self._last_interaction_at >= self._sleep_interval_seconds():
             self._is_sleeping = True
             print("[STATE] sleep", flush=True)
-            self.actions.sleep()
+            self.action_manager.play_action("sleep")
 
     def _study_reminder_interval_seconds(self) -> int:
         if self.config.get("test_mode", False):

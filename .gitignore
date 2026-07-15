@@ -9,8 +9,17 @@ logs/
 
 memory.json
 config.json
+data/today_plan.json
+data/today_plan.json.tmp
+data/action_log.json
+data/action_log.json.tmp
+data/growth_log.json
+data/growth_log.json.tmp
+data/private/
 test_gemini.py
-data/knowledge/
+data/knowledge/*
+!data/knowledge/.gitkeep
+!data/knowledge/README.md
 .env
 apikey.txt
 api_key.txt

@@ -85,6 +85,40 @@ def test_chat_window_memory_lifecycle():
             app.processEvents()
 
 
+def test_missing_memory_json_is_created_from_example():
+    app = QApplication.instance() or QApplication([])
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        original_memory_file = pet_app.MEMORY_FILE
+        original_memory_example_file = pet_app.MEMORY_EXAMPLE_FILE
+        pet_app.MEMORY_FILE = Path(temp_dir) / "memory.json"
+        pet_app.MEMORY_EXAMPLE_FILE = Path(temp_dir) / "memory.example.json"
+        pet_app.MEMORY_EXAMPLE_FILE.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profile": {"nickname": "", "preferences": []},
+                    "memories": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            window = ChatWindow()
+
+            assert pet_app.MEMORY_FILE.exists()
+            loaded = json.loads(pet_app.MEMORY_FILE.read_text(encoding="utf-8"))
+            assert loaded["profile"]["nickname"] == ""
+            assert loaded["memories"] == []
+            assert window.memory["profile"]["nickname"] == ""
+        finally:
+            pet_app.MEMORY_FILE = original_memory_file
+            pet_app.MEMORY_EXAMPLE_FILE = original_memory_example_file
+            app.processEvents()
+
+
 def test_rule_personality_replies():
     app = QApplication.instance() or QApplication([])
 
@@ -113,7 +147,7 @@ def test_rule_personality_replies():
             app.processEvents()
 
 
-def test_knowledge_scan_only_loads_txt_files():
+def test_knowledge_scan_loads_txt_and_md_files():
     app = QApplication.instance() or QApplication([])
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,7 +160,9 @@ def test_knowledge_scan_only_loads_txt_files():
         pet_app.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
         (pet_app.KNOWLEDGE_DIR / "roxy.txt").write_text("Roxy", encoding="utf-8")
         (pet_app.KNOWLEDGE_DIR / "notes.txt").write_text("Notes", encoding="utf-8")
-        (pet_app.KNOWLEDGE_DIR / "ignore.md").write_text("Ignore", encoding="utf-8")
+        (pet_app.KNOWLEDGE_DIR / "guide.md").write_text("Guide", encoding="utf-8")
+        (pet_app.KNOWLEDGE_DIR / "README.md").write_text("Directory notes", encoding="utf-8")
+        (pet_app.KNOWLEDGE_DIR / "ignore.pdf").write_text("Ignore", encoding="utf-8")
         pet_app.PERSONALITY_FILE.write_text(
             json.dumps(roxy_personality_fixture(), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -134,7 +170,7 @@ def test_knowledge_scan_only_loads_txt_files():
         try:
             window = ChatWindow()
 
-            assert window.scan_knowledge_files() == ["notes.txt", "roxy.txt"]
+            assert window.knowledge_file_names() == ["guide.md", "notes.txt", "roxy.txt"]
             assert window.handle_knowledge_command("查看知识") is True
             assert window.handle_knowledge_command("查看人格") is False
         finally:
@@ -195,7 +231,14 @@ def test_llm_prompt_contains_personality_and_memory():
         pet_app.KNOWLEDGE_DIR = Path(temp_dir) / "knowledge"
         pet_app.CONFIG_FILE = Path(temp_dir) / "config.json"
         pet_app.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-        (pet_app.KNOWLEDGE_DIR / "notes.txt").write_text("Notes", encoding="utf-8")
+        (pet_app.KNOWLEDGE_DIR / "notes.txt").write_text(
+            "RoxyPlan 的 v0.8 重点是记忆规范化和知识库读取。",
+            encoding="utf-8",
+        )
+        (pet_app.KNOWLEDGE_DIR / "guide.md").write_text(
+            "学习提醒可以帮助用户保持节奏。",
+            encoding="utf-8",
+        )
         pet_app.PERSONALITY_FILE.write_text(
             json.dumps(roxy_personality_fixture(), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -208,12 +251,13 @@ def test_llm_prompt_contains_personality_and_memory():
             window = ChatWindow()
             window.memory["profile"]["nickname"] = "煜"
             window.memory["memories"].append({"content": "我喜欢洛琪希"})
-            prompt = window.build_system_prompt()
+            prompt = window.build_system_prompt("RoxyPlan v0.8 的重点是什么？")
 
             assert "名称：Roxy" in prompt
             assert "用户昵称：煜" in prompt
             assert "- 我喜欢洛琪希" in prompt
-            assert "- notes.txt" in prompt
+            assert "文件：notes.txt" in prompt
+            assert "记忆规范化和知识库读取" in prompt
             assert window.ask_ai("测试") == "大模型接口尚未配置，请检查 config.json。"
         finally:
             pet_app.MEMORY_FILE = original_memory_file
@@ -228,8 +272,9 @@ if __name__ == "__main__":
     test_memory_json_writes_extracted_nickname()
     test_default_reply_can_use_loaded_nickname()
     test_chat_window_memory_lifecycle()
+    test_missing_memory_json_is_created_from_example()
     test_rule_personality_replies()
-    test_knowledge_scan_only_loads_txt_files()
+    test_knowledge_scan_loads_txt_and_md_files()
     test_llm_client_requires_config()
     test_llm_client_chat_completions_url()
     test_llm_client_http_error_includes_full_body()

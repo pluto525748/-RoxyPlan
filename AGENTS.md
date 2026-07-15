@@ -6,18 +6,21 @@ Chinese name: 洛琪希计划.
 
 ## Current Stage
 
-The project is in skeleton and documentation planning.
+The project is in V0.9 prototype implementation.
 
-Do not add business logic until the implementation phase starts.
+Existing prototype areas include the PySide6 desktop pet, chat window, settings dialog, local memory, local knowledge reading, basic state actions, today's plan and review loop, and local LLM calling experiments.
+
+Do not add new product features without explicit user permission. Maintenance, documentation synchronization, tests, bug fixes, and small compatibility improvements are allowed when they protect existing behavior.
 
 ## Hard Boundaries
 
 - Do not write FastAPI code.
-- Do not write desktop pet implementation code.
 - Do not write database implementation code.
-- Do not add AI provider integration code.
+- Do not add new AI provider integration code without explicit permission.
 - Do not add voice implementation code.
-- Do not add document parsing implementation code.
+- Do not add complex document parsing implementation code.
+- Do not modify `modules/llm_client.py`, `memory.json`, or private local config files unless the user explicitly asks for that exact change.
+- Preserve existing desktop pet actions, chat behavior, settings, and local data compatibility.
 
 ## Project Naming
 
@@ -47,10 +50,10 @@ Avoid examples:
 
 ## Documentation Rules
 
-- Documentation changes are allowed in the current stage.
+- Documentation changes are allowed when they keep project status accurate.
 - Directory README files should explain intent, not implementation.
 - Roadmap documents may describe future features but should not include runnable code.
-- Keep requirements as placeholders until dependencies are intentionally selected.
+- Keep requirements conservative until dependencies are intentionally selected.
 
 ## Future Implementation Order
 
