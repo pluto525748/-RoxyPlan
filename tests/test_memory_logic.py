@@ -249,13 +249,18 @@ def test_llm_prompt_contains_personality_and_memory():
         )
         try:
             window = ChatWindow()
-            window.memory["profile"]["nickname"] = "煜"
-            window.memory["memories"].append({"content": "我喜欢洛琪希"})
+            window.memory_manager.update_profile({"nickname": "煜"})
+            window.memory_manager.add_memory(
+                "我喜欢洛琪希",
+                category="preference",
+                source="test",
+            )
             prompt = window.build_system_prompt("RoxyPlan v0.8 的重点是什么？")
 
             assert "名称：Roxy" in prompt
             assert "用户昵称：煜" in prompt
-            assert "- 我喜欢洛琪希" in prompt
+            assert "我喜欢洛琪希" in prompt
+            assert "scope=preference" in prompt
             assert "文件：notes.txt" in prompt
             assert "记忆规范化和知识库读取" in prompt
             assert window.ask_ai("测试") == "大模型接口尚未配置，请检查 config.json。"

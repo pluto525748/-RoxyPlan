@@ -55,7 +55,18 @@ DISALLOWED_TRACKED_PATTERNS = (
 )
 
 TEXT_DOC_PATTERNS = ("README.md", "docs/**/*.md", "frontend/README.md", "data/README.md")
+PUBLIC_SOURCE_PATTERNS = (
+    "*.bat",
+    "frontend/**/*.py",
+    "modules/**/*.py",
+    "server/**/*.py",
+    "server/web/*.js",
+    "server/web/*.html",
+)
 PRIVATE_PATH_PATTERN = re.compile(r"C:\\Users\\[^\\\s]+", re.IGNORECASE)
+GENERIC_PRIVATE_PATH_PATTERN = re.compile(
+    r"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+", re.IGNORECASE
+)
 SECRET_TEXT_PATTERN = re.compile(r"(api[_-]?key|secret|token)\s*[:=]\s*['\"][^'\"]{8,}", re.IGNORECASE)
 
 
@@ -156,6 +167,21 @@ def check_public_docs() -> list[str]:
     return issues
 
 
+def check_public_sources() -> list[str]:
+    issues = []
+    files = []
+    for pattern in PUBLIC_SOURCE_PATTERNS:
+        files.extend(path for path in PROJECT_ROOT.glob(pattern) if path.is_file())
+    for path in sorted(set(files)):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        if GENERIC_PRIVATE_PATH_PATTERN.search(text):
+            issues.append(f"private absolute path found in source: {relative}")
+        if SECRET_TEXT_PATTERN.search(text):
+            issues.append(f"secret-like value found in source: {relative}")
+    return issues
+
+
 def main() -> int:
     issues: list[str] = []
     tracked_files = run_git_ls_files()
@@ -167,6 +193,7 @@ def main() -> int:
         ("tracked files", check_tracked_files(tracked_files)),
         ("memory example", check_memory_example()),
         ("public docs", check_public_docs()),
+        ("public sources", check_public_sources()),
     ]
 
     for label, check_issues in checks:

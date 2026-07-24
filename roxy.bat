@@ -1,4 +1,4 @@
 @echo off
-cd /d "C:\Users\16127\Documents\GitHub\-RoxyPlan"
-.\.venv\Scripts\python frontend\pet_app.py
+cd /d "%~dp0"
+"%~dp0.venv\Scripts\python.exe" frontend\pet_app.py
 pause

@@ -16,6 +16,8 @@ data/action_log.json.tmp
 data/growth_log.json
 data/growth_log.json.tmp
 data/private/
+data/private/llm_secrets.json
+data/private/model_usage.json
 test_gemini.py
 data/knowledge/*
 !data/knowledge/.gitkeep

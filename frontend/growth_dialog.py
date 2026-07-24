@@ -12,10 +12,12 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from modules.growth_manager import GrowthManager
@@ -36,7 +38,22 @@ class GrowthDialog(QDialog):
         self.refresh_all()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.panel_scroll = QScrollArea()
+        self.panel_scroll.setObjectName("growthPanelScroll")
+        self.panel_scroll.setWidgetResizable(True)
+        self.panel_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.panel_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        panel = QWidget()
+        panel.setObjectName("growthPanelContent")
+        self.panel_scroll.setWidget(panel)
+        dialog_layout.addWidget(self.panel_scroll)
+
+        root = QVBoxLayout(panel)
         root.setContentsMargins(18, 16, 18, 16)
         root.setSpacing(12)
 
@@ -47,8 +64,9 @@ class GrowthDialog(QDialog):
         root.addWidget(title)
         root.addWidget(subtitle)
 
-        plan_group = QGroupBox("今日计划")
-        plan_layout = QVBoxLayout(plan_group)
+        self.plan_group = QGroupBox("今日计划")
+        self.plan_group.setMinimumHeight(280)
+        plan_layout = QVBoxLayout(self.plan_group)
         plan_input_row = QHBoxLayout()
         self.plan_input = QLineEdit()
         self.plan_input.setPlaceholderText("添加一个今天能推进的小计划...")
@@ -66,14 +84,29 @@ class GrowthDialog(QDialog):
         self.plan_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.plan_table.setShowGrid(False)
         self.plan_table.setAlternatingRowColors(True)
+        self.plan_table.setWordWrap(True)
+        self.plan_table.setMinimumHeight(175)
+        self.plan_table.setMaximumHeight(320)
+        self.plan_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.plan_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.plan_table.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.plan_table.verticalHeader().setDefaultSectionSize(44)
+        self.plan_table.verticalHeader().setMinimumSectionSize(40)
         self.plan_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.plan_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.plan_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.plan_table.itemChanged.connect(self._on_plan_item_changed)
         plan_layout.addWidget(self.plan_table)
-        root.addWidget(plan_group, 3)
+        root.addWidget(self.plan_group)
 
         action_group = QGroupBox("行动记录")
+        action_group.setMinimumHeight(190)
         action_layout = QVBoxLayout(action_group)
         action_input_row = QHBoxLayout()
         self.action_input = QLineEdit()
@@ -86,9 +119,10 @@ class GrowthDialog(QDialog):
         action_layout.addLayout(action_input_row)
         self.action_list = QListWidget()
         action_layout.addWidget(self.action_list)
-        root.addWidget(action_group, 2)
+        root.addWidget(action_group)
 
         review_group = QGroupBox("今日复盘")
+        review_group.setMinimumHeight(210)
         review_layout = QVBoxLayout(review_group)
         self.review_text = QTextEdit()
         self.review_text.setReadOnly(True)
@@ -104,9 +138,10 @@ class GrowthDialog(QDialog):
         review_buttons.addWidget(generate_button)
         review_buttons.addWidget(save_button)
         review_layout.addLayout(review_buttons)
-        root.addWidget(review_group, 3)
+        root.addWidget(review_group)
 
         log_group = QGroupBox("成长日志")
+        log_group.setMinimumHeight(170)
         log_layout = QVBoxLayout(log_group)
         self.growth_log_list = QListWidget()
         self.growth_log_list.setMaximumHeight(110)
@@ -114,11 +149,14 @@ class GrowthDialog(QDialog):
         refresh_log_button.clicked.connect(self.refresh_growth_logs)
         log_layout.addWidget(self.growth_log_list)
         log_layout.addWidget(refresh_log_button)
-        root.addWidget(log_group, 2)
+        root.addWidget(log_group)
+        root.addStretch(1)
 
         self.setStyleSheet(
             """
-            QDialog { background: #F7F4FF; color: #333333; font-family: "Microsoft YaHei"; }
+            QDialog, QScrollArea#growthPanelScroll,
+            QWidget#growthPanelContent, QScrollArea#growthPanelScroll > QWidget > QWidget {
+                        background: #F7F4FF; color: #333333; font-family: "Microsoft YaHei"; }
             QLabel#growthTitle { font-size: 20px; font-weight: 600; color: #3E4770; }
             QLabel#growthSubtitle { font-size: 12px; color: #777777; }
             QGroupBox { background: #FFFFFF; border: 1px solid #D8CCFF; border-radius: 8px;
@@ -127,6 +165,7 @@ class GrowthDialog(QDialog):
             QLineEdit, QTextEdit, QListWidget, QTableWidget { background: #FFFFFF; border: 1px solid #DDD6F6;
                         border-radius: 6px; padding: 6px; color: #333333; font-weight: 400; }
             QTableWidget { alternate-background-color: #F8FAFF; }
+            QTableWidget::item { padding: 5px 7px; }
             QHeaderView::section { background: #EAF4FF; color: #59658F; border: none;
                         border-bottom: 1px solid #D8CCFF; padding: 5px; }
             QPushButton { background: #EAF4FF; color: #536392; border: 1px solid #C7D9F7;
@@ -145,7 +184,9 @@ class GrowthDialog(QDialog):
     def refresh_plans(self) -> None:
         self._refreshing_tasks = True
         self.plan_table.setRowCount(0)
-        for task in self.growth_manager.plan_store.tasks():
+        tasks = self.growth_manager.plan_store.tasks()
+        self.plan_group.setTitle(f"今日计划 · {len(tasks)} 项")
+        for task in tasks:
             row = self.plan_table.rowCount()
             self.plan_table.insertRow(row)
             done_item = QTableWidgetItem()
@@ -155,13 +196,55 @@ class GrowthDialog(QDialog):
                 Qt.CheckState.Checked if task.get("done", False) else Qt.CheckState.Unchecked
             )
             self.plan_table.setItem(row, 0, done_item)
-            self.plan_table.setItem(row, 1, QTableWidgetItem(str(task.get("title", ""))))
+            title_item = QTableWidgetItem(self._task_display_text(task))
+            title_item.setToolTip(self._task_tooltip(task))
+            title_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.plan_table.setItem(row, 1, title_item)
             delete_button = QPushButton("删除")
+            delete_button.setMinimumHeight(32)
             delete_button.clicked.connect(
                 lambda checked=False, task_id=int(task["id"]): self.delete_plan(task_id)
             )
             self.plan_table.setCellWidget(row, 2, delete_button)
+        self.plan_table.resizeRowsToContents()
+        for row in range(self.plan_table.rowCount()):
+            self.plan_table.setRowHeight(row, max(44, self.plan_table.rowHeight(row)))
         self._refreshing_tasks = False
+
+    @staticmethod
+    def _task_display_text(task: dict) -> str:
+        title = str(task.get("title", "")).strip()
+        details = []
+        time_slot = str(task.get("time_slot", "")).strip()
+        start_time = str(task.get("start_time", "")).strip()
+        duration = task.get("duration_minutes")
+        if time_slot:
+            details.append(time_slot)
+        if start_time:
+            details.append(start_time)
+        if isinstance(duration, (int, float)) and duration > 0:
+            details.append(f"{int(duration)} 分钟")
+        return title + (f"\n{' · '.join(details)}" if details else "")
+
+    @staticmethod
+    def _task_tooltip(task: dict) -> str:
+        lines = [str(task.get("title", "")).strip()]
+        labels = (
+            ("日期", "date"),
+            ("时段", "time_slot"),
+            ("开始", "start_time"),
+            ("时长", "duration_minutes"),
+            ("优先级", "priority"),
+            ("备注", "notes"),
+        )
+        for label, key in labels:
+            value = task.get(key)
+            if value not in (None, "", []):
+                suffix = " 分钟" if key == "duration_minutes" else ""
+                lines.append(f"{label}：{value}{suffix}")
+        return "\n".join(lines)
 
     def refresh_actions(self) -> None:
         self.action_list.clear()

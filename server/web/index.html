@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f4ff">
+  <title>洛琪希</title>
+  <link rel="stylesheet" href="/static/style.css?v=15">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="avatar" aria-hidden="true">R</div>
+      <div class="brand">
+        <h1>洛琪希</h1>
+        <p id="connectionStatus"><span class="status-dot"></span>本地服务</p>
+      </div>
+      <button id="statusToggle" class="icon-button" type="button" aria-label="运行状态" title="运行状态">i</button>
+      <button id="tokenToggle" class="icon-button" type="button" aria-label="访问设置" title="访问设置">&#9881;</button>
+    </header>
+
+    <section id="tokenPanel" class="utility-panel" hidden>
+      <label for="tokenInput">局域网访问令牌</label>
+      <div class="inline-form">
+        <input id="tokenInput" type="password" autocomplete="off" placeholder="ROXY_LOCAL_TOKEN">
+        <button id="saveTokenButton" type="button" class="primary-button">保存</button>
+      </div>
+    </section>
+
+    <section id="statusPanel" class="utility-panel status-grid" hidden>
+      <div><span>Web 服务</span><strong id="serviceState">检查中</strong></div>
+      <div><span>当前 Provider</span><strong id="providerState">检查中</strong></div>
+      <div><span>DeepSeek</span><strong id="deepseekState">检查中</strong></div>
+      <div><span>Ollama</span><strong id="ollamaState">检查中</strong></div>
+      <div><span>模型</span><strong id="modelState">未配置</strong></div>
+      <div><span>路由模式</span><strong id="modeState">自动</strong></div>
+      <div><span>降级状态</span><strong id="fallbackState">未启用</strong></div>
+      <div><span>知识文件</span><strong id="knowledgeState">0</strong></div>
+    </section>
+
+    <nav class="view-tabs" aria-label="主要功能">
+      <button class="tab-button active" type="button" data-view="chat">聊天</button>
+      <button class="tab-button" type="button" data-view="plans">今日计划</button>
+      <button class="tab-button" type="button" data-view="actions">行动记录</button>
+      <button class="tab-button" type="button" data-view="growth">成长日志</button>
+      <button class="tab-button" type="button" data-view="memories">长期记忆</button>
+      <button class="tab-button" type="button" data-view="sessions">会话记录</button>
+    </nav>
+
+    <p id="errorMessage" class="error-message" role="alert" hidden></p>
+
+    <section id="chatView" class="view chat-view active" data-view-panel="chat">
+      <div class="session-bar">
+        <strong id="currentSessionTitle">新对话</strong>
+        <button id="renameSessionButton" class="text-button" type="button">改名</button>
+        <button id="newSessionButton" class="primary-button compact" type="button">新对话</button>
+      </div>
+      <div id="messages" class="messages" aria-live="polite" aria-label="聊天记录"></div>
+      <form id="chatForm" class="composer">
+        <textarea id="messageInput" rows="1" maxlength="4000" placeholder="和洛琪希说点什么吧..." required></textarea>
+        <button id="sendButton" type="submit" class="primary-button">发送</button>
+      </form>
+    </section>
+
+    <section id="plansView" class="view" data-view-panel="plans" hidden>
+      <div class="view-heading"><h2>今日计划</h2><span id="planCount">0 件</span></div>
+      <form id="planForm" class="inline-form action-form">
+        <input id="planInput" maxlength="240" placeholder="添加一个今天要完成的小目标" required>
+        <button class="primary-button" type="submit">添加</button>
+      </form>
+      <div id="planList" class="item-list"></div>
+    </section>
+
+    <section id="actionsView" class="view" data-view-panel="actions" hidden>
+      <div class="view-heading"><h2>行动记录</h2><span id="actionCount">0 条</span></div>
+      <form id="actionForm" class="inline-form action-form">
+        <input id="actionInput" maxlength="240" placeholder="记录刚刚完成的一步" required>
+        <button class="primary-button" type="submit">记录</button>
+      </form>
+      <div id="actionList" class="item-list"></div>
+    </section>
+
+    <section id="growthView" class="view" data-view-panel="growth" hidden>
+      <div class="view-heading">
+        <h2>今日复盘</h2>
+        <button id="saveReviewButton" class="primary-button compact" type="button">保存复盘</button>
+      </div>
+      <div id="reviewText" class="review-block">正在生成今日复盘...</div>
+      <div class="view-heading logs-heading"><h2>成长日志</h2><span id="growthCount">0 天</span></div>
+      <div id="growthList" class="item-list"></div>
+    </section>
+
+    <section id="memoriesView" class="view" data-view-panel="memories" hidden>
+      <div class="memory-subnav" role="tablist" aria-label="记忆治理">
+        <button class="memory-tab active" type="button" data-memory-view="confirmed">长期记忆</button>
+        <button class="memory-tab" type="button" data-memory-view="candidates">待审核</button>
+        <button class="memory-tab" type="button" data-memory-view="conflicts">冲突</button>
+        <button class="memory-tab" type="button" data-memory-view="audit">审计</button>
+      </div>
+
+      <div data-memory-panel="confirmed">
+        <div class="view-heading"><h2>长期记忆</h2><span id="memoryCount">0 条</span></div>
+        <form id="memorySearchForm" class="inline-form action-form">
+          <input id="memorySearchInput" maxlength="240" placeholder="搜索长期记忆">
+          <button class="secondary-button" type="submit">搜索</button>
+        </form>
+        <div id="memoryList" class="item-list"></div>
+      </div>
+
+      <div data-memory-panel="candidates" hidden>
+        <div class="view-heading">
+          <h2>待审核候选</h2>
+          <button id="rejectLowValueButton" class="danger-button compact" type="button">拒绝低价值</button>
+        </div>
+        <div id="candidateList" class="item-list"></div>
+      </div>
+
+      <div data-memory-panel="conflicts" hidden>
+        <div class="view-heading"><h2>记忆冲突</h2><span id="conflictCount">0 条</span></div>
+        <div id="conflictList" class="item-list"></div>
+      </div>
+
+      <div data-memory-panel="audit" hidden>
+        <div class="view-heading"><h2>治理审计</h2><span id="auditCount">0 条</span></div>
+        <div id="auditList" class="item-list"></div>
+      </div>
+    </section>
+
+    <section id="sessionsView" class="view" data-view-panel="sessions" hidden>
+      <div class="view-heading">
+        <h2>会话记录</h2>
+        <button id="sessionCreateButton" class="primary-button compact" type="button">新建</button>
+      </div>
+      <div id="sessionList" class="item-list"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v=16" defer></script>
+</body>
+</html>

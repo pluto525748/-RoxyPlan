@@ -82,6 +82,7 @@ def test_context_menu_has_only_user_facing_entries():
     assert labels == [
         "打开聊天",
         "成长面板",
+        "记忆管理",
         "设置",
         "跳舞一下",
         "立即鼓励我",

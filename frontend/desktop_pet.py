@@ -16,7 +16,10 @@ from frontend.pet_actions import PetActionController
 from frontend.pet_bubble import PetBubble
 from frontend.growth_dialog import GrowthDialog
 from frontend.settings_dialog import SettingsDialog
+from modules.client_action_policy import ClientActionPolicy
 from modules.growth_manager import GrowthManager
+from modules.chat_history_manager import ChatHistoryManager
+from modules.proactive_manager import ProactiveManager
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +42,18 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "sleep_seconds_test": 30,
     "study_reminder_minutes": 25,
     "sleep_minutes": 20,
+    "proactive_enabled": True,
+    "proactive_interval_minutes": 10,
+    "proactive_check_seconds_test": 30,
+    "evening_review_enabled": True,
+    "idle_nudge_enabled": True,
+    "chat_history_enabled": True,
+    "restore_last_session": True,
+    "enable_memory_candidates": True,
+    "recent_context_messages": 16,
+    "auto_summary_enabled": True,
+    "summary_message_threshold": 30,
+    "summary_character_threshold": 12000,
     "model_name": "qwen3:4b",
     "use_pet_asset": True,
     "pet_asset_path": "assets/pet/roxy_pet_transparent.png",
@@ -85,7 +100,25 @@ class DesktopPet(QWidget):
         self.growth_dialog: Optional[GrowthDialog] = None
         self.growth_service = GrowthManager()
         self.growth_manager = self.growth_service
+        # The chat bootstrap owns the shared MemoryService and assigns its
+        # candidate manager here. Avoid opening the same private files through
+        # a second repository before the chat window exists.
+        self.memory_service = None
+        self.memory_candidate_manager = None
         self.config = self._load_config()
+        self.chat_history_manager = ChatHistoryManager(
+            enabled=bool(self.config.get("chat_history_enabled", True))
+        )
+        self.proactive_manager = ProactiveManager(
+            self.growth_service,
+            enabled=bool(self.config.get("proactive_enabled", True)),
+            cooldown_seconds=self._proactive_interval_seconds(),
+            evening_review_enabled=bool(
+                self.config.get("evening_review_enabled", True)
+            ),
+            idle_nudge_enabled=bool(self.config.get("idle_nudge_enabled", True)),
+            idle_threshold_seconds=self._proactive_idle_threshold_seconds(),
+        )
         self.tips = self._load_tips()
         self._state = "idle"
         self._is_blinking = False
@@ -110,6 +143,7 @@ class DesktopPet(QWidget):
         self.bubble = PetBubble()
         self.actions = PetActionController(self)
         self.action_manager = PetActionManager(self)
+        self.client_action_policy = ClientActionPolicy()
         self.auto_tip_timer = QTimer(self)
         self.auto_tip_timer.setSingleShot(True)
         self.auto_tip_timer.timeout.connect(self._show_auto_tip)
@@ -117,6 +151,8 @@ class DesktopPet(QWidget):
         self.study_reminder_timer.timeout.connect(self._trigger_study_reminder)
         self.sleep_check_timer = QTimer(self)
         self.sleep_check_timer.timeout.connect(self._check_sleep_timeout)
+        self.proactive_timer = QTimer(self)
+        self.proactive_timer.timeout.connect(self._check_proactive_reminder)
         self.dance_timer = QTimer(self)
         self.dance_timer.setSingleShot(True)
         self.dance_timer.timeout.connect(self._advance_dance_frame)
@@ -133,6 +169,7 @@ class DesktopPet(QWidget):
         self.actions.start_idle_breathing()
         self._schedule_next_auto_tip()
         self._start_study_reminder_timer()
+        self._start_proactive_timer()
         self.sleep_check_timer.start(1000)
 
     @property
@@ -286,25 +323,44 @@ class DesktopPet(QWidget):
 
     def open_chat_window(self) -> None:
         self.record_interaction()
-        if self.chat_factory is None:
+        chat_window = self._ensure_chat_window()
+        if chat_window is None:
             self.show_bubble("聊天窗口入口还没有准备好。")
             return
+
+        chat_window.show()
+        chat_window.raise_()
+        chat_window.activateWindow()
+
+    def _ensure_chat_window(self) -> Optional[QWidget]:
+        if self.chat_factory is None:
+            return None
 
         if self.chat_window is None:
             try:
                 self.chat_window = self.chat_factory(self)
             except TypeError:
                 self.chat_window = self.chat_factory()
+        return self.chat_window
 
-        self.chat_window.show()
-        self.chat_window.raise_()
-        self.chat_window.activateWindow()
+    def open_memory_dialog(self) -> None:
+        self.record_interaction()
+        chat_window = self._ensure_chat_window()
+        if chat_window is None or not hasattr(chat_window, "open_memory_dialog"):
+            self.show_bubble("记忆候选入口还没有准备好。")
+            return
+        chat_window.open_memory_dialog()
 
     def open_settings_dialog(self) -> None:
         self.record_interaction()
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self)
+            self.settings_dialog = SettingsDialog(
+                self, chat_history_manager=self.chat_history_manager
+            )
             self.settings_dialog.settings_saved.connect(self.apply_saved_settings)
+            self.settings_dialog.history_cleared.connect(
+                self._handle_chat_history_cleared
+            )
             self.settings_dialog.finished.connect(self._clear_settings_dialog)
 
         self.settings_dialog.show()
@@ -313,6 +369,12 @@ class DesktopPet(QWidget):
 
     def _clear_settings_dialog(self) -> None:
         self.settings_dialog = None
+
+    def _handle_chat_history_cleared(self) -> None:
+        if self.chat_window is not None and hasattr(
+            self.chat_window, "handle_history_cleared_from_settings"
+        ):
+            self.chat_window.handle_history_cleared_from_settings()
 
     def open_growth_dialog(self) -> None:
         self.record_interaction()
@@ -333,6 +395,9 @@ class DesktopPet(QWidget):
         old_scale = float(self.config.get("pet_scale", 1.0))
         old_always_on_top = bool(self.config.get("pet_always_on_top", True))
         self.config.update(config)
+        self.chat_history_manager.set_enabled(
+            bool(self.config.get("chat_history_enabled", True))
+        )
 
         if float(self.config.get("pet_scale", 1.0)) != old_scale:
             self._resize_for_scale()
@@ -344,11 +409,51 @@ class DesktopPet(QWidget):
 
         self._restart_auto_tip_timer()
         self._start_study_reminder_timer()
+        self._start_proactive_timer()
         self._last_interaction_at = time.monotonic()
         print("[SETTINGS] pet settings applied", flush=True)
 
+    def pause_proactive_reminders(self) -> None:
+        self.proactive_manager.pause()
+
+    def resume_proactive_reminders(self) -> None:
+        self.proactive_manager.resume()
+
+    def notify_plan_completed(self) -> None:
+        if self.action_manager.current_state in {"dancing", "sleeping"}:
+            return
+        reminder = self.proactive_manager.task_completed_reminder()
+        if reminder is not None:
+            self._present_proactive_reminder(reminder, include_chat=False)
+
     def start_dance(self) -> bool:
         return self.action_manager.play_action("dance")
+
+    def agent_sleep(self) -> bool:
+        return bool(self.action_manager.play_action("sleep"))
+
+    def execute_client_action(self, action: Dict[str, object]) -> bool:
+        """Validate and execute one declarative action from an Agent response."""
+        allowed, item, reason = self.client_action_policy.validate(action)
+        if not allowed or item is None:
+            print(f"[CLIENT_ACTION] blocked: {reason}", flush=True)
+            return False
+
+        arguments = item.arguments
+        handlers = {
+            "nod": lambda: self.action_manager.play_action("nod"),
+            "jump": lambda: self.action_manager.play_action("jump"),
+            "show_bubble": lambda: self.show_bubble(
+                str(arguments["text"]),
+                int(arguments.get("duration_ms", 6000)),
+            ),
+            "play_dance": lambda: self.action_manager.play_action("dance"),
+            "sleep": lambda: self.action_manager.play_action("sleep"),
+            "wake": lambda: self.action_manager.play_action("wake"),
+            "scale": lambda: self.action_manager.play_action("scale"),
+        }
+        result = handlers[item.name]()
+        return result is not False
 
     def _start_dance_frames(self) -> bool:
         self.record_interaction()
@@ -378,6 +483,8 @@ class DesktopPet(QWidget):
             self.open_chat_window()
         elif chosen == actions["growth"]:
             self.open_growth_dialog()
+        elif chosen == actions["memory"]:
+            self.open_memory_dialog()
         elif chosen == actions["settings"]:
             self.open_settings_dialog()
         elif chosen == actions["dance"]:
@@ -396,6 +503,7 @@ class DesktopPet(QWidget):
         actions = {
             "chat": menu.addAction("打开聊天"),
             "growth": menu.addAction("成长面板"),
+            "memory": menu.addAction("记忆管理"),
             "settings": menu.addAction("设置"),
             "dance": menu.addAction("跳舞一下"),
         }
@@ -750,6 +858,62 @@ class DesktopPet(QWidget):
             print("[STATE] sleep", flush=True)
             self.action_manager.play_action("sleep")
 
+    def _start_proactive_timer(self) -> None:
+        self.proactive_timer.stop()
+        interval_seconds = self._proactive_interval_seconds()
+        self.proactive_manager.configure(
+            enabled=bool(self.config.get("proactive_enabled", True)),
+            cooldown_seconds=interval_seconds,
+            evening_review_enabled=bool(
+                self.config.get("evening_review_enabled", True)
+            ),
+            idle_nudge_enabled=bool(self.config.get("idle_nudge_enabled", True)),
+            idle_threshold_seconds=self._proactive_idle_threshold_seconds(),
+        )
+        if self.config.get("proactive_enabled", True):
+            self.proactive_timer.start(max(1, interval_seconds) * 1000)
+
+    def _check_proactive_reminder(self) -> None:
+        current_state = self.action_manager.current_state
+        if current_state == "dancing":
+            print("[Proactive] skipped: dancing", flush=True)
+            return
+        if current_state in {"thinking", "reminding"}:
+            print("[Proactive] skipped: busy", flush=True)
+            return
+
+        idle_seconds = time.monotonic() - self._last_interaction_at
+        allowed_types = {"idle_nudge"} if current_state == "sleeping" else None
+        reminder = self.proactive_manager.check(
+            idle_seconds=idle_seconds,
+            seconds_since_interaction=idle_seconds,
+            allowed_types=allowed_types,
+        )
+        if reminder is None:
+            return
+
+        if current_state == "sleeping":
+            self.action_manager.play_action("wake")
+        self._present_proactive_reminder(reminder)
+
+    def _present_proactive_reminder(
+        self,
+        reminder: Dict[str, str],
+        *,
+        include_chat: bool = True,
+    ) -> None:
+        text = str(reminder.get("text", "")).strip()
+        if not text:
+            return
+        self.show_bubble(text, record_interaction=False)
+        if (
+            include_chat
+            and self.chat_window is not None
+            and self.chat_window.isVisible()
+            and hasattr(self.chat_window, "add_message")
+        ):
+            self.chat_window.add_message("Roxy", text)
+
     def _study_reminder_interval_seconds(self) -> int:
         if self.config.get("test_mode", False):
             return int(self.config.get("study_reminder_seconds_test", 10))
@@ -759,6 +923,16 @@ class DesktopPet(QWidget):
         if self.config.get("test_mode", False):
             return int(self.config.get("sleep_seconds_test", 30))
         return int(self.config.get("sleep_minutes", 20)) * 60
+
+    def _proactive_interval_seconds(self) -> int:
+        if self.config.get("test_mode", False):
+            return int(self.config.get("proactive_check_seconds_test", 30))
+        return int(self.config.get("proactive_interval_minutes", 10)) * 60
+
+    def _proactive_idle_threshold_seconds(self) -> int:
+        if self.config.get("test_mode", False):
+            return 30
+        return 30 * 60
 
     def _load_config(self) -> Dict[str, object]:
         if not PET_CONFIG_FILE.exists():

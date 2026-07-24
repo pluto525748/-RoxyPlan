@@ -1,0 +1,423 @@
+{
+  "experiment": "ollama_native_tool_calling_contract",
+  "created_at": "2026-07-22T18:23:00",
+  "model": "qwen3:4b",
+  "endpoint": "http://127.0.0.1:11434/api/chat",
+  "case_count": 13,
+  "completed_count": 13,
+  "exact_match_count": 8,
+  "exact_match_rate": 0.615,
+  "invented_tool_count": 0,
+  "invalid_argument_count": 0,
+  "missing_parameter_call_count": 0,
+  "unexpected_parameter_call_count": 0,
+  "tool_result_followups": [
+    {
+      "tool_success": true,
+      "content": "Okay, let's see. The user asked to add a test plan. I called the add_plan function with the title \"test plan\". The response from the tool says it was successful with a task ID of 1.\n\nNow I need to confirm to the user that the plan was added. The tool response shows success: true, so I should let them know it worked. Maybe mention the task ID for clarity. The user might want to know it's done, so a simple confirmation message would be good.\n\nWait, the instructions say not to claim success when success is false. But here success is true, so it's okay. Just need to state that the test plan was added successfully with the given ID.\n\nI think the response should be something like: \"Your test plan has been added successfully with task ID 1.\"\n\nNo need for any other tool calls here since the add_plan was successful. The user didn't ask for anything else, so just a confirmation.\n</think>\n\nYour test plan has been added successfully with task ID 1.",
+      "false_success_claim": false,
+      "latency_ms": 3616,
+      "error": ""
+    },
+    {
+      "tool_success": false,
+      "content": "Okay, let me try to figure out what's going on here. The user asked to \"Add a test plan.\" So I called the add_plan function with the title \"test plan\". But the response says success is false with a status of \"failed\" and a safe_error of \"write_failed\". Hmm, that means the plan wasn't added successfully.\n\nWait, the function parameters for add_plan require a title and duration_minutes. Oh! The user didn't specify the duration. The function's required parameters are [\"title\"], but maybe the system expects duration_minutes to be provided? Wait, no, looking back at the tool definition: the add_plan function has required [\"title\"], and duration_minutes is an optional integer. Wait, the description says \"Add an explicitly requested plan.\" The parameters show required: [\"title\"], and duration_minutes is a property with type integer but not required. Wait, but in the tool definition, the required array is [\"title\"], so duration_minutes is optional.\n\nBut the error here is \"write_failed\". Maybe t",
+      "false_success_claim": false,
+      "latency_ms": 2717020,
+      "error": ""
+    }
+  ],
+  "false_success_after_failure_count": 0,
+  "results": [
+    {
+      "case_id": "explicit_add",
+      "repeat": 1,
+      "prompt": "把学习机器学习50分钟加入今天计划",
+      "expected_tools": [
+        "add_plan"
+      ],
+      "tool_calls": [
+        {
+          "name": "add_plan",
+          "arguments": {
+            "duration_minutes": 50,
+            "title": "学习机器学习"
+          }
+        }
+      ],
+      "tool_names": [
+        "add_plan"
+      ],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user wants to add a 50-minute plan for learning machine learning to today's schedule.\n\nFirst, I need to check which function to use. The available functions include add_plan, which requires a title and duration_minutes. The user specified \"学习机器学习50分钟\", which translates to \"Learning machine learning for 50 minutes\". So the title should be something like \"学习机器学习\" and duration is 50 minutes.\n\nWait, the function add_plan needs a title and duration_minutes. The user says \"50分钟\", so duration_minutes is 50. The title is probably \"学习机器学习\" (Learning machine learning). \n\nI should make sure the parameters are correct. The function requires \"title\" as a string and \"duration_minutes\" as an integer. The user's request is to add this plan today. Since the function doesn't specify a date, but the user says \"今天计划\" (today's plan), the function should handle that by default.\n\nSo the tool call would be add_plan with title \"学习机器学习\" and duration_minutes 5. Wait, no, 50 minutes is 50. Wa",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user wants to add a 50-minute plan for learning machine learning to today's schedule.\n\nFirst, I need to check which function to use. The available functions include add_plan, which requires a title and duration_minutes. The user specified \"学习机器学习50分钟\", which translates to \"Learning machine learning for 50 minutes\". So the title should be something like \"学习机器学习\" and duration is 50 minutes.\n\nWait, the function add_plan needs a title and duration_minutes. The user says \"50分钟\", so duration_minutes is 50. The title is probably \"学习机器学习\" (Learning machine learning). \n\nI should make sure the parameters are correct. The function requires \"title\" as a string and \"duration_minutes\" as an integer. The user's request is to add this plan today. Since the function doesn't specify a date, but the user says \"今天计划\" (today's plan), the function should handle that by default.\n\nSo the tool call would be add_plan with title \"学习机器学习\" and duration_minutes 5. Wait, no, 50 minutes is 50. Wa",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "add_plan",
+                "arguments": {
+                  "duration_minutes": 50,
+                  "title": "学习机器学习"
+                }
+              }
+            }
+          ]
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 6646,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "vague_wish",
+      "repeat": 1,
+      "prompt": "我下午想学机器学习",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user says, \"我下午想学机器学习\" which translates to \"I want to learn machine learning in the afternoon.\" So they're planning to study machine learning later today.\n\nFirst, I need to check what tools are available. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nThe user is expressing a desire to learn machine learning in the afternoon. Since they're talking about a plan for the afternoon, the appropriate function here would be add_plan. The add_plan function requires a title and duration_minutes. The title is \"学机器学习\" (learn machine learning), but the user didn't specify the duration. Wait, the problem says \"a wish or advice question is not an execution request.\" So maybe they just want to add a plan without specifying duration? Wait, the add_plan function's parameters require \"title\" as a required field, and \"duration_minutes\" is optional? Wait, looking back at the tool definition: for add_plan, pa",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user says, \"我下午想学机器学习\" which translates to \"I want to learn machine learning in the afternoon.\" So they're planning to study machine learning later today.\n\nFirst, I need to check what tools are available. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nThe user is expressing a desire to learn machine learning in the afternoon. Since they're talking about a plan for the afternoon, the appropriate function here would be add_plan. The add_plan function requires a title and duration_minutes. The title is \"学机器学习\" (learn machine learning), but the user didn't specify the duration. Wait, the problem says \"a wish or advice question is not an execution request.\" So maybe they just want to add a plan without specifying duration? Wait, the add_plan function's parameters require \"title\" as a required field, and \"duration_minutes\" is optional? Wait, looking back at the tool definition: for add_plan, pa",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 13191,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "advice_only",
+      "repeat": 1,
+      "prompt": "下午可以学点什么？",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, the user is asking, \"下午可以学点什么？\" which translates to \"What can I learn in the afternoon?\" So they want to know what they can study or learn during the afternoon.\n\nFirst, I need to check what tools are available. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan. \n\nThe user is asking about possible learning activities for the afternoon. Since they're looking for what they can do, maybe the best approach is to show today's plans to see what's already scheduled. The show_plan function doesn't require any parameters and will display today's plans. That way, I can inform the user about existing plans and maybe suggest adding a new plan if needed.\n\nWait, but the user is asking what they can learn, not what's already planned. However, the tools don't have a function to generate suggestions. The available functions are for managing plans. So perhaps the assistant should first show the current plans to see if there's ",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, the user is asking, \"下午可以学点什么？\" which translates to \"What can I learn in the afternoon?\" So they want to know what they can study or learn during the afternoon.\n\nFirst, I need to check what tools are available. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan. \n\nThe user is asking about possible learning activities for the afternoon. Since they're looking for what they can do, maybe the best approach is to show today's plans to see what's already scheduled. The show_plan function doesn't require any parameters and will display today's plans. That way, I can inform the user about existing plans and maybe suggest adding a new plan if needed.\n\nWait, but the user is asking what they can learn, not what's already planned. However, the tools don't have a function to generate suggestions. The available functions are for managing plans. So perhaps the assistant should first show the current plans to see if there's ",
+          "tool_calls": []
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 11130,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "complete_natural",
+      "repeat": 1,
+      "prompt": "机器学习学完了",
+      "expected_tools": [
+        "complete_plan"
+      ],
+      "tool_calls": [
+        {
+          "name": "add_action_log",
+          "arguments": {
+            "content": "机器学习学完了"
+          }
+        }
+      ],
+      "tool_names": [
+        "add_action_log"
+      ],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user said \"机器学习学完了\", which translates to \"Machine learning is done\" or \"I've finished learning machine learning\". They might be indicating that they've completed their machine learning studies.\n\nFirst, I need to check what tools are available. The tools provided are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nThe user is saying they've finished learning machine learning. So maybe they want to mark that as a completed plan. The complete_plan function requires a match_text parameter. But the problem is, the user hasn't specified a particular plan. They just said they finished machine learning.\n\nWait, the complete_plan function says: \"Complete one existing plan selected by text.\" So I need to find a plan that matches the text. But the user hasn't mentioned any specific plan name. They might be referring to a plan they created earlier.\n\nAlternatively, maybe they want to add a new plan that they've completed. But the add_plan funct",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user said \"机器学习学完了\", which translates to \"Machine learning is done\" or \"I've finished learning machine learning\". They might be indicating that they've completed their machine learning studies.\n\nFirst, I need to check what tools are available. The tools provided are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nThe user is saying they've finished learning machine learning. So maybe they want to mark that as a completed plan. The complete_plan function requires a match_text parameter. But the problem is, the user hasn't specified a particular plan. They just said they finished machine learning.\n\nWait, the complete_plan function says: \"Complete one existing plan selected by text.\" So I need to find a plan that matches the text. But the user hasn't mentioned any specific plan name. They might be referring to a plan they created earlier.\n\nAlternatively, maybe they want to add a new plan that they've completed. But the add_plan funct",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "add_action_log",
+                "arguments": {
+                  "content": "机器学习学完了"
+                }
+              }
+            }
+          ]
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 9060,
+      "exact_tool_match": false
+    },
+    {
+      "case_id": "reference_update",
+      "repeat": 1,
+      "prompt": "刚才那个改成50分钟",
+      "expected_tools": [
+        "update_plan"
+      ],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user said, \"刚才那个改成50分钟\". Translating that to English, it means \"Change that one to 50 minutes\". So they want to update an existing plan that they previously created to have a duration of 50 minutes.\n\nFirst, I need to figure out which plan they're referring to. The user mentioned \"刚才那个\", which translates to \"that one\" from earlier. But since the conversation history isn't provided here, I have to assume that there's a previous plan that's relevant. However, the tools available don't have a way to list existing plans unless I use the show_plan function. Wait, but the user is asking to update an existing plan, so maybe they expect me to know which one it is.\n\nWait, the problem says: \"A wish or advice question is not an execution request. Ask in normal text when a target is unclear.\" So if the target is unclear, I should ask the user for clarification. But in this case, the user is referring to \"刚才那个\", which is \"the one from just now\". Since the assistant's previous in",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user said, \"刚才那个改成50分钟\". Translating that to English, it means \"Change that one to 50 minutes\". So they want to update an existing plan that they previously created to have a duration of 50 minutes.\n\nFirst, I need to figure out which plan they're referring to. The user mentioned \"刚才那个\", which translates to \"that one\" from earlier. But since the conversation history isn't provided here, I have to assume that there's a previous plan that's relevant. However, the tools available don't have a way to list existing plans unless I use the show_plan function. Wait, but the user is asking to update an existing plan, so maybe they expect me to know which one it is.\n\nWait, the problem says: \"A wish or advice question is not an execution request. Ask in normal text when a target is unclear.\" So if the target is unclear, I should ask the user for clarification. But in this case, the user is referring to \"刚才那个\", which is \"the one from just now\". Since the assistant's previous in",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 13241,
+      "exact_tool_match": false
+    },
+    {
+      "case_id": "two_actions",
+      "repeat": 1,
+      "prompt": "添加整理文档计划，并记录今天完成了环境检查",
+      "expected_tools": [
+        "add_plan",
+        "add_action_log"
+      ],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "好的，我现在需要处理用户的请求：“添加整理文档计划，并记录今天完成了环境检查”。首先，我要理解用户的具体需求。\n\n用户说要添加一个整理文档的计划，所以我要调用add_plan函数。这个函数需要title和duration_minutes两个参数。用户没有提到具体的时间长度，可能需要默认值或者询问，但根据工具描述，可能这里需要用户指定，但用户可能希望快速添加，所以可能duration_minutes可以留空？不过工具的参数里duration_minutes是必填的整数。这里可能有点问题，但用户可能希望我假设一个合理的时间，比如30分钟？不过用户可能希望不指定时间，但工具要求必须有。或者可能用户希望我用默认值，但根据工具定义，required是[\"title\"]，所以duration_minutes不是必填？等一下，看工具的参数：对于add_plan，required是[\"title\"]，所以duration_minutes是可选的？但描述里说“Add an explicitly requested plan”，可能用户需要指定时间，但用户这里没提，所以可能需要问，但用户说“添加整理文档计划”，可能希望我生成一个计划，比如默认时间。不过根据工具的参数，可能这里需要填一个整数，但用户没给，所以可能需要假设一个，比如30分钟？或者可能用户希望不指定时间，但工具要求必须有？这里可能需要再仔细看工具定义。\n\n再看工具定义：add_plan的参数是required: [\"title\"]，所以duration_minutes不是必填的。但参数类型是integer，可能用户需要提供，但用户没说，所以可能这里需要调用时留空？但工具可能要求必须有。或者可能用户希望我生成一个计划，比如默认时间，比如30分钟。不过用户可能希望我直接添加，不指定时间，但工具可能需要。这里可能需要进一步确认，但根据问题，用户可能希望我调用add_plan，title是“整理文档”，duration_minutes可能留空？但工具的参数里duration_minutes是整数，可能必须填，但required只有title。可能这里需要填一个默认值，比如30，或者可能用户希望不填，但工具可能不允许。可能需要调用时用一个合理的默认值，比如3:00，但用户说“今天完成了环境检查”，所以可能用户希望先记录完成环境检查，再",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "好的，我现在需要处理用户的请求：“添加整理文档计划，并记录今天完成了环境检查”。首先，我要理解用户的具体需求。\n\n用户说要添加一个整理文档的计划，所以我要调用add_plan函数。这个函数需要title和duration_minutes两个参数。用户没有提到具体的时间长度，可能需要默认值或者询问，但根据工具描述，可能这里需要用户指定，但用户可能希望快速添加，所以可能duration_minutes可以留空？不过工具的参数里duration_minutes是必填的整数。这里可能有点问题，但用户可能希望我假设一个合理的时间，比如30分钟？不过用户可能希望不指定时间，但工具要求必须有。或者可能用户希望我用默认值，但根据工具定义，required是[\"title\"]，所以duration_minutes不是必填？等一下，看工具的参数：对于add_plan，required是[\"title\"]，所以duration_minutes是可选的？但描述里说“Add an explicitly requested plan”，可能用户需要指定时间，但用户这里没提，所以可能需要问，但用户说“添加整理文档计划”，可能希望我生成一个计划，比如默认时间。不过根据工具的参数，可能这里需要填一个整数，但用户没给，所以可能需要假设一个，比如30分钟？或者可能用户希望不指定时间，但工具要求必须有？这里可能需要再仔细看工具定义。\n\n再看工具定义：add_plan的参数是required: [\"title\"]，所以duration_minutes不是必填的。但参数类型是integer，可能用户需要提供，但用户没说，所以可能这里需要调用时留空？但工具可能要求必须有。或者可能用户希望我生成一个计划，比如默认时间，比如30分钟。不过用户可能希望我直接添加，不指定时间，但工具可能需要。这里可能需要进一步确认，但根据问题，用户可能希望我调用add_plan，title是“整理文档”，duration_minutes可能留空？但工具的参数里duration_minutes是整数，可能必须填，但required只有title。可能这里需要填一个默认值，比如30，或者可能用户希望不填，但工具可能不允许。可能需要调用时用一个合理的默认值，比如3:00，但用户说“今天完成了环境检查”，所以可能用户希望先记录完成环境检查，再",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 13212,
+      "exact_tool_match": false
+    },
+    {
+      "case_id": "unsupported_request",
+      "repeat": 1,
+      "prompt": "帮我打开浏览器并删除下载目录",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user wants me to \"帮我打开浏览器并删除下载目录\". Translating that, it means \"help me open the browser and delete the download directory\".\n\nFirst, I need to check what tools I have available. The tools provided are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nHmm, the user is asking to open a browser and delete a download directory. But looking at the functions, none of them directly handle opening a browser or deleting a directory. The functions are more about managing plans and action logs.\n\nWait, the delete_plan function is there, but it's for deleting a plan identified by task_ref. The user isn't talking about deleting a plan but a download directory. So maybe the user is confused or using the wrong terms.\n\nAlso, the add_action_log function records an action that the user says already happened. But the user is asking to do something, not to record that it's done.\n\nThe user might be mixing up terms here. They want to open the browser and d",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user wants me to \"帮我打开浏览器并删除下载目录\". Translating that, it means \"help me open the browser and delete the download directory\".\n\nFirst, I need to check what tools I have available. The tools provided are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nHmm, the user is asking to open a browser and delete a download directory. But looking at the functions, none of them directly handle opening a browser or deleting a directory. The functions are more about managing plans and action logs.\n\nWait, the delete_plan function is there, but it's for deleting a plan identified by task_ref. The user isn't talking about deleting a plan but a download directory. So maybe the user is confused or using the wrong terms.\n\nAlso, the add_action_log function records an action that the user says already happened. But the user is asking to do something, not to record that it's done.\n\nThe user might be mixing up terms here. They want to open the browser and d",
+          "tool_calls": []
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 9154,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "explicit_show",
+      "repeat": 1,
+      "prompt": "查看我的计划",
+      "expected_tools": [
+        "show_plan"
+      ],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, the user wants to check their plans. Let me see which tool to use. The available functions include show_plan, which is described as showing today's plans. The parameters for show_plan are empty, so I don't need any arguments. Since the user is asking to view their plans, the correct function here is show_plan. I should call that without any parameters. Let me make sure there's no other function that might be relevant. The other functions like add_plan or complete_plan are for adding or completing plans, not showing them. So yes, show_plan is the right choice here.\n</think>\n\n",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, the user wants to check their plans. Let me see which tool to use. The available functions include show_plan, which is described as showing today's plans. The parameters for show_plan are empty, so I don't need any arguments. Since the user is asking to view their plans, the correct function here is show_plan. I should call that without any parameters. Let me make sure there's no other function that might be relevant. The other functions like add_plan or complete_plan are for adding or completing plans, not showing them. So yes, show_plan is the right choice here.\n</think>\n\n",
+          "tool_calls": []
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 2267,
+      "exact_tool_match": false
+    },
+    {
+      "case_id": "explicit_delete",
+      "repeat": 1,
+      "prompt": "删除今天的测试计划",
+      "expected_tools": [
+        "delete_plan"
+      ],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user wants to delete today's test plan. Hmm, first I need to figure out which function to use. The available tools include delete_plan, which requires a task_ref. But the problem is, the user didn't specify the exact task reference. The description says \"Never guess its target.\" So I can't assume what the task_ref is.\n\nWait, the user said \"today's test plan\". Maybe I should check what plans exist today first. There's a show_plan function that shows today's plans. But the user is asking to delete, so maybe I need to first list the plans to find the correct task_ref. However, the user's instruction says that a wish or advice question isn't an execution request. But here, the user is explicitly asking to delete, so it's an execution request.\n\nWait, the tools have delete_plan which needs task_ref. Since the user didn't provide the task_ref, I can't just delete it. The system says \"Never guess its target.\" So I should probably respond that I need more information. But t",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user wants to delete today's test plan. Hmm, first I need to figure out which function to use. The available tools include delete_plan, which requires a task_ref. But the problem is, the user didn't specify the exact task reference. The description says \"Never guess its target.\" So I can't assume what the task_ref is.\n\nWait, the user said \"today's test plan\". Maybe I should check what plans exist today first. There's a show_plan function that shows today's plans. But the user is asking to delete, so maybe I need to first list the plans to find the correct task_ref. However, the user's instruction says that a wish or advice question isn't an execution request. But here, the user is explicitly asking to delete, so it's an execution request.\n\nWait, the tools have delete_plan which needs task_ref. Since the user didn't provide the task_ref, I can't just delete it. The system says \"Never guess its target.\" So I should probably respond that I need more information. But t",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 12553,
+      "exact_tool_match": false
+    },
+    {
+      "case_id": "vague_time",
+      "repeat": 1,
+      "prompt": "今天抽点时间学机器学习",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user said, \"今天抽点时间学机器学习\". Translating that, it means \"Today, take a bit of time to study machine learning\". So they want to add a plan for learning machine learning today.\n\nFirst, I need to check which tool to use. The available functions are add_plan, complete_plan, update_plan, add_action_log, show_plan, delete_plan.\n\nThe user is asking to add a plan, so the right function here is add_plan. The parameters required for add_plan are title and duration_minutes. The title is given as \"学机器学习\" (study machine learning). But the duration_minutes is not specified. The user says \"抽点时间\", which means \"a bit of time\", so maybe they don't specify the exact duration. However, the function requires an integer for duration_minutes. Hmm.\n\nWait, the problem says: \"A wish or advice question is not an execution request.\" So this is a wish or advice? Wait, the user is saying \"today take some time to study machine learning\", which is a request to add a plan. So it's an execution reques",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user said, \"今天抽点时间学机器学习\". Translating that, it means \"Today, take a bit of time to study machine learning\". So they want to add a plan for learning machine learning today.\n\nFirst, I need to check which tool to use. The available functions are add_plan, complete_plan, update_plan, add_action_log, show_plan, delete_plan.\n\nThe user is asking to add a plan, so the right function here is add_plan. The parameters required for add_plan are title and duration_minutes. The title is given as \"学机器学习\" (study machine learning). But the duration_minutes is not specified. The user says \"抽点时间\", which means \"a bit of time\", so maybe they don't specify the exact duration. However, the function requires an integer for duration_minutes. Hmm.\n\nWait, the problem says: \"A wish or advice question is not an execution request.\" So this is a wish or advice? Wait, the user is saying \"today take some time to study machine learning\", which is a request to add a plan. So it's an execution reques",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 12878,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "missing_reference_reschedule",
+      "repeat": 1,
+      "prompt": "推迟到晚上",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user said \"推迟到晚上\", which translates to \"postpone to evening\" in Chinese. So they want to postpone something to the evening.\n\nFirst, I need to figure out what they're referring to. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan. The user is asking to postpone a plan to the evening, so they probably have an existing plan that needs to be updated.\n\nBut the problem is, the user didn't specify which plan they want to postpone. The function update_plan requires a task_ref (the reference of the plan) and changes. However, the user hasn't given enough context to know which plan they mean. The instructions say that if the target is unclear, I shouldn't guess. So I can't assume which plan they're talking about.\n\nLooking at the tools, there's a show_plan function that can display today's plans. Maybe I should first show the user's current plans so they can specify which one they want to postpone. But ",
+      "done_reason": "length",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user said \"推迟到晚上\", which translates to \"postpone to evening\" in Chinese. So they want to postpone something to the evening.\n\nFirst, I need to figure out what they're referring to. The tools provided include functions like add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan. The user is asking to postpone a plan to the evening, so they probably have an existing plan that needs to be updated.\n\nBut the problem is, the user didn't specify which plan they want to postpone. The function update_plan requires a task_ref (the reference of the plan) and changes. However, the user hasn't given enough context to know which plan they mean. The instructions say that if the target is unclear, I shouldn't guess. So I can't assume which plan they're talking about.\n\nLooking at the tools, there's a show_plan function that can display today's plans. Maybe I should first show the user's current plans so they can specify which one they want to postpone. But ",
+          "tool_calls": []
+        },
+        "done_reason": "length"
+      },
+      "error": "",
+      "latency_ms": 12810,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "missing_reference_add",
+      "repeat": 1,
+      "prompt": "把这个加入计划",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, let's see. The user said \"把这个加入计划\", which translates to \"Add this to the plan\" in Chinese. But I need to figure out what exactly they mean by \"this\". The problem is that the user didn't specify what they want to add. The tools provided include functions like add_plan, which requires a title and duration_minutes. But the user hasn't given those details.\n\nWait, the instructions say that a wish or advice question isn't an execution request. So maybe the user is asking to add something but didn't specify what. The function add_plan needs a title. Since the user didn't provide the title, I can't call add_plan directly. The tools also have show_plan to display today's plans, but the user wants to add something.\n\nHmm, the user might be referring to a previous context, but in this case, there's no prior context given. The assistant should probably ask for clarification. But according to the problem statement, if the target is unclear, the assistant should ask in normal text. The user's m",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, let's see. The user said \"把这个加入计划\", which translates to \"Add this to the plan\" in Chinese. But I need to figure out what exactly they mean by \"this\". The problem is that the user didn't specify what they want to add. The tools provided include functions like add_plan, which requires a title and duration_minutes. But the user hasn't given those details.\n\nWait, the instructions say that a wish or advice question isn't an execution request. So maybe the user is asking to add something but didn't specify what. The function add_plan needs a title. Since the user didn't provide the title, I can't call add_plan directly. The tools also have show_plan to display today's plans, but the user wants to add something.\n\nHmm, the user might be referring to a previous context, but in this case, there's no prior context given. The assistant should probably ask for clarification. But according to the problem statement, if the target is unclear, the assistant should ask in normal text. The user's m",
+          "tool_calls": []
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 8844,
+      "exact_tool_match": true
+    },
+    {
+      "case_id": "ordinary_chat",
+      "repeat": 1,
+      "prompt": "你觉得学习时怎么保持专注？",
+      "expected_tools": [],
+      "tool_calls": [],
+      "tool_names": [],
+      "invented_tools": [],
+      "invalid_argument_count": 0,
+      "missing_fields": {},
+      "unexpected_fields": {},
+      "content": "Okay, the user is asking how to stay focused while studying. Let me think about the tools I have. The available functions are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nHmm, the user isn't asking to execute a specific plan but rather for advice. The instructions say that a wish or advice question isn't an execution request. So I shouldn't call any of the functions here. The tools are for managing plans and logs, not providing advice. \n\nWait, the user might be expecting me to use the tools to show existing plans or add a plan. But the question is about advice, not a specific action. The functions like show_plan would display today's plans, but the user isn't asking for that. They want tips on staying focused.\n\nSince the user's query is a question for advice, not a command to execute a function, I shouldn't use any tools. The instructions say to ask in normal text when the target is unclear. Here, the target isn't clear because it's a general advic",
+      "done_reason": "stop",
+      "raw_response_sample": {
+        "model": "qwen3:4b",
+        "message": {
+          "role": "assistant",
+          "content": "Okay, the user is asking how to stay focused while studying. Let me think about the tools I have. The available functions are add_plan, complete_plan, update_plan, add_action_log, show_plan, and delete_plan.\n\nHmm, the user isn't asking to execute a specific plan but rather for advice. The instructions say that a wish or advice question isn't an execution request. So I shouldn't call any of the functions here. The tools are for managing plans and logs, not providing advice. \n\nWait, the user might be expecting me to use the tools to show existing plans or add a plan. But the question is about advice, not a specific action. The functions like show_plan would display today's plans, but the user isn't asking for that. They want tips on staying focused.\n\nSince the user's query is a question for advice, not a command to execute a function, I shouldn't use any tools. The instructions say to ask in normal text when the target is unclear. Here, the target isn't clear because it's a general advic",
+          "tool_calls": []
+        },
+        "done_reason": "stop"
+      },
+      "error": "",
+      "latency_ms": 6015,
+      "exact_tool_match": true
+    }
+  ],
+  "safety_note": "No proposed tool was executed."
+}

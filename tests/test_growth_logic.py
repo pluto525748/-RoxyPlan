@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from frontend.growth_dialog import GrowthDialog
@@ -121,6 +122,7 @@ def test_chat_growth_commands():
             "保存今日复盘",
             "查看成长日志",
             "删除计划1",
+            "确认删除计划1",
         ):
             window.input_box.setText(command)
             window.send_message()
@@ -149,6 +151,13 @@ def test_growth_dialog_smoke():
         dialog.generate_review()
 
         assert dialog.plan_table.rowCount() == 1
+        assert dialog.plan_table.minimumHeight() >= 175
+        assert (
+            dialog.plan_table.verticalScrollBarPolicy()
+            == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        assert dialog.panel_scroll.widgetResizable() is True
+        assert dialog.plan_table.rowHeight(0) >= 44
         assert dialog.action_list.count() == 1
         assert "计划 1 件" in dialog.review_text.toPlainText()
         dialog.close()

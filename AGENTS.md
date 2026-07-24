@@ -22,6 +22,23 @@ Do not add new product features without explicit user permission. Maintenance, d
 - Do not modify `modules/llm_client.py`, `memory.json`, or private local config files unless the user explicitly asks for that exact change.
 - Preserve existing desktop pet actions, chat behavior, settings, and local data compatibility.
 
+## Local Web Exception
+
+FastAPI is allowed only under `server/` for the explicitly approved RoxyPlan Local Web work.
+
+Requirements:
+
+- Preserve the existing PySide6 desktop application.
+- Do not move desktop UI code into the server.
+- Do not modify or migrate private local data.
+- Do not expose API keys, tokens, local paths, or private data.
+- Do not duplicate Agent, growth, memory, or chat business logic under `server/`.
+- The server layer may only adapt and call the existing core modules.
+- Do not deploy to the public internet.
+- Do not add Docker, Supabase, user registration, payment, or cloud database code.
+- Do not modify `llm_client.py` core behavior unless separately approved.
+- Do not commit or push.
+
 ## Project Naming
 
 The stable project root is `RoxyPlan`.

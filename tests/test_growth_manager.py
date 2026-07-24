@@ -154,6 +154,7 @@ def test_chat_commands_use_manager_without_llm():
             "保存今日复盘",
             "查看成长日志",
             "删除计划1",
+            "确认删除计划1",
         ):
             window.input_box.setText(command)
             window.send_message()

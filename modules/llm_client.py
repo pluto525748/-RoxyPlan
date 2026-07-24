@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from urllib import error, request
 
 
-DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 120
 OLLAMA_PROVIDER = "ollama"
 
 
