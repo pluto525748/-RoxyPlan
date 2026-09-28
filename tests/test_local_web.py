@@ -185,10 +185,8 @@ def test_real_agent_service_reuses_chat_plan_and_memory_core():
         assert plan.status == "completed"
         assert growth.tasks()[0]["title"] == "测试局域网页面"
         assert remembered.status == "completed"
-        assert memory.memories() == []
-        candidates = service.memory_candidate_manager.pending()
-        assert len(candidates) == 1
-        assert candidates[0]["content"] == "我正在测试 Local Web"
+        assert [item["content"] for item in memory.memories()] == ["我正在测试 Local Web"]
+        assert service.memory_candidate_manager.pending() == []
         assert action_log.status == "completed"
         assert "还没有行动记录" in action_log.message
         assert chat.status == "chat"
@@ -249,7 +247,7 @@ def test_web_chat_uses_personality_and_context_builder():
         }
 
 
-def test_show_memory_uses_deterministic_agent_result():
+def test_show_memory_uses_verified_model_attempt_with_deterministic_fallback():
     import tempfile
 
     with tempfile.TemporaryDirectory() as temp:
@@ -271,8 +269,14 @@ def test_show_memory_uses_deterministic_agent_result():
         response = service.handle("你都记住了我的什么信息", "web_memory")
 
         assert response.status == "completed"
-        assert "我正在学习机器学习" in response.message
-        assert llm.calls == []
+        assert "你正在学习机器学习" in response.message
+        assert llm.calls
+        combined = "\n".join(
+            str(item.get("content", ""))
+            for call in llm.calls
+            for item in call
+        )
+        assert "我正在学习机器学习" in combined
 
 
 def test_web_chat_does_not_inject_unrelated_sensitive_memory():
@@ -316,6 +320,6 @@ if __name__ == "__main__":
     test_configured_token_rejects_wrong_token_and_accepts_correct_token()
     test_real_agent_service_reuses_chat_plan_and_memory_core()
     test_web_chat_uses_personality_and_context_builder()
-    test_show_memory_uses_deterministic_agent_result()
+    test_show_memory_uses_verified_model_attempt_with_deterministic_fallback()
     test_web_chat_does_not_inject_unrelated_sensitive_memory()
     print("local web tests passed")

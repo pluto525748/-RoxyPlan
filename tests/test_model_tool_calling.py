@@ -21,6 +21,7 @@ from modules.model_action_adapter import ModelToolCallLoop
 from modules.safety_policy import SafetyPolicy
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import create_roxy_tool_registry
+from tests.isolation_support import build_isolated_memory_manager
 
 
 class ScriptedProvider(LLMProvider):
@@ -56,7 +57,7 @@ class OfflineProvider(ScriptedProvider):
 
 def build_adapter(root, responses, offline_responses=None):
     growth = GrowthManager(root / "private")
-    memory = MemoryManager(root / "memory.json")
+    memory = build_isolated_memory_manager(root)
     registry = create_roxy_tool_registry(growth, memory)
     confirmation = ConfirmationManager()
     executor = ToolExecutor(registry, SafetyPolicy(), confirmation)
@@ -83,7 +84,11 @@ def test_tool_schema_only_contains_explicit_model_visible_tools():
             item["function"]["name"] for item in registry.model_tool_schemas()
         }
         assert "add_plan" in names
-        assert "delete_plan" in names
+        assert "show_recent_conversation" in names
+        assert "delete_plan" not in names
+        assert "update_plan" not in names
+        assert "merge_plan" not in names
+        assert "reschedule_plan" not in names
         assert "delete_all_memories" not in names
         assert "show_memory_audit" not in names
         assert all(
@@ -175,7 +180,7 @@ def test_unknown_tool_is_rejected_without_execution():
         assert growth.tasks() == []
 
 
-def test_high_risk_tool_requires_confirmation_and_does_not_delete():
+def test_model_hidden_high_risk_tool_is_rejected_and_does_not_delete():
     responses = [
         ProviderResponse(
             "deepseek",
@@ -192,7 +197,10 @@ def test_high_risk_tool_requires_confirmation_and_does_not_delete():
             conversation_id="session",
             intent_result={"intent": "chat", "confidence": 0.99},
         )
-        assert result.status == "confirmation_required"
+        assert result.status == "failed"
+        assert len(result.tool_results) == 1
+        assert result.tool_results[0].success is False
+        assert result.tool_results[0].tool == "delete_plan"
         assert len(growth.tasks()) == 1
 
 

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "frozen_at": "2026-08-04T11:00:00+08:00",
+  "purpose": "blind_test",
+  "description": "V2.1 盲测集：修改阶段结束前不得针对单句调整规则或预期。首次运行保存原始结果不得覆盖。按类别报告通过率和失败数，失败时先报告类型和失败层，不得偷偷修改预期。",
+  "source_matrix": "v21_chinese_context_matrix.json",
+  "source_matrix_sha256": "d5cee7e9057c2dc812da48d2b4b178ac41eca77835012cf6edc2beafc5dd83d4",
+  "selection_methodology": "全量矩阵减去优化集的补集，包含各模式各现象的剩余案例",
+  "case_ids": [
+    "chat_003", "chat_006", "chat_009", "chat_010", "chat_011", "chat_012",
+    "chat_015", "chat_018", "chat_019", "chat_021", "chat_026", "chat_027", "chat_028",
+    "read_002", "read_003", "read_004", "read_006", "read_007", "read_009",
+    "read_011", "read_012", "read_013", "read_015",
+    "write_004", "write_005", "write_007", "write_009", "write_010", "write_012",
+    "write_014", "write_015", "write_016", "write_017", "write_018",
+    "clarify_002", "clarify_003", "clarify_005", "clarify_006", "clarify_007", "clarify_008",
+    "multi_002", "multi_003", "multi_005", "multi_006", "multi_008"
+  ],
+  "count": 45,
+  "mode_distribution": {
+    "chat": 18,
+    "read": 10,
+    "write": 13,
+    "clarify": 4
+  },
+  "integrity_rules": [
+    "修改阶段结束前不得查看盲测单句内容",
+    "首次盲测结果必须保存原始输出不得覆盖",
+    "按类别报告通过率，不能只报告总passed",
+    "失败时先报告失败类型和失败层，不得偷偷修改预期",
+    "如需系统性修复，第二次结果明确标为修复后复测"
+  ]
+}

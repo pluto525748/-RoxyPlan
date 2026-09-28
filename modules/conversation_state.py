@@ -67,6 +67,10 @@ class ConversationStateManager:
             state["previous_user_message"] = str(state.get("last_user_message", ""))
             state["last_user_message"] = clean
             result: Dict[str, object] = {}
+            if clean.startswith(("忘记：", "忘记:")):
+                # The record body is not a new location, preference or topic
+                # suppression request. Only the literal command is actionable.
+                return result
 
             suppressed = self._suppression_request(clean)
             if suppressed:
@@ -82,12 +86,70 @@ class ConversationStateManager:
                     "scope": "current_state",
                 }
                 result["current_location"] = location
+
+            response_preferences = self._response_preference_update(clean)
+            if response_preferences:
+                state.setdefault("response_preferences", {}).update(
+                    response_preferences
+                )
+                result["response_preferences"] = dict(response_preferences)
             return result
 
     def observe_assistant(self, conversation_id: str, text: str) -> None:
         with self._lock:
             state = self._state(conversation_id)
             state["last_assistant_message"] = str(text).strip()
+
+    def observe_client_action_result(self, conversation_id: str, result: Mapping[str, object]) -> None:
+        """Remember an actual same-client report, never a tool's request."""
+        if not conversation_id or not isinstance(result, Mapping):
+            return
+        if result.get("source") not in {"desktop_dispatcher", "desktop_state_snapshot"}:
+            return
+        status = str(result.get("status", ""))
+        if status not in {
+            "accepted", "running", "finished", "completed", "failed", "rejected",
+            "skipped_busy", "skipped_duplicate", "expired", "cancelled",
+        } or not re.fullmatch(r"[a-z][a-z0-9_]*", str(result.get("name", ""))):
+            return
+        allowed = ("name", "status", "accepted", "started", "completed", "reason_code", "source", "observed_at", "state")
+        with self._lock:
+            self._state(conversation_id)["prior_client_action"] = {
+                key: deepcopy(result.get(key)) for key in allowed if key in result
+            }
+
+    def observe_memory_facts(self, conversation_id: str, facts: Iterable[Mapping[str, object]]) -> None:
+        """Keep a small in-process cache of real tool-read record references."""
+        with self._lock:
+            state = self._state(conversation_id)
+            recent = state.setdefault("prior_memory_facts", [])
+            for fact in facts:
+                if not isinstance(fact, Mapping):
+                    continue
+                try:
+                    memory_id = int(fact.get("memory_id", fact.get("id", 0)) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if memory_id <= 0 or not str(fact.get("content", "")).strip():
+                    continue
+                value = dict(fact)
+                value["memory_id"] = memory_id
+                value["observed_at"] = self.now_provider().astimezone().isoformat(timespec="seconds")
+                recent[:] = [item for item in recent if item.get("memory_id") != memory_id]
+                recent.append(deepcopy(value))
+            del recent[:-5]
+
+    def observe_memory_operation(self, conversation_id: str, operation: Mapping[str, object]) -> None:
+        if not isinstance(operation, Mapping) or operation.get("status") != "success":
+            return
+        with self._lock:
+            state = self._state(conversation_id)
+            state["prior_memory_operation"] = deepcopy(dict(operation))
+            if operation.get("tool") in {"delete_memory", "archive_memory"}:
+                state["prior_memory_facts"] = [
+                    item for item in state.get("prior_memory_facts", [])
+                    if item.get("memory_id") != operation.get("memory_id")
+                ]
 
     def observe_tool_result(self, conversation_id: str, result: Dict[str, object]) -> None:
         if not bool(result.get("success", False)):
@@ -119,6 +181,18 @@ class ConversationStateManager:
                 ]
                 recent.append(deepcopy(normalized))
                 del recent[:-5]
+            elif str(result.get("tool", "")) in {
+                "add_plan",
+                "complete_plan",
+                "delete_plan",
+                "update_plan",
+                "reschedule_plan",
+                "reopen_plan",
+                "cancel_plan",
+            }:
+                # Never pair a newly verified plan operation with an older
+                # task title when the new ToolResult contains no task object.
+                state["last_task"] = None
             tool = str(result.get("tool", ""))
             if tool in {"list_memory_candidates", "show_memory_candidates"}:
                 candidates = data.get("candidates", [])
@@ -277,10 +351,16 @@ class ConversationStateManager:
                 "last_task": deepcopy(state.get("last_task")),
                 "recent_tasks": deepcopy(state.get("recent_tasks", [])),
                 "last_tool_result": deepcopy(state.get("last_tool_result")),
+                "prior_memory_facts": deepcopy(state.get("prior_memory_facts", [])),
+                "prior_memory_operation": deepcopy(state.get("prior_memory_operation", {})),
+                "prior_client_action": deepcopy(state.get("prior_client_action", {})),
                 "last_user_message": str(state.get("previous_user_message", "")),
                 "previous_user_message": str(state.get("previous_user_message", "")),
                 "last_assistant_message": str(state.get("last_assistant_message", "")),
                 "current_facts": deepcopy(state.get("current_facts", {})),
+                "response_preferences": deepcopy(
+                    state.get("response_preferences", {})
+                ),
                 "memory_interaction": self.memory_interaction_context(
                     conversation_id
                 ),
@@ -318,10 +398,14 @@ class ConversationStateManager:
             {
                 "suppressed_categories": set(),
                 "current_facts": {},
+                "response_preferences": {},
                 "last_task": None,
                 "recent_tasks": [],
                 "last_tool": "",
                 "last_tool_result": None,
+                "prior_memory_facts": [],
+                "prior_memory_operation": {},
+                "prior_client_action": {},
                 "last_user_message": "",
                 "previous_user_message": "",
                 "last_assistant_message": "",
@@ -447,6 +531,19 @@ class ConversationStateManager:
             return set()
         categories = ConversationStateManager.explicit_sensitive_topics(text)
         return categories
+
+    @staticmethod
+    def _response_preference_update(text: str) -> Dict[str, object]:
+        value = re.sub(r"\s+", "", str(text or ""))
+        avoids_repetition = any(
+            term in value
+            for term in ("不要固定", "别固定", "不要总是", "别总是", "不要每次", "别每次")
+        )
+        names_format = any(term in value for term in ("版式", "格式", "模板", "套路"))
+        names_reply = any(term in value for term in ("回答", "回复", "说"))
+        if avoids_repetition and names_format and names_reply:
+            return {"avoid_fixed_memory_format": True}
+        return {}
 
     @staticmethod
     def _current_location(text: str) -> Optional[str]:

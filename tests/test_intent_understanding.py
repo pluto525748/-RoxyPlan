@@ -20,6 +20,7 @@ from modules.growth_manager import GrowthManager
 from modules.intent_router import IntentRouter, LLMIntentParser
 from modules.memory_manager import MemoryManager
 from modules.memory_retriever import MemoryRetriever
+from tests.isolation_support import build_isolated_memory_manager
 
 
 def test_natural_memory_recall_phrases():
@@ -57,6 +58,28 @@ def test_llm_parser_failure_falls_back_to_rules():
     result = router.route("这是一个没有匹配规则的普通问题")
     assert result["intent"] == "chat"
     assert result["source"] == "fallback"
+
+
+def test_semantic_history_queries_use_read_only_guard_before_llm():
+    calls = []
+
+    def should_not_call_model(_messages):
+        calls.append(True)
+        raise AssertionError("history query guard must run before the model")
+
+    router = IntentRouter(
+        LLMIntentParser(should_not_call_model),
+        enable_llm=True,
+    )
+
+    recent = router.route_semantic_decision("你记得刚才说什么")
+    past = router.route_semantic_decision("你记得以前聊过什么")
+
+    assert recent["intent"] == "show_recent_conversation"
+    assert past["intent"] == "show_conversation_history"
+    assert recent["source"] == "history_query_guard"
+    assert past["source"] == "history_query_guard"
+    assert calls == []
 
 
 def test_learning_query_does_not_use_health_from_summary_or_recent_history():
@@ -101,7 +124,7 @@ def test_chat_window_routes_memory_recall_without_model_call():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
-        memory_manager = MemoryManager(root / "memory.json")
+        memory_manager = build_isolated_memory_manager(root)
         memory_manager.add_memory("我正在学习机器学习", category="learning")
         window = ChatWindow(
             memory_manager=memory_manager,
@@ -113,7 +136,7 @@ def test_chat_window_routes_memory_recall_without_model_call():
         )
         window.input_box.setText("你都记住了我的什么信息")
         window.send_message()
-        assert "我正在学习机器学习" in window.transcript.toPlainText()
+        assert "你正在学习机器学习" in window.transcript.toPlainText()
         window.close()
         app.processEvents()
 
@@ -165,7 +188,7 @@ def test_chat_window_ignores_stale_worker_reply():
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         window = ChatWindow(
-            memory_manager=MemoryManager(root / "memory.json"),
+            memory_manager=build_isolated_memory_manager(root),
             growth_service=GrowthManager(root / "growth"),
             chat_history_manager=ChatHistoryManager(root / "private"),
         )

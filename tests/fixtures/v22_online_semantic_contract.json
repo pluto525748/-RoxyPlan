@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.2",
+  "source_fixture": "v21_chinese_context_matrix.json",
+  "description": "Current structured semantic fields for the reviewed online acceptance subset. The V2.1 source fixture remains unchanged.",
+  "cases": {
+    "chat_002": {"subject": "self", "polarity": "", "modality": "", "request_mode": "discuss", "explicit_command": false},
+    "chat_004": {"subject": "self", "polarity": "positive", "modality": "", "request_mode": "discuss", "explicit_command": false},
+    "chat_005": {"subject": "self", "polarity": "positive", "modality": "desire", "request_mode": "discuss", "explicit_command": false},
+    "chat_007": {"subject": "self", "polarity": "negative", "modality": "desire", "request_mode": "discuss", "explicit_command": false},
+    "chat_013": {"subject": "self", "polarity": "", "modality": "hypothetical", "request_mode": "discuss", "explicit_command": false},
+    "chat_014": {"subject": "self", "polarity": "", "modality": "question", "request_mode": "discuss", "explicit_command": false},
+    "chat_017": {"subject": "self", "polarity": "", "modality": "question", "request_mode": "discuss", "explicit_command": false},
+    "chat_020": {"subject": "self", "polarity": "negative", "modality": "commitment", "request_mode": "discuss", "explicit_command": false},
+    "chat_022": {"subject": "self", "polarity": "negative", "modality": "question", "request_mode": "discuss", "explicit_command": false},
+    "chat_025": {"subject": "self", "polarity": "", "modality": "question", "request_mode": "discuss", "explicit_command": false},
+    "read_001": {"subject": "self", "polarity": "positive", "modality": "question", "request_mode": "query", "explicit_command": false, "expected_semantic_calls": 0},
+    "read_010": {"subject": "self", "polarity": "positive", "modality": "question", "request_mode": "query", "explicit_command": false},
+    "read_015": {"subject": "self", "polarity": "positive", "modality": "question", "request_mode": "query", "explicit_command": false},
+    "write_002": {"subject": "other", "polarity": "positive", "modality": "commitment", "request_mode": "execute", "explicit_command": true},
+    "write_004": {"subject": "self", "polarity": "positive", "modality": "commitment", "request_mode": "execute", "explicit_command": true},
+    "write_019": {"subject": "self", "polarity": "positive", "modality": "commitment", "request_mode": "execute", "explicit_command": true},
+    "write_008": {"subject": "self", "polarity": "positive", "modality": "commitment", "request_mode": "execute", "explicit_command": true},
+    "clarify_001": {"subject": "self", "polarity": "positive", "modality": "commitment", "request_mode": "possible_action", "explicit_command": false},
+    "multi_001": {"subject": "self", "polarity": "positive", "modality": "commitment", "request_mode": "execute", "explicit_command": true},
+    "multi_007": {"subject": "self", "polarity": "positive", "modality": "hypothetical", "request_mode": "discuss", "explicit_command": false}
+  }
+}

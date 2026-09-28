@@ -1,5 +1,46 @@
 # RoxyPlan Changelog
 
+## V0.9 / V2.2 - Natural Language and Growth Loop Stabilization (2026-09-23)
+
+- 产品阶段保持 V0.9；V2.2 仅表示现有中文自然语言交互、今日计划、行动记录、正式长期记忆、历史会话和成长复盘闭环的稳定化工作流。
+- 计划新增、查询、完成、删除、编号引用、建议列表选择与批量续接统一经过类型化交互状态、真实对象校验、ToolResult 和回复真实性保护。
+- 正式长期记忆采用明确保存、类型化读取和唯一精确聊天删除入口；候选记忆退出用户入口，仅保留内部兼容结构。
+- 新增按日期成长快照、启动时补齐昨日缺失复盘、自然月统计与成长面板展示；计划外完成事项保留为行动记录。
+- 桌面聊天、Local Web、能力目录、开发日志和最近会话排查复用同一核心业务链；Provider、私人配置和正式用户数据格式保持兼容。
+- 模糊但非核心的表达优先返回完整推荐说法并安全退出，不再持续扩大本地句式规则；没有成功 ToolResult 不得声称执行成功。
+- 本次提交保留当前 dirty worktree 中经过阶段验证的 V2.2 收口成果；各阶段自动化、真实模型和桌面证据按日期记录在 `docs/current_status.md`，不得合并成一次全量通过声明。
+
+## V1.8.3 - Chinese Interaction Reliability Hardening
+
+- 修复 ClientAction UTC aware/本地 naive 时间混用造成舞蹈立即 `action_expired` 的阻断回归。
+- 新增 CapabilityRegistry、ActionPreview、统一 feature flag 校验和非冲突回滚 profile。
+- unified semantic result 禁止 LLMPlanner 再次解释原文；新增通用对话外壳和稳定只读查询边界。
+- `show_plan` 支持显式日期，“明日计划”经过真实 ToolExecutor/Repository 查询。
+- 新增 3500 条单轮、400 组多轮、50 类定性表达覆盖和冻结 final test。
+- 新增 benchmark/可靠性循环、真实 ConversationService 临时数据测试和真实 PySide6 offscreen 两次舞蹈测试。
+- 全量自动测试 406 passed；未修改私人数据，未 commit，未 push。可见桌面手工舞蹈仍待本机补验。
+
+## V1.8.2 - Unified Desktop Client Actions
+
+### Added
+
+- 完整 ClientAction 运行身份字段、`ClientActionResult`、桌面 Dispatcher 和动作声明回复守卫。
+- 舞蹈 busy、重复重放、过期、失败、取消和 failsafe 状态闭环。
+- 当前架构清单、真实调用链、动作协议、状态机、技术债和手动验收文档。
+- 动作契约、Dispatcher、重复舞蹈、真实入口和架构边界测试。
+
+### Changed
+
+- ToolRegistry 不再直接调用 Qt 桌宠；只返回声明式 `client_action`。
+- 桌面端先派发动作并取得 accepted/rejected 结果，再显示经守卫修正的回复。
+- 固定命令、Agent 路径和桌宠菜单统一经过 DesktopClientActionDispatcher。
+- 模型能力提升不改变本地权限边界；模型仍只能提出受限工具与客户端动作。
+
+### Compatibility
+
+- 未修改私人 JSON、舞蹈素材、帧顺序、帧时长、循环次数或数据格式。
+- 旧动作方法保留为委托 Dispatcher 的兼容 wrapper；未 commit 或 push。
+
 ## V1.8 - Unified Interaction and Reliable Execution
 
 ### Added
@@ -9,6 +50,7 @@
 - `PlanService` 与 `BusinessResolver`，使用真实业务数据解析计划、行动记录和记忆对象。
 - `ActionBatch`、`ToolExecutionPlan` 和 `ResponseComposer`，支持多动作顺序执行、依赖跳过、部分成功与确定性事实回复。
 - 中文交互黄金用例，以及状态、语义、业务解析、记忆、计划、行动和跨域流程测试。
+- 默认关闭的脱敏交互诊断快照与受控 JSON 导出。
 
 ### Changed
 
@@ -17,10 +59,14 @@
 - 相似计划不静默重复添加；计划引用、候选编号和会话内序号均需本地校验。
 - `ActionClaimGuard` 同时校验成功声明与“没有计划/记忆/行动”等空数据声明，查询工具不能证明写操作成功。
 - 多动作连接词保留后续动作谓词，避免“再记录”在拆句时退化为普通陈述。
+- 确定性计划查询不再受 Provider 或缓存影响；连续 20 轮保持同一路由。
+- 缺字段、建议选择和后续短句在当前会话内连续补全，不再把第二句话当成新任务。
+- 计划写操作增加真实数据后置校验；多动作中独立步骤可在其他步骤失败后继续执行。
+- 确认规则统一收口到 `ToolRegistry`，区分无需确认、歧义时确认和始终确认。
 
 ### Compatibility
 
-- 新链路由五个默认开启的 feature flags 控制；旧路径暂不删除。
+- 新链路由六个默认开启的 feature flags 控制；旧路径暂不删除。
 - 未修改真实私人 JSON、`modules/llm_client.py` 核心、PySide6 动画、Web API 或数据格式。
 - 未引入 LangGraph、Pydantic AI、数据库、Redis、Docker 或向量数据库。
 

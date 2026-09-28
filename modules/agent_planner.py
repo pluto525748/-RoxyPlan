@@ -19,9 +19,11 @@ class AgentPlan:
 INTENT_TOOL_MAP = {
     "add_plan": "add_plan",
     "show_plan": "show_plan",
+    "inspect_plan_duplicates": "inspect_plan_duplicates",
     "complete_plan": "complete_plan",
     "delete_plan": "delete_plan",
     "update_plan": "update_plan",
+    "merge_plan": "merge_plan",
     "reschedule_plan": "reschedule_plan",
     "reopen_plan": "reopen_plan",
     "cancel_plan": "cancel_plan",
@@ -32,7 +34,7 @@ INTENT_TOOL_MAP = {
     "show_growth_log": "show_growth_log",
     "show_memory": "list_memories",
     "search_memory": "search_memories",
-    "add_memory_request": "create_memory_candidate",
+    "add_memory_request": "save_formal_memory",
     "memory_candidate": "queue_memory_candidate",
     "archive_memory": "archive_memory",
     "restore_memory": "restore_memory",
@@ -107,11 +109,21 @@ class AgentPlanner:
         self.enable_llm = bool(enable_llm)
 
     def plan(self, user_text: str, intent_result: Dict[str, object]) -> AgentPlan:
+        if (
+            bool(intent_result.get("semantic_authoritative", False))
+            and not intent_result.get("resolved_actions")
+        ):
+            print("[Planner] blocked=authoritative_actions_missing", flush=True)
+            return AgentPlan("权威语义未提供已解析动作", [], "authoritative_guard")
         rule = self._rule_plan(user_text, intent_result)
         if rule.steps:
             print("[Planner] source=rule", flush=True)
             return self._bounded(rule)
-        if self.enable_llm and self.llm_planner is not None:
+        if (
+            self.enable_llm
+            and self.llm_planner is not None
+            and not bool(intent_result.get("semantic_authoritative", False))
+        ):
             llm = self.llm_planner.plan(user_text, self.registry.names(enabled_only=True), self.max_steps)
             if llm is not None:
                 print("[Planner] source=llm", flush=True)
@@ -134,6 +146,18 @@ class AgentPlanner:
                 arguments = item.get("arguments", {})
                 if not tool_name or not isinstance(arguments, dict):
                     continue
+                if tool_name in {
+                    "add_plan",
+                    "complete_plan",
+                    "delete_plan",
+                    "reopen_plan",
+                    "cancel_plan",
+                }:
+                    arguments = self._arguments_for(
+                        tool_name,
+                        dict(arguments),
+                        registry=self.registry,
+                    )
                 dependencies = item.get("depends_on", [])
                 steps.append(
                     AgentStep(
@@ -175,7 +199,7 @@ class AgentPlanner:
                 tool = "wake_pet"
         if tool is None:
             return AgentPlan("普通聊天", [])
-        arguments = self._arguments_for(tool, entities)
+        arguments = self._arguments_for(tool, entities, registry=self.registry)
         return AgentPlan(intent, [AgentStep(tool, arguments)])
 
     def _multi_step(self, text: str, entities: Dict[str, object]) -> List[AgentStep]:
@@ -189,7 +213,7 @@ class AgentPlanner:
         return []
 
     @staticmethod
-    def _arguments_for(tool: str, entities: Dict[str, object]) -> Dict[str, object]:
+    def _arguments_for(tool: str, entities: Dict[str, object], *, registry=None) -> Dict[str, object]:
         if tool == "add_plan":
             tasks = entities.get("tasks", [])
             title = tasks[0] if isinstance(tasks, list) and tasks else entities.get("title", "")
@@ -208,22 +232,70 @@ class AgentPlanner:
                 if entities.get(key) not in (None, ""):
                     arguments[key] = entities[key]
             return arguments
-        mapping = {
-            "complete_plan": ("match_text", "query"),
-            "delete_plan": ("task_ref", "task_id" if entities.get("task_id") is not None else "query"),
-            "reopen_plan": ("task_ref", "task_id" if entities.get("task_id") is not None else "query"),
-            "cancel_plan": ("task_ref", "task_id" if entities.get("task_id") is not None else "query"),
-            "add_action_log": ("content", "content"),
-            "search_memories": ("query", "query"),
-            "search_memory": ("query", "query"),
-            "create_memory_candidate": ("content", "content"),
-            "request_add_memory": ("content", "content"),
-            "archive_memory": ("memory_id", "memory_id"),
-            "restore_memory": ("memory_id", "memory_id"),
-            "delete_memory": ("memory_id", "memory_id"),
-            "accept_memory_candidate": ("candidate_id", "candidate_id"),
-            "reject_memory_candidate": ("candidate_id", "candidate_id"),
+        if tool == "show_plan":
+            date = str(entities.get("date", "")).strip()
+            return {"date": date} if date else {}
+        if tool == "list_memories":
+            arguments = {}
+            for key in ("category", "query_mode", "attribute", "topic", "query"):
+                value = str(entities.get(key, "") or "").strip()
+                if value:
+                    arguments[key] = value
+            return arguments
+        if tool == "complete_plan":
+            reference = (
+                entities.get("match_text")
+                or entities.get("task_ref")
+                or entities.get("task_id")
+                or entities.get("query")
+                or entities.get("title")
+            )
+            return {"match_text": str(reference or "")}
+        if tool in {"delete_plan", "reopen_plan", "cancel_plan"}:
+            reference = (
+                entities.get("task_ref")
+                or entities.get("task_id")
+                or entities.get("query")
+                or entities.get("id")
+            )
+            return {"task_ref": str(reference or "")}
+        # ── Passthrough: entities whose keys match the tool's contract ──
+        # Only canonical parameter names and registered field aliases are
+        # passed through.  Metadata fields (source_text, request_mode …)
+        # are excluded.  The Normalizer resolves aliases to canonical names;
+        # the Validator rejects anything still unknown.
+        _PASSTHROUGH_TOOLS = {
+            "add_action_log",
+            "save_daily_review",
+            "show_growth_log",
+            "search_memories",
+            "search_memory",
+            "create_memory_candidate",
+            "save_formal_memory",
+            "request_add_memory",
+            "archive_memory",
+            "restore_memory",
+            "delete_memory",
+            "accept_memory_candidate",
+            "reject_memory_candidate",
         }
+        if tool in _PASSTHROUGH_TOOLS:
+            # Build the set of acceptable input keys from ToolRegistry:
+            # canonical parameter names + registered field aliases.
+            canonical_params = set()
+            if registry is not None:
+                tdef = registry.get(tool)
+                if tdef is not None:
+                    canonical_params = set(tdef.parameters_schema.keys())
+                    alias_map = dict(tdef.field_aliases)
+                    allowed_keys = canonical_params | set(alias_map.keys())
+                    return {
+                        str(k): v
+                        for k, v in entities.items()
+                        if v is not None and str(k) in allowed_keys
+                    }
+            # Fallback: no registry — pass non-None values (test path)
+            return {str(k): v for k, v in entities.items() if v is not None}
         if tool in {"accept_memory_candidates", "reject_memory_candidates"}:
             values = entities.get("candidate_ids", [])
             return {
@@ -241,10 +313,10 @@ class AgentPlanner:
                 "merged_content": entities.get("merged_content", ""),
             }
         if tool == "update_plan":
-            reference = entities.get("task_id") if entities.get("task_id") is not None else entities.get("query")
+            reference = entities.get("task_ref") or entities.get("task_id") or entities.get("query")
             return {"task_ref": str(reference or ""), "changes": dict(entities.get("changes", {}))}
         if tool == "reschedule_plan":
-            reference = entities.get("task_id") if entities.get("task_id") is not None else entities.get("query")
+            reference = entities.get("task_ref") or entities.get("task_id") or entities.get("query")
             return {"task_ref": str(reference or ""), "schedule_text": str(entities.get("schedule_text", ""))}
         if tool == "delete_all_memories":
             return {"scope": "all"}
@@ -254,18 +326,18 @@ class AgentPlanner:
                 "current_message": str(entities.get("current_message", "")),
             }
         if tool == "show_conversation_history":
-            return {
+            arguments = {
                 "current_conversation_id": str(
                     entities.get("current_conversation_id", "")
                 ),
                 "exclude_today": bool(entities.get("exclude_today", False)),
             }
-        if tool in mapping:
-            target, source = mapping[tool]
-            value = entities.get(source)
-            if target == "task_ref" and value is not None:
-                value = str(value)
-            return {target: value}
+            query = str(entities.get("query", "")).strip()
+            if query:
+                arguments["query"] = query
+            if entities.get("limit") not in (None, ""):
+                arguments["limit"] = entities["limit"]
+            return arguments
         return {}
 
     def _bounded(self, plan: AgentPlan) -> AgentPlan:

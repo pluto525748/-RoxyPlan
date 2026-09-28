@@ -1,0 +1,15 @@
+{
+  "required": [
+    "case_id",
+    "semantic_family_id",
+    "split",
+    "text",
+    "capability_id",
+    "request_mode",
+    "expected_intents",
+    "expected_tool_names",
+    "expected_action_count",
+    "forbidden_tools",
+    "side_effect_allowed"
+  ]
+}

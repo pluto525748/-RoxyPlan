@@ -15,17 +15,27 @@ from PySide6.QtWidgets import QApplication
 
 import frontend.desktop_pet as desktop_pet
 from frontend.desktop_pet import DesktopPet
+from modules.chat_history_manager import ChatHistoryManager
+from modules.growth_manager import GrowthManager
 
 
-def make_pet():
+def make_pet(root: Path, monkeypatch):
     app = QApplication.instance() or QApplication([])
+    growth = GrowthManager(root / "growth")
+    history = ChatHistoryManager(root / "history")
+    monkeypatch.setattr(desktop_pet, "GrowthManager", lambda: growth)
+    monkeypatch.setattr(
+        desktop_pet,
+        "ChatHistoryManager",
+        lambda **_kwargs: history,
+    )
     pet = DesktopPet()
     pet.show_bubble = lambda *args, **kwargs: None
     return app, pet
 
 
-def test_manager_blocks_study_during_dance():
-    app, pet = make_pet()
+def test_manager_blocks_study_during_dance(tmp_path, monkeypatch):
+    app, pet = make_pet(tmp_path, monkeypatch)
     pet.action_manager.set_state("dancing")
 
     assert pet.action_manager.play_action("study_reminder") is False
@@ -34,8 +44,8 @@ def test_manager_blocks_study_during_dance():
     app.processEvents()
 
 
-def test_sleeping_jump_wakes_without_jump():
-    app, pet = make_pet()
+def test_sleeping_jump_wakes_without_jump(tmp_path, monkeypatch):
+    app, pet = make_pet(tmp_path, monkeypatch)
     pet._is_sleeping = True
     pet.mark_state("sleep")
     pet.action_manager.set_state("sleeping")
@@ -48,8 +58,8 @@ def test_sleeping_jump_wakes_without_jump():
     app.processEvents()
 
 
-def test_dance_frames_restore_idle():
-    app, pet = make_pet()
+def test_dance_frames_restore_idle(tmp_path, monkeypatch):
+    app, pet = make_pet(tmp_path, monkeypatch)
     original_dir = desktop_pet.DANCE_FRAMES_DIR
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -74,8 +84,8 @@ def test_dance_frames_restore_idle():
             desktop_pet.DANCE_FRAMES_DIR = original_dir
 
 
-def test_context_menu_has_only_user_facing_entries():
-    app, pet = make_pet()
+def test_context_menu_has_only_user_facing_entries(tmp_path, monkeypatch):
+    app, pet = make_pet(tmp_path, monkeypatch)
     menu, _actions = pet._create_context_menu()
     labels = [action.text() for action in menu.actions() if not action.isSeparator()]
 
@@ -91,11 +101,3 @@ def test_context_menu_has_only_user_facing_entries():
         "退出 Roxy",
     ]
     app.processEvents()
-
-
-if __name__ == "__main__":
-    test_manager_blocks_study_during_dance()
-    test_sleeping_jump_wakes_without_jump()
-    test_dance_frames_restore_idle()
-    test_context_menu_has_only_user_facing_entries()
-    print("pet action manager tests passed")

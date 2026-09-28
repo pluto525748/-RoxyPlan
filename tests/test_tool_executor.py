@@ -33,7 +33,9 @@ def test_unknown_invalid_low_and_medium_tools():
         growth, _memory, executor = make_executor(Path(temp))
         assert executor.execute("shell", {}).error == "tool_not_found"
         assert executor.execute("add_plan", {"title": "学习", "extra": 1}).error == "unexpected_parameter"
-        assert executor.execute("show_plan", {}).success
+        listed = executor.execute("show_plan", {})
+        assert listed.success
+        assert listed.operation_kind == "read"
         assert executor.execute("add_plan", {"title": "学习"}, confidence=0.5).error == "clarification_required"
         assert growth.tasks() == []
 

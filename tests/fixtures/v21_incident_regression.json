@@ -1,0 +1,210 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-08-04T20:45:00+08:00",
+  "provenance": "incident_regression",
+  "description": "已知真实桌面事故回归集。这些案例直接来自用户真实对话中发现的缺陷。只能用于证明同一 Bug 不再复发，不计入盲测泛化成绩。",
+  "cases": [
+    {
+      "id": "incident_001",
+      "provenance": "incident_regression",
+      "category": "action_claim_guard",
+      "phenomenon": "schema_rejected_then_chat_impersonates_business",
+      "description": "缺陷一：schema_invalid_entities 后普通聊天回复冒充业务流程（询问几点、多久）",
+      "seed": {},
+      "turns": [
+        {
+          "text": "加个计划",
+          "expect": {
+            "status": "clarification",
+            "tool_calls": [],
+            "forbidden_tools": ["add_plan"],
+            "write_count": 0,
+            "no_claims": true
+          },
+          "semantic": {
+            "mode": "write",
+            "intent": "add_plan",
+            "entities": {"title": ""},
+            "proposed_tool": "add_plan",
+            "confidence": 0.9,
+            "clarification_question": null,
+            "candidate_actions": []
+          }
+        }
+      ],
+      "panel_expectations": {
+        "plan_count": 0
+      }
+    },
+    {
+      "id": "incident_002",
+      "provenance": "incident_regression",
+      "category": "pending_state",
+      "phenomenon": "add_plan_title_only_no_forced_clarify",
+      "description": "缺陷二：等会我要学数学加入今日计划 — title 清晰时直接执行，不强制询问时间",
+      "seed": {},
+      "turns": [
+        {
+          "text": "等会我要学数学加入今日计划",
+          "expect": {
+            "status": "completed",
+            "tool_calls": ["add_plan"],
+            "write_count": 1
+          },
+          "semantic": {
+            "mode": "write",
+            "intent": "add_plan",
+            "entities": {"title": "学数学"},
+            "proposed_tool": "add_plan",
+            "confidence": 0.95,
+            "clarification_question": null,
+            "candidate_actions": []
+          }
+        }
+      ],
+      "panel_expectations": {
+        "plan_count": 1,
+        "plan_titles_contain": ["学数学"]
+      }
+    },
+    {
+      "id": "incident_003",
+      "provenance": "incident_regression",
+      "category": "reference_resolution",
+      "phenomenon": "bare_affirmative_no_raw_assistant_save",
+      "description": "缺陷三：对的 不能将 raw previous_assistant_message 保存为记忆",
+      "seed": {},
+      "turns": [
+        {
+          "text": "对的",
+          "expect": {
+            "status": "chat",
+            "tool_calls": [],
+            "forbidden_tools": ["save_formal_memory", "add_memory_request"],
+            "write_count": 0,
+            "no_claims": true
+          },
+          "semantic": {
+            "mode": "write",
+            "intent": "add_memory_request",
+            "entities": {"content": "previous_assistant_message"},
+            "proposed_tool": "save_formal_memory",
+            "confidence": 0.95,
+            "clarification_question": null,
+            "candidate_actions": []
+          }
+        }
+      ],
+      "panel_expectations": {
+        "memory_count": 0
+      }
+    },
+    {
+      "id": "incident_004",
+      "provenance": "incident_regression",
+      "category": "action_claim_guard",
+      "phenomenon": "completion_claim_without_toolresult_blocked",
+      "description": "缺陷四：回复声称我记住了/已加入/已安排 但没有匹配 ToolResult",
+      "seed": {},
+      "turns": [
+        {
+          "text": "我想每天早上起来喝一杯热牛奶",
+          "expect": {
+            "status": "chat",
+            "tool_calls": [],
+            "forbidden_tools": ["save_formal_memory"],
+            "write_count": 0,
+            "no_claims": true
+          },
+          "semantic": {
+            "mode": "chat",
+            "intent": "chat",
+            "entities": {},
+            "confidence": 0.95,
+            "clarification_question": null,
+            "candidate_actions": []
+          }
+        }
+      ],
+      "panel_expectations": {
+        "memory_count": 0
+      }
+    },
+    {
+      "id": "incident_005",
+      "provenance": "incident_regression",
+      "category": "pending_state",
+      "phenomenon": "time_correction_preserves_pending_duration",
+      "description": "add_plan 不需要时间/时长，title 清晰直接执行，不创建 unnecessary pending。二次确认也不取消。",
+      "seed": {},
+      "turns": [
+        {
+          "text": "等会我要学数学加入今日计划",
+          "expect": {
+            "status": "completed",
+            "tool_calls": ["add_plan"],
+            "write_count": 1
+          },
+          "semantic": {
+            "mode": "write", "intent": "add_plan",
+            "entities": {"title": "学数学"},
+            "proposed_tool": "add_plan", "confidence": 0.95
+          }
+        }
+      ],
+      "panel_expectations": {"plan_count": 1}
+    },
+    {
+      "id": "incident_006",
+      "provenance": "incident_regression",
+      "category": "reference_resolution",
+      "phenomenon": "structured_pending_only_for_affirmative",
+      "description": "助手提议保存两条事实，用户说对的 — 只能消费 structured pending payload，禁止保存助手原文",
+      "seed": {"memories": []},
+      "turns": [
+        {
+          "text": "记住我喜欢看无职转生",
+          "expect": {
+            "status": "completed",
+            "tool_calls": ["save_formal_memory"],
+            "write_count": 1
+          },
+          "semantic": {
+            "mode": "write",
+            "intent": "add_memory_request",
+            "entities": {"content": "我喜欢看无职转生"},
+            "proposed_tool": "save_formal_memory",
+            "confidence": 0.95,
+            "clarification_question": null,
+            "candidate_actions": []
+          }
+        }
+      ],
+      "panel_expectations": {
+        "memory_count": 1,
+        "memory_content_contains": ["无职转生"]
+      }
+    },
+    {
+      "id": "incident_007",
+      "provenance": "incident_regression",
+      "category": "previous_turn_reference",
+      "phenomenon": "previous_user_turn_plan_reference",
+      "description": "案例 A：用户先说晚上想学电路，再明确把它加入计划。第一轮 clarification，第二轮 add_plan",
+      "seed": {},
+      "turns": [
+        {
+          "text": "晚上我想学会电路基础知识",
+          "expect": {"status": "clarification", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.95}
+        },
+        {
+          "text": "把学习电路基础知识加入今日计划",
+          "expect": {"status": "completed", "tool_calls": ["add_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "add_plan", "entities": {"title": "学习电路基础知识"}, "proposed_tool": "add_plan", "confidence": 0.95}
+        }
+      ],
+      "panel_expectations": {"plan_count": 1, "plan_titles_contain": ["电路"]}
+    }
+  ]
+}

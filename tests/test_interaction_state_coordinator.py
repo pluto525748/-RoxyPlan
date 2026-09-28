@@ -66,6 +66,93 @@ def test_plain_chat_is_not_consumed_as_control():
     assert coordinator.current("a").state == "awaiting_clarification"
 
 
+def test_low_risk_continuations_outlive_short_confirmation_window():
+    clock = [datetime(2026, 8, 20, 9, 0, 0)]
+    coordinator = InteractionStateCoordinator(
+        now_provider=lambda: clock[0],
+        ttl_seconds=300,
+        continuation_ttl_seconds=1200,
+        confirmation_ttl_seconds=180,
+    )
+    coordinator.awaiting_choice("choice", "advice_or_action_choice")
+    coordinator.awaiting_clarification(
+        "clarification", "missing_slots", missing_fields=["duration_minutes"]
+    )
+    coordinator.awaiting_confirmation("confirmation", "dangerous_tool")
+
+    clock[0] += timedelta(seconds=181)
+
+    assert coordinator.current("choice").state == "awaiting_choice"
+    assert coordinator.current("clarification").state == "awaiting_clarification"
+    assert coordinator.current("confirmation").state == "expired"
+
+    clock[0] += timedelta(seconds=120)
+
+    assert coordinator.current("choice").state == "awaiting_choice"
+    assert coordinator.current("clarification").state == "awaiting_clarification"
+
+    clock[0] += timedelta(seconds=900)
+
+    assert coordinator.current("choice").state == "expired"
+    assert coordinator.current("clarification").state == "expired"
+
+
+def test_legacy_ttl_still_applies_to_every_pending_state_without_overrides():
+    clock = [datetime(2026, 8, 20, 9, 0, 0)]
+    coordinator = InteractionStateCoordinator(
+        now_provider=lambda: clock[0], ttl_seconds=20
+    )
+    coordinator.awaiting_choice("choice", "advice_choice")
+    coordinator.awaiting_confirmation("confirmation", "dangerous_tool")
+
+    clock[0] += timedelta(seconds=21)
+
+    assert coordinator.current("choice").state == "expired"
+    assert coordinator.current("confirmation").state == "expired"
+
+
+def test_pending_state_change_restarts_ttl_for_the_new_state_class():
+    clock = [datetime(2026, 8, 20, 9, 0, 0)]
+    coordinator = InteractionStateCoordinator(
+        now_provider=lambda: clock[0],
+        ttl_seconds=300,
+        continuation_ttl_seconds=1200,
+        confirmation_ttl_seconds=180,
+    )
+    coordinator.awaiting_choice("conversation", "advice_choice")
+    clock[0] += timedelta(seconds=1100)
+
+    updated = coordinator.update(
+        "conversation",
+        state="awaiting_clarification",
+        interaction_kind="missing_slots",
+        missing_fields=["duration_minutes"],
+    )
+
+    assert updated.expires_at == "2026-08-20T09:38:20"
+    clock[0] += timedelta(seconds=101)
+    assert coordinator.current("conversation").state == "awaiting_clarification"
+
+    coordinator.mark_tool_pending("conversation", ["call_1"])
+    assert coordinator.current("conversation").expires_at == "2026-08-20T09:25:01"
+    clock[0] += timedelta(seconds=301)
+    assert coordinator.current("conversation").state == "expired"
+
+
+def test_candidate_objects_and_tool_call_ids_round_trip():
+    coordinator = InteractionStateCoordinator()
+    coordinator.start(
+        "candidate-round-trip",
+        "object_selection",
+        "awaiting_choice",
+        candidate_objects=[{"uid": "task_1", "title": "学习"}],
+        tool_call_ids=["call_1"],
+    )
+    restored = coordinator.current("candidate-round-trip")
+    assert restored.candidate_objects == [{"uid": "task_1", "title": "学习"}]
+    assert restored.tool_call_ids == ["call_1"]
+
+
 if __name__ == "__main__":
     test_state_round_trip_and_selection_persists()
     test_cancel_expire_single_consumption_and_conversation_isolation()

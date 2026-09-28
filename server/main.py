@@ -126,6 +126,16 @@ def create_app(
         return get_agent_service().model_status()
 
     @application.get(
+        "/v1/personas",
+        dependencies=[Depends(require_local_access)],
+    )
+    def list_personas():
+        return {
+            "active_persona_id": get_agent_service().persona_registry.active_persona_id,
+            "personas": get_agent_service().available_personas(),
+        }
+
+    @application.get(
         "/v1/model-usage",
         dependencies=[Depends(require_local_access)],
     )

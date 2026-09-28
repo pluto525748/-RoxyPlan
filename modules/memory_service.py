@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 from modules.memory_candidate_manager import MemoryCandidateManager
 from modules.memory_governance import MemoryGovernanceService
 from modules.memory_manager import MemoryManager
+from modules.memory_read import (
+    MemoryReadRequest,
+    TypedMemoryReader,
+    VALID_MEMORY_ATTRIBUTES,
+    VALID_MEMORY_READ_MODES,
+)
 from modules.repositories.local_json_memory_repository import LocalJsonMemoryRepository
 
 
@@ -163,6 +171,68 @@ class MemoryService:
         except (OSError, TypeError, ValueError):
             return self._failed(operation, "memory_read_failed", "长期记忆暂时无法读取。")
 
+    def read_typed_memory(
+        self,
+        *,
+        query_mode: str = "overview",
+        attribute: str = "",
+        topic: str = "",
+        query: str = "",
+        category: Optional[str] = None,
+    ) -> MemoryOperationResult:
+        """Read a verified, typed view without mutating memory usage metadata."""
+
+        operation = "list_memories"
+        if query_mode not in VALID_MEMORY_READ_MODES:
+            return self._validation(operation, "invalid_memory_read_mode")
+        if attribute and attribute not in VALID_MEMORY_ATTRIBUTES:
+            return self._validation(operation, "invalid_memory_read_attribute")
+        if query_mode == "attribute" and not attribute:
+            return self._validation(operation, "missing_memory_read_attribute")
+        if query_mode in {"existence", "provenance"} and not (attribute or str(query or "").strip()):
+            return self._validation(operation, "missing_memory_read_query")
+        request = MemoryReadRequest.from_arguments(
+            {
+                "query_mode": query_mode,
+                "attribute": attribute,
+                "topic": topic,
+                "query": query,
+            }
+        )
+        try:
+            snapshot = TypedMemoryReader(self.memory_manager).read(
+                request,
+                category=str(category or "").strip(),
+            )
+            # Keep ``memories`` for the existing overview presenter and UI
+            # adapters.  Typed callers use ``memory_read`` as the authority.
+            verified_ids = {
+                int(item.memory_id)
+                for item in snapshot.facts
+                if item.memory_id is not None
+            }
+            memories = [
+                item
+                for item in self.memory_manager.memories(
+                    "active", category=str(category or "").strip() or None
+                )
+                if int(item.get("id", 0) or 0) in verified_ids
+            ]
+            return self._ok(
+                operation,
+                "已读取长期记忆。",
+                {
+                    "memories": memories,
+                    "memory_read": snapshot.to_dict(),
+                },
+            )
+        except (OSError, TypeError, ValueError):
+            return self._failed(
+                operation,
+                "memory_read_failed",
+                "长期记忆暂时无法读取。",
+            )
+
     def get_memory(self, memory_id: object) -> MemoryOperationResult:
         operation = "get_memory"
         parsed = self._positive_id(memory_id)
@@ -212,6 +282,7 @@ class MemoryService:
         source_text: str = "",
         source: str = "conversation",
         explicit: bool = True,
+        source_role: str = "user",
     ) -> MemoryOperationResult:
         operation = "create_memory_candidate"
         clean_content = str(content or "").strip()
@@ -222,6 +293,7 @@ class MemoryService:
                 source_text or clean_content,
                 explicit=explicit,
                 source=source,
+                source_role=source_role,
             )
         except (OSError, TypeError, ValueError):
             return self._failed(operation, "candidate_create_failed", "候选记忆暂时没有保存成功。")
@@ -256,6 +328,258 @@ class MemoryService:
             "候选记忆暂时没有保存成功。",
             data=proposal,
         )
+
+    def save_formal_memory(
+        self,
+        content: str,
+        *,
+        category: Optional[str] = None,
+        source: str = "explicit_user_command",
+        confirmed: bool = False,
+    ) -> MemoryOperationResult:
+        """Save an explicit user memory without exposing the candidate workflow.
+
+        Candidate governance remains available only as a compatibility API.
+        This method is the single explicit-save entry; the user's explicit
+        command is the authorization to create or update formal memory.
+        """
+        operation = "save_formal_memory"
+        clean_content = str(content or "").strip()
+        if not clean_content:
+            return self._formal_validation(operation, "empty_content")
+
+        try:
+            classified = self.governance._classify_candidate(
+                clean_content,
+                explicit=True,
+            )
+            inferred_category = classified[0] if classified else "other"
+            resolved_category = self.governance.to_memory_category(
+                str(category or inferred_category)
+            )
+            relation = self.governance.assess_relation(
+                clean_content,
+                resolved_category,
+            )
+        except (OSError, TypeError, ValueError):
+            return self._formal_failed(
+                operation,
+                "memory_assessment_failed",
+                "这次没有成功保存长期记忆。",
+            )
+
+        related = relation.get("memory")
+        related = related if isinstance(related, dict) else {}
+        related_id = self._positive_id(related.get("id"))
+        relation_kind = str(relation.get("relation", "new"))
+        base_data = self._formal_data(
+            final_content=clean_content,
+            category=resolved_category,
+            operation="failed",
+            duplicate_of=related_id if relation_kind == "exact_duplicate" else None,
+            conflict_id=related_id if relation_kind == "conflict" else None,
+        )
+
+        if relation_kind == "exact_duplicate" and related_id is not None:
+            return MemoryOperationResult(
+                True,
+                "success",
+                operation,
+                memory_id=related_id,
+                content_summary=self._summary(related.get("content", clean_content)),
+                safe_message="这件事我已经记得了。",
+                data=self._formal_data(
+                    final_content=str(related.get("content", clean_content)),
+                    category=str(related.get("category", resolved_category)),
+                    operation="duplicate",
+                    duplicate_of=related_id,
+                ),
+            )
+
+        try:
+            if relation_kind in {"conflict", "near_duplicate", "mergeable"} and related_id:
+                updated = self.memory_manager.update_memory(
+                    related_id,
+                    content=clean_content,
+                    category=resolved_category,
+                )
+                if updated is None:
+                    return self._formal_failed(
+                        operation,
+                        "memory_update_failed",
+                        "这次没有成功保存长期记忆。",
+                        data=base_data,
+                    )
+                return MemoryOperationResult(
+                    True,
+                    "success",
+                    operation,
+                    memory_id=related_id,
+                    content_summary=self._summary(updated.get("content")),
+                    safe_message="好，我已经更新这条长期记忆。",
+                    data=self._formal_data(
+                        final_content=str(updated.get("content", clean_content)),
+                        category=str(updated.get("category", resolved_category)),
+                        operation="updated" if relation_kind == "conflict" else "merged",
+                    ),
+                )
+
+            saved = self.memory_manager.add_memory(
+                clean_content,
+                category=resolved_category,
+                source=source,
+                allow_conflict=True,
+                allow_similar=True,
+            )
+        except (OSError, TypeError, ValueError):
+            return self._formal_failed(
+                operation,
+                "memory_save_failed",
+                "这次没有成功保存长期记忆。",
+                data=base_data,
+            )
+
+        saved_memory = saved.get("memory") if isinstance(saved, dict) else None
+        saved_memory = saved_memory if isinstance(saved_memory, dict) else {}
+        saved_id = self._positive_id(saved_memory.get("id"))
+        saved_status = str(saved.get("status", "")) if isinstance(saved, dict) else ""
+        if saved_status == "duplicate" and saved_id is not None:
+            return MemoryOperationResult(
+                True,
+                "success",
+                operation,
+                memory_id=saved_id,
+                content_summary=self._summary(saved_memory.get("content", clean_content)),
+                safe_message="这件事我已经记得了。",
+                data=self._formal_data(
+                    final_content=str(saved_memory.get("content", clean_content)),
+                    category=str(saved_memory.get("category", resolved_category)),
+                    operation="duplicate",
+                    duplicate_of=saved_id,
+                ),
+            )
+        if saved_status == "added" and saved_id is not None:
+            return MemoryOperationResult(
+                True,
+                "success",
+                operation,
+                memory_id=saved_id,
+                content_summary=self._summary(saved_memory.get("content", clean_content)),
+                safe_message=f"好，我记住了：{saved_memory.get('content', clean_content)}。",
+                data=self._formal_data(
+                    final_content=str(saved_memory.get("content", clean_content)),
+                    category=str(saved_memory.get("category", resolved_category)),
+                    operation="created",
+                    undo_available=True,
+                ),
+            )
+        return self._formal_failed(
+            operation,
+            "memory_save_failed",
+            "这次没有成功保存长期记忆。",
+            data=base_data,
+        )
+
+    @staticmethod
+    def _formal_data(
+        *,
+        final_content: str,
+        category: str,
+        operation: str,
+        duplicate_of: Optional[int] = None,
+        conflict_id: Optional[int] = None,
+        undo_available: bool = False,
+        error_code: Optional[str] = None,
+    ) -> Dict[str, object]:
+        return {
+            "final_content": final_content,
+            "category": category,
+            "operation": operation,
+            "duplicate_of": duplicate_of,
+            "conflict_id": conflict_id,
+            "undo_available": bool(undo_available),
+            "error_code": error_code,
+        }
+
+    def _formal_validation(self, operation: str, error_code: str) -> MemoryOperationResult:
+        return MemoryOperationResult(
+            False,
+            "validation_error",
+            operation,
+            error_code=error_code,
+            safe_message="请明确告诉我要保存哪条长期记忆。",
+            data=self._formal_data(
+                final_content="",
+                category="other",
+                operation="failed",
+                error_code=error_code,
+            ),
+        )
+
+    def _formal_failed(
+        self,
+        operation: str,
+        error_code: str,
+        message: str,
+        *,
+        data: Optional[Dict[str, object]] = None,
+    ) -> MemoryOperationResult:
+        return MemoryOperationResult(
+            False,
+            "failed",
+            operation,
+            error_code=error_code,
+            safe_message=message,
+            data=data or self._formal_data(
+                final_content="",
+                category="other",
+                operation="failed",
+                error_code=error_code,
+            ),
+        )
+
+    def _formal_confirmation_required(
+        self,
+        operation: str,
+        content: str,
+        category: str,
+        related_id: Optional[int],
+    ) -> MemoryOperationResult:
+        data = self._formal_data(
+            final_content=content,
+            category=category,
+            operation="conflict_requires_confirmation",
+            conflict_id=related_id,
+        )
+        data["confirmation"] = self._formal_confirmation(content, category, "explicit_user_command")
+        return MemoryOperationResult(
+            False,
+            "confirmation_required",
+            operation,
+            memory_id=related_id,
+            content_summary=self._summary(content),
+            error_code="confirmation_required",
+            safe_message="这和现有的记忆不一致，需要你确认后才能更新。",
+            data=data,
+        )
+
+    @staticmethod
+    def _formal_confirmation(content: str, category: str, source: str) -> Dict[str, object]:
+        now = datetime.now()
+        return {
+            "confirmation_id": "formal_memory_" + uuid4().hex,
+            "tool": "save_formal_memory",
+            "arguments": {
+                "content": content,
+                "category": category,
+                "source": source,
+                "confirmed": True,
+            },
+            "created_at": now.isoformat(timespec="seconds"),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(timespec="seconds"),
+            "summary": "确认后我会直接保存为正式长期记忆。",
+            "risk_level": "medium",
+        }
 
     def list_candidates(
         self, *, status: Optional[str] = "pending"

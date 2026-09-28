@@ -17,7 +17,7 @@ from modules.growth import ActionLogStore, GrowthLogStore, GrowthService
 from modules.today_plan import TodayPlanStore
 
 
-class TestClock:
+class FakeClock:
     def __init__(self, value):
         self.value = value
 
@@ -101,7 +101,7 @@ def test_chat_commands_add_view_complete_and_review():
 
 def test_date_change_archives_previous_day():
     with tempfile.TemporaryDirectory() as temp_dir:
-        clock = TestClock(datetime(2026, 7, 15, 23, 50, 0))
+        clock = FakeClock(datetime(2026, 7, 15, 23, 50, 0))
         store = TodayPlanStore(Path(temp_dir) / "today_plan.json", now_provider=clock)
         store.add_task("整理今日笔记")
 

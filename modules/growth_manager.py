@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -254,6 +255,93 @@ class GrowthManager:
         print("[Growth] update task", flush=True)
         return dict(task), True, "updated"
 
+    def merge_tasks(
+        self,
+        target_id: int,
+        duplicate_ids: List[int],
+        changes: Dict[str, object],
+        date: Optional[str] = None,
+    ) -> Tuple[Optional[Dict[str, object]], List[Dict[str, object]], bool, str]:
+        """Merge verified same-day tasks and persist the result once.
+
+        The caller owns semantic comparison and the confirmation preview.  This
+        method only applies the already-confirmed merge atomically at the plan
+        repository boundary.  A mixed completion state remains pending; only a
+        group whose every source task is complete stays complete.
+        """
+        allowed = {"title", "time_slot", "duration_minutes", "priority", "note"}
+        requested = {key: value for key, value in dict(changes).items() if key in allowed}
+        duplicate_id_set = {
+            int(value) for value in duplicate_ids if int(value) != int(target_id)
+        }
+        target_date = date or self._today()
+        with self.repository.transaction("plan"):
+            self._refresh_plan()
+            task_list = self._plan_day(target_date)["tasks"]
+            target = next(
+                (item for item in task_list if int(item.get("id", 0)) == int(target_id)),
+                None,
+            )
+            duplicates = [
+                item
+                for item in task_list
+                if int(item.get("id", 0)) in duplicate_id_set
+            ]
+            if target is None or len(duplicates) != len(duplicate_id_set):
+                return None, [], False, "not_found"
+            sources = [target, *duplicates]
+            for item in sources:
+                self._normalize_task(item, target_date)
+            if any(item.get("status") == "cancelled" for item in sources):
+                return dict(target), [], False, "cancelled_requires_reopen"
+
+            if "title" in requested:
+                title = str(requested["title"]).strip()
+                if not title:
+                    return dict(target), [], False, "invalid_title"
+                target["title"] = title
+            if "time_slot" in requested:
+                target["time_slot"] = str(requested["time_slot"]).strip()
+            if "duration_minutes" in requested:
+                duration = self._normalize_duration(requested["duration_minutes"])
+                if duration is None:
+                    return dict(target), [], False, "invalid_duration"
+                target["duration_minutes"] = duration
+            if "priority" in requested:
+                target["priority"] = self._normalize_priority(requested["priority"])
+            if "note" in requested:
+                target["note"] = str(requested["note"]).strip()
+
+            all_completed = bool(sources) and all(
+                bool(item.get("done")) and item.get("status") == "completed"
+                for item in sources
+            )
+            target["done"] = all_completed
+            target["status"] = "completed" if all_completed else "pending"
+            target["done_at"] = (
+                max(
+                    (str(item.get("done_at") or "") for item in sources),
+                    default="",
+                )
+                or None
+                if all_completed
+                else None
+            )
+            target["cancelled_at"] = None
+            target["updated_at"] = self._now().isoformat(timespec="seconds")
+            removed = [dict(item) for item in duplicates]
+            if duplicates:
+                task_list[:] = [
+                    item
+                    for item in task_list
+                    if int(item.get("id", 0)) not in duplicate_id_set
+                ]
+            if not self.repository.save_plan(self.plan_data):
+                self._refresh_plan()
+                raise OSError("Failed to save merged plans")
+        print("[Growth] merge tasks", flush=True)
+        return dict(target), removed, True, "merged" if removed else "already_merged"
+
     def reopen_task(
         self,
         task_id: int,
@@ -380,12 +468,36 @@ class GrowthManager:
         return [dict(record) for record in day["records"] if isinstance(record, dict)]
 
     def generate_review(self, date: Optional[str] = None) -> Dict[str, object]:
-        target_date = date or self._today()
+        target_date = self._validated_date(date or self._today())
         task_list = self.tasks(target_date)
         records = self.records_for_date(target_date)
+        return self._build_review(target_date, task_list, records)
+
+    def _build_review(
+        self,
+        target_date: str,
+        task_list: List[Dict[str, object]],
+        records: List[Dict[str, object]],
+    ) -> Dict[str, object]:
         completed = [str(task.get("title", "")) for task in task_list if task.get("done", False)]
         pending = [str(task.get("title", "")) for task in task_list if not task.get("done", False)]
         actions = [str(record.get("content", "")) for record in records if record.get("content")]
+        plan_snapshot = [
+            {
+                "stable_id": str(task.get("uid") or task.get("id") or ""),
+                "title": str(task.get("title", "")).strip(),
+                "done": bool(task.get("done", False)),
+                "status": str(task.get("status", "pending") or "pending"),
+                "date": str(task.get("date") or target_date),
+                "time_slot": str(task.get("time_slot", "")).strip(),
+                "duration_minutes": task.get("duration_minutes"),
+            }
+            for task in task_list
+            if isinstance(task, dict)
+        ]
+        action_records = [
+            dict(record) for record in records if isinstance(record, dict)
+        ]
 
         if completed and pending:
             encouragement = "已经推进的部分很扎实，剩下的可以明天继续拆小一点。"
@@ -401,12 +513,13 @@ class GrowthManager:
         completed_text = "、".join(completed) or "暂无"
         pending_text = "、".join(pending) or "暂无"
         action_text = "、".join(actions) or "暂无"
+        date_label = "今天" if target_date == self._today() else target_date
         text = (
-            f"今天你计划了 {len(task_list)} 件事，完成了 {len(completed)} 件，"
+            f"{date_label}你计划了 {len(task_list)} 件事，完成了 {len(completed)} 件，"
             f"还有 {len(pending)} 件未完成。\n"
             f"已完成：{completed_text}\n"
             f"未完成：{pending_text}\n"
-            f"行动记录 {len(actions)} 条：{action_text}\n"
+            f"计划外行动 {len(actions)} 条：{action_text}\n"
             f"{encouragement}"
         )
         review = {
@@ -418,6 +531,8 @@ class GrowthManager:
             "completed_tasks": completed,
             "pending_tasks": pending,
             "actions": actions,
+            "plan_snapshot": plan_snapshot,
+            "action_records": action_records,
             "encouragement": encouragement,
             "text": text,
         }
@@ -446,7 +561,46 @@ class GrowthManager:
                 self._refresh_growth()
                 raise OSError("Failed to save growth review")
         print("[Growth] save review", flush=True)
-        return dict(entry)
+        return deepcopy(entry)
+
+    def ensure_review_for_date(self, date: str) -> Dict[str, object]:
+        """Create one verified local review if and only if that day needs one.
+
+        The growth-store transaction makes the final existence check and write
+        atomic.  Existing entries are returned byte-for-byte-equivalent and are
+        never revised by this automatic path.
+        """
+        target_date = self._validated_date(date)
+        task_list = self.tasks(target_date)
+        records = self.records_for_date(target_date)
+        with self.repository.transaction("growth"):
+            self._refresh_growth()
+            entries = self.growth_data.setdefault("entries", {})
+            existing = entries.get(target_date)
+            if isinstance(existing, dict):
+                return {
+                    "status": "existing",
+                    "created": False,
+                    "entry": deepcopy(existing),
+                }
+            if not task_list and not records:
+                return {"status": "empty", "created": False, "entry": None}
+            review = self._build_review(target_date, task_list, records)
+            now_text = self._now().isoformat(timespec="seconds")
+            entry = {
+                "uid": f"review_{target_date}",
+                "date": target_date,
+                "saved_at": now_text,
+                "created_at": now_text,
+                "updated_at": now_text,
+                "revision": 1,
+                "review": review,
+            }
+            entries[target_date] = entry
+            if not self.repository.save_growth(self.growth_data):
+                self._refresh_growth()
+                raise OSError("Failed to save growth review")
+        return {"status": "created", "created": True, "entry": deepcopy(entry)}
 
     def entries(self) -> List[Dict[str, object]]:
         self._refresh_growth()
@@ -459,6 +613,44 @@ class GrowthManager:
         if limit <= 0:
             return []
         return list(reversed(self.entries()))[:limit]
+
+    def current_month(self) -> str:
+        return self._now().strftime("%Y-%m")
+
+    def entries_for_month(self, month: Optional[str] = None) -> List[Dict[str, object]]:
+        target_month = self._validated_month(month or self.current_month())
+        prefix = target_month + "-"
+        return [
+            deepcopy(entry)
+            for entry in self.entries()
+            if str(entry.get("date", "")).startswith(prefix)
+        ]
+
+    def monthly_statistics(self, month: Optional[str] = None) -> Dict[str, object]:
+        target_month = self._validated_month(month or self.current_month())
+        entries = self.entries_for_month(target_month)
+        total = 0
+        done = 0
+        pending = 0
+        action_count = 0
+        for entry in entries:
+            review = entry.get("review", {})
+            review = review if isinstance(review, dict) else {}
+            total += int(review.get("total", 0) or 0)
+            done += int(review.get("done", 0) or 0)
+            pending += int(review.get("pending", 0) or 0)
+            action_count += int(
+                review.get("action_count", len(review.get("actions", []))) or 0
+            )
+        return {
+            "month": target_month,
+            "logged_days": len(entries),
+            "total_plans": total,
+            "completed_plans": done,
+            "pending_plans": pending,
+            "action_count": action_count,
+            "completion_rate": round(done / total, 4) if total else 0.0,
+        }
 
     def _plan_day(self, date: Optional[str] = None) -> Dict[str, object]:
         target_date = date or self._today()
@@ -574,6 +766,28 @@ class GrowthManager:
 
     def _now(self) -> datetime:
         return self.now_provider()
+
+    @staticmethod
+    def _validated_date(value: object) -> str:
+        text = str(value or "").strip()
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as error:
+            raise ValueError("date must use YYYY-MM-DD") from error
+        if parsed.strftime("%Y-%m-%d") != text:
+            raise ValueError("date must use YYYY-MM-DD")
+        return text
+
+    @staticmethod
+    def _validated_month(value: object) -> str:
+        text = str(value or "").strip()
+        try:
+            parsed = datetime.strptime(text, "%Y-%m")
+        except ValueError as error:
+            raise ValueError("month must use YYYY-MM") from error
+        if parsed.strftime("%Y-%m") != text:
+            raise ValueError("month must use YYYY-MM")
+        return text
 
     def _normalize_task(
         self,

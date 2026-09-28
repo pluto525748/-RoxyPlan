@@ -31,11 +31,11 @@ def test_tools_are_registered_with_required_metadata():
     with tempfile.TemporaryDirectory() as temp:
         registry = make_registry(Path(temp))
         expected = {
-            "add_plan", "show_plan", "complete_plan", "delete_plan",
-            "update_plan", "reschedule_plan", "reopen_plan", "cancel_plan",
+            "add_plan", "show_plan", "inspect_plan_duplicates", "complete_plan", "delete_plan",
+            "update_plan", "merge_plan", "reschedule_plan", "reopen_plan", "cancel_plan",
             "add_action_log", "show_action_log", "generate_daily_review", "save_daily_review",
             "show_growth_log", "list_memories", "search_memories",
-            "show_memory", "search_memory", "create_memory_candidate",
+            "show_memory", "search_memory", "save_formal_memory", "create_memory_candidate",
             "request_add_memory", "archive_memory", "restore_memory",
             "queue_memory_candidate", "list_memory_candidates", "show_memory_candidates",
             "accept_memory_candidate", "reject_memory_candidate",

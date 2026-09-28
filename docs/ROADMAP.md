@@ -1,6 +1,25 @@
 # RoxyPlan Roadmap
 
-RoxyPlan 当前核心处于 **V1.8 可靠交互闭环原型**阶段。路线图区分已实现版本与计划内容，不代表固定交付承诺。
+RoxyPlan 当前核心处于 **V1.8.3 中文交互可靠性工程原型**阶段。路线图区分已实现版本与计划内容，不代表固定交付承诺。
+
+## V1.8.3：可靠性、能力目录与评测闭环
+
+- 恢复真实舞蹈派发，统一 UTC 过期判断并通过两次 PySide6 offscreen 播放。
+- 建立 CapabilityRegistry、ActionPreview、feature flag 矩阵和 authoritative semantic 边界。
+- 建立 3500 条单轮、400 组多轮的中文闭集数据与冻结 final hash。
+- 保存基线、10 轮改进记录和最终报告；不把 benchmark 结果宣称为全部中文能力。
+- 下一步只补人工桌面验收、人工 gold entities/引用/多动作指标和真实用户反馈，不扩展业务功能。
+
+## V1.8.2：桌宠客户端动作收口
+
+已实现：
+
+- 固定命令、Agent Tool Calling 和桌宠菜单统一生成声明式 ClientAction。
+- DesktopClientActionDispatcher 在 UI 线程执行白名单动作。
+- 动作请求、运行、busy、重复、过期、失败、取消和 idle 释放闭环。
+- 回复在动作 accepted/rejected 后修正，避免“说已跳舞但实际未播放”。
+- 模型能力提升与本地执行权限解耦：更强模型不绕过 ToolRegistry、SafetyPolicy 或 Dispatcher。
+- 架构清单、调用链、技术债、协议、状态机和验收基线。
 
 ## V0.8：桌宠交互底座
 
@@ -86,7 +105,7 @@ RoxyPlan 当前核心处于 **V1.8 可靠交互闭环原型**阶段。路线图�
 - 统一 `ToolResult`，工具异常在执行边界捕获，界面不依赖 Manager 的特殊返回结构。
 - 规则优先的单步骤和最多三步骤规划；前一步失败时停止依赖步骤。
 - 可选 LLM Planner 只接受注册工具和受限 JSON，失败时回退规则规划。
-- 低、中、高三级风险策略；删除、归档、恢复、清空类操作始终二次确认。
+- 低、中、高三级风险策略；删除、清空和不可逆高风险操作始终二次确认，可逆归档/恢复按当前统一策略执行。
 - 确认绑定工具和参数并在运行时过期，不写入长期记忆。
 - 设置面板提供 Agent Core、多步骤规划、模型规划辅助、最大步骤数和中风险阈值。
 - 明确排除 Shell、任意文件读写和任意电脑控制。
@@ -220,12 +239,16 @@ RoxyPlan 当前核心处于 **V1.8 可靠交互闭环原型**阶段。路线图�
 - 计划、行动记录和记忆审核共享同一条 `ConversationService` 执行链，模型不能直接写 JSON 或信任自造 ID。
 - `ActionBatch` 和 `ToolExecutionPlan` 支持最多三项的顺序执行、依赖跳过、幂等和部分成功。
 - `ResponseComposer` 依据真实 `ToolResult` 生成事实回复；`ActionClaimGuard` 校验修改和空数据声明。
+- 确定性查询固定走本地只读工具；缺字段、建议选择和对象选择可在后续短句中继续。
+- 计划写工具执行后重新读取真实数据验证后置条件，失败时不产生成功声明或最近对象引用。
+- `ToolRegistry` 统一 `never / when_ambiguous / always` 确认策略，候选审核和可逆操作不重复确认。
+- 可选脱敏诊断快照记录路由、候选、解析、工具结果和 Provider 元数据，默认关闭。
 - 新会话保留长期业务数据，但不会继承上一会话的“刚才那个”和待确认操作。
 - 中文黄金用例和跨业务临时目录测试覆盖记忆、计划、行动、普通聊天与桌宠舞蹈路由。
 
 兼容策略：
 
-- 旧语义路径暂时保留，五个 feature flag 可分别回滚。
+- 旧语义路径暂时保留，六个 feature flag 可分别回滚。
 - 不迁移现有 JSON，不升级 Python/Pydantic，不引入 Agent 大型框架。
 
 ## Local Web V0.1 / V1.5：局域网移动控制台

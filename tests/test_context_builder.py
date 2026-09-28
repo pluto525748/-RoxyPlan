@@ -63,6 +63,29 @@ def test_empty_history_does_not_fail():
     assert result[-1] == {"role": "user", "content": "你好"}
 
 
+def test_verified_turn_facts_are_required_system_context():
+    builder = ContextBuilder(character_budget=1000)
+    verified = "程序已核验的本轮事实：本轮没有执行工具。"
+
+    result = builder.build(
+        personality_context="人格" * 1000,
+        memory_context="记忆" * 1000,
+        session_summary="摘要" * 1000,
+        recent_messages=[],
+        knowledge_context="知识" * 1000,
+        current_user_input="这些计划都完成了",
+        instruction="回答要求",
+        verified_turn_context=verified,
+    )
+
+    assert any(item["role"] == "system" and item["content"] == verified for item in result)
+    diagnostic = next(
+        item for item in builder.last_diagnostics if item.name == "verified_turn_facts"
+    )
+    assert diagnostic.source == "runtime_verification"
+    assert diagnostic.trimmed is False
+
+
 if __name__ == "__main__":
     test_context_is_bounded_and_current_input_is_not_duplicated()
     test_summary_is_injected_before_recent_messages()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 
 CHINESE_DIGITS = {
@@ -55,13 +55,17 @@ class ChineseEntityParser:
         now = self.now_provider()
         if "后天" in value:
             result["date"] = (now.date() + timedelta(days=2)).isoformat()
-        elif "明天" in value or "明早" in value:
+        elif "明天" in value or "明日" in value or "明早" in value:
             result["date"] = (now.date() + timedelta(days=1)).isoformat()
+        elif "昨天" in value or "昨日" in value:
+            result["date"] = (now.date() - timedelta(days=1)).isoformat()
         elif "今天" in value or "今晚" in value:
             result["date"] = now.date().isoformat()
 
         if any(term in value for term in ("明早", "早上", "上午")):
             result["time_period"] = "上午"
+        elif "中午" in value:
+            result["time_period"] = "中午"
         elif "下午" in value:
             result["time_period"] = "下午"
         elif any(term in value for term in ("今晚", "晚上", "一晚上")):
@@ -102,7 +106,7 @@ class ChineseEntityParser:
                 )
 
         raw_parts = re.findall(
-            r"今天下午|今天晚上|今晚|明天早上|明早|上午|下午|晚上|"
+            r"今天下午|今天晚上|今晚|明天早上|明早|上午|中午|下午|晚上|"
             r"半小时|(?:\d+(?:\.\d+)?|[一二两三四五六七八九十]+)(?:个)?小时半?|"
             r"(?:\d+|[一二两三四五六七八九十]+)分钟|下班以后|下班后",
             value,
@@ -119,20 +123,98 @@ class ChineseEntityParser:
 
     def clean_plan_title(self, text: str) -> str:
         value = str(text).strip().strip("。.!！?？")
+        # Keep conversational acknowledgement and first-person planning
+        # framing out of the persisted task title.  The task itself remains
+        # untouched; this only normalizes the boundary around it.
         value = re.sub(
-            r"^(?:帮我|请帮我|给我)?(?:把)?(?:今天|今日)?(?:上午|下午|晚上|今晚|明早)?"
+            r"^(?:(?:好(?:的|啦|了)?|可以(?:了)?|行(?:了)?|明白了|知道了|收到|"
+            r"(?:谢谢|多谢)(?:你|您)?(?:的)?(?:指导|建议|帮助|提醒|说明)?|"
+            r"感谢(?:你|您)?(?:的)?(?:指导|建议|帮助|提醒|说明)?)[，,、：:；;\s]*)+",
+            "",
+            value,
+        )
+        value = re.sub(
+            r"^(?:我|本人)(?:现在|今天|今晚|明天|明早|早上|上午|中午|下午|晚上)?"
+            r"(?:想|要|打算|准备|计划|希望|决定|开始|继续|会|将要)?",
+            "",
+            value,
+        )
+        value = re.sub(
+            # Keep longer verbs first.  Matching ``加`` before ``加入`` left
+            # the stray title ``入今日计划`` for an otherwise empty command.
+            r"^(?:再|又|还)?(?:加入|添加|加)(?:一条|一项|一个)?(?:计划|任务)?\s*",
+            "",
+            value,
+        )
+        value = re.sub(
+            r"^(?:请|帮我|请帮我|给我)?(?:再|又|也|然后|顺便|另外)?(?:把)?(?:今天|今日)?(?:上午|中午|下午|晚上|今晚|明早)?"
             r"(?:想|要|打算|计划|准备|安排|加入|添加)?(?:先|一下)?\s*",
             "",
             value,
         )
-        value = re.sub(r"(?:加入|添加|放进)(?:今天|今日)?(?:的)?计划(?:里)?$", "", value)
         value = re.sub(
-            r"半小时|一小时半|(?:\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(?:个)?\s*(?:分钟|小时)",
+            r"(?:加入|添加|放进|安排进|安排到)(?:今天|今日)?(?:的)?(?:计划|任务|清单)(?:里)?$",
             "",
             value,
         )
-        value = re.sub(r"^(?:今天|上午|下午|晚上|今晚|明早)\s*", "", value)
+        value = re.sub(r"^(?:今天|上午|中午|下午|晚上|今晚|明早)\s*", "", value)
         return re.sub(r"\s+", "", value).strip("，,：:的时间")
+
+    def extract_plan_schedule(self, text: str) -> Dict[str, List[Dict[str, object]]]:
+        """Extract closed time ranges without guessing ambiguous alternatives.
+
+        A pasted schedule is still ordinary user text.  This helper only
+        recognizes independently executable lines such as ``18:00 到 18:30
+        吃饭``.  Open-ended ranges and alternative choices remain unresolved
+        so callers can ask instead of silently persisting a partial meaning.
+        """
+        source = str(text or "")
+        items: List[Dict[str, object]] = []
+        unresolved: List[Dict[str, object]] = []
+        seen = set()
+        pattern = re.compile(
+            r"(?m)^\s*(\d{1,2})[:：](\d{2})\s*(?:到|至|[-—–])\s*"
+            r"(\d{1,2})[:：](\d{2})\s*([^\r\n]+)"
+        )
+        for match in pattern.finditer(source):
+            start_hour, start_minute, end_hour, end_minute = (
+                int(match.group(index)) for index in range(1, 5)
+            )
+            if not (
+                0 <= start_hour <= 23
+                and 0 <= end_hour <= 23
+                and 0 <= start_minute <= 59
+                and 0 <= end_minute <= 59
+            ):
+                continue
+            raw_title = re.sub(
+                r"^[\s：:，,、—–-]+|[\s。.!！?？；;]+$",
+                "",
+                match.group(5),
+            )
+            title = self.clean_plan_title(raw_title)
+            if not title:
+                continue
+            signature = (start_hour, start_minute, end_hour, end_minute, title)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            item: Dict[str, object] = {
+                "title": title,
+                "start_time": f"{start_hour:02d}:{start_minute:02d}",
+                "end_time": f"{end_hour:02d}:{end_minute:02d}",
+            }
+            start_total = start_hour * 60 + start_minute
+            end_total = end_hour * 60 + end_minute
+            duration = end_total - start_total
+            if duration <= 0:
+                duration += 24 * 60
+            item["duration_minutes"] = duration
+            if re.search(r"(?:或者|还是|二选一|任选|看哪个)", raw_title):
+                unresolved.append(item)
+            else:
+                items.append(item)
+        return {"items": items, "unresolved": unresolved}
 
     @classmethod
     def _duration_minutes(cls, text: str) -> Optional[int]:

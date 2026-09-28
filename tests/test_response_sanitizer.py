@@ -34,6 +34,12 @@ def test_null_like_reply_uses_friendly_fallback():
         assert reply.lower() not in {"none", "null"}
 
 
+def test_public_reply_unwraps_only_paired_markdown_strong_markers():
+    assert sanitize_public_reply("**你是一个认真投入的人**") == "你是一个认真投入的人"
+    assert sanitize_public_reply("2 * 3 = 6") == "2 * 3 = 6"
+    assert sanitize_public_reply("***仍保留三颗星***") == "***仍保留三颗星***"
+
+
 def test_provider_separates_embedded_and_native_reasoning():
     def transport(_method, _url, _headers, _payload, _timeout):
         return {

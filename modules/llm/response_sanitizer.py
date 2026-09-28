@@ -16,6 +16,9 @@ _OPEN_REASONING_TAG = re.compile(
 _CLOSE_REASONING_TAG = re.compile(
     r"</(?:think|analysis)\s*>", flags=re.IGNORECASE
 )
+_PAIRED_STRONG_MARKDOWN = re.compile(
+    r"(?<!\*)\*\*(?!\*)(?=\S)([^\n]*?\S)(?<!\*)\*\*(?!\*)"
+)
 
 
 def split_reasoning_content(
@@ -64,7 +67,10 @@ def sanitize_public_reply(
     public = sanitize_public_text(value)
     if not public:
         return str(fallback).strip() or DEFAULT_EMPTY_REPLY
-    return public
+    # Natural chat is plain text. Only unwrap a well-formed **strong** span;
+    # lone asterisks, multiplication, code, and triple-asterisk Markdown stay
+    # untouched rather than being broadly stripped.
+    return _PAIRED_STRONG_MARKDOWN.sub(r"\1", public)
 
 
 def sanitize_public_text(value: object) -> str:

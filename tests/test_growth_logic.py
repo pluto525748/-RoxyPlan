@@ -19,7 +19,7 @@ from modules.growth import ActionLogStore, GrowthLogStore, GrowthService
 from modules.today_plan import TodayPlanStore
 
 
-class TestClock:
+class FakeClock:
     def __init__(self, value):
         self.value = value
 
@@ -27,7 +27,7 @@ class TestClock:
         return self.value
 
 
-def make_service(directory: Path, clock: TestClock) -> GrowthService:
+def make_service(directory: Path, clock: FakeClock) -> GrowthService:
     return GrowthService(
         plan_store=TodayPlanStore(directory / "today_plan.json", now_provider=clock),
         action_store=ActionLogStore(directory / "action_log.json", now_provider=clock),
@@ -39,7 +39,7 @@ def make_service(directory: Path, clock: TestClock) -> GrowthService:
 def test_missing_files_are_created():
     with tempfile.TemporaryDirectory() as temp_dir:
         directory = Path(temp_dir)
-        service = make_service(directory, TestClock(datetime(2026, 7, 15, 9, 0, 0)))
+        service = make_service(directory, FakeClock(datetime(2026, 7, 15, 9, 0, 0)))
 
         assert (directory / "today_plan.json").exists()
         assert (directory / "action_log.json").exists()
@@ -52,7 +52,7 @@ def test_missing_files_are_created():
 def test_plan_add_complete_and_delete():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = make_service(
-            Path(temp_dir), TestClock(datetime(2026, 7, 15, 10, 0, 0))
+            Path(temp_dir), FakeClock(datetime(2026, 7, 15, 10, 0, 0))
         )
 
         first = service.plan_store.add_task("学习机器学习30分钟")
@@ -69,7 +69,7 @@ def test_plan_add_complete_and_delete():
 def test_action_record_and_review():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = make_service(
-            Path(temp_dir), TestClock(datetime(2026, 7, 15, 14, 35, 20))
+            Path(temp_dir), FakeClock(datetime(2026, 7, 15, 14, 35, 20))
         )
         task = service.plan_store.add_task("测试成长闭环")
         service.plan_store.complete_by_id(int(task["id"]))
@@ -93,7 +93,7 @@ def test_action_record_and_review():
 def test_growth_log_overwrites_same_day():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = make_service(
-            Path(temp_dir), TestClock(datetime(2026, 7, 15, 20, 0, 0))
+            Path(temp_dir), FakeClock(datetime(2026, 7, 15, 20, 0, 0))
         )
         service.save_today_review()
         service.action_store.add_record("补充了一条行动", source="manual")
@@ -109,7 +109,7 @@ def test_chat_growth_commands():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         service = make_service(
-            Path(temp_dir), TestClock(datetime(2026, 7, 15, 16, 10, 0))
+            Path(temp_dir), FakeClock(datetime(2026, 7, 15, 16, 10, 0))
         )
         window = ChatWindow(growth_service=service)
         window.transcript.clear()
@@ -141,7 +141,7 @@ def test_growth_dialog_smoke():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         service = make_service(
-            Path(temp_dir), TestClock(datetime(2026, 7, 15, 18, 0, 0))
+            Path(temp_dir), FakeClock(datetime(2026, 7, 15, 18, 0, 0))
         )
         dialog = GrowthDialog(service)
         dialog.plan_input.setText("完成成长面板检查")

@@ -15,6 +15,8 @@ from modules.contracts import (
 from modules.llm.contracts import ProviderResponse
 from modules.llm.routed_client import RoutedLLMClient
 from modules.llm.response_sanitizer import sanitize_public_reply, sanitize_public_text
+from modules.schema_validator import SchemaValidator
+from modules.semantic_normalizer import DeterministicNormalizer
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import ToolRegistry
 
@@ -24,6 +26,7 @@ class ModelActionAdapter:
 
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
+        self._normalizer = DeterministicNormalizer(registry)
 
     def from_native_response(self, response: ProviderResponse) -> List[ProposedAction]:
         if not response.tool_calls:
@@ -173,12 +176,37 @@ class ModelActionAdapter:
         name = str(tool_name).strip()
         args = dict(arguments) if isinstance(arguments, dict) else {}
         warnings = [extra_warning] if extra_warning else []
-        tool = self.registry.get(name)
+
+        # -- Deterministic alias resolution before any validation -----------
+        canonical_name = self._normalizer._resolve_tool_name(name)
+        if canonical_name != name:
+            print(
+                f"[Normalize] tool_alias original={name!r} canonical={canonical_name!r}",
+                flush=True,
+            )
+        tool = self.registry.get(canonical_name)
+
+        # Apply per-tool field aliases.
+        field_aliases = self.registry.field_aliases_for(canonical_name)
+        normalized_args: Dict[str, object] = {}
+        for fname, fvalue in args.items():
+            canonical_field = field_aliases.get(fname)
+            if canonical_field is not None:
+                normalized_args[canonical_field] = fvalue
+                print(
+                    f"[Normalize] field_alias tool={canonical_name!r} "
+                    f"original={fname!r} canonical={canonical_field!r}",
+                    flush=True,
+                )
+            else:
+                normalized_args[fname] = fvalue
+
+        # -- Tool existence check (after alias resolution) -----------------
         if tool is None or not tool.enabled or not tool.model_visible:
             warnings.append("tool_not_allowed")
             return ProposedAction(
-                name,
-                args,
+                canonical_name or name,
+                normalized_args,
                 confidence=0.0,
                 source=source,
                 raw_provider_type=provider,
@@ -187,10 +215,11 @@ class ModelActionAdapter:
                 kind="clarification",
                 call_id=call_id,
             )
-        if "__invalid_json__" in args or "__invalid_arguments__" in args:
+
+        if "__invalid_json__" in normalized_args or "__invalid_arguments__" in normalized_args:
             warnings.append("invalid_arguments")
             return ProposedAction(
-                name,
+                canonical_name,
                 {},
                 confidence=0.1,
                 source=source,
@@ -200,19 +229,36 @@ class ModelActionAdapter:
                 kind="clarification",
                 call_id=call_id,
             )
-        valid, normalized, error = ToolExecutor._validate_arguments(
-            tool.parameters_schema, args
+
+        # -- Schema validation (after alias resolution) --------------------
+        valid, validated, error = ToolExecutor._validate_arguments(
+            tool.parameters_schema, normalized_args
         )
         missing = [
             field
             for field, rules in tool.parameters_schema.items()
-            if bool(rules.get("required")) and field not in args
+            if bool(rules.get("required")) and field not in normalized_args
         ]
         if not valid:
             warnings.append(str(error or "invalid_arguments"))
+
+        # Report diagnostic for normalization.
+        if canonical_name != name or field_aliases:
+            alias_diag = []
+            if canonical_name != name:
+                alias_diag.append(f"tool:{name}→{canonical_name}")
+            for orig, canon in field_aliases.items():
+                if orig in args:
+                    alias_diag.append(f"field:{orig}→{canon}")
+            if alias_diag:
+                print(
+                    f"[Normalize] applied={' '.join(alias_diag)}",
+                    flush=True,
+                )
+
         return ProposedAction(
-            name,
-            normalized if valid else args,
+            canonical_name,
+            validated if valid else normalized_args,
             confidence=0.92 if valid else 0.2,
             source=source,
             raw_provider_type=provider,
@@ -258,6 +304,7 @@ class ModelToolCallLoop:
         self.claim_guard = claim_guard or ActionClaimGuard()
         self.proposal_adapter = proposal_adapter or ModelActionAdapter(registry)
         self.semantic_parser = semantic_parser
+        self._schema_validator = SchemaValidator(registry)
 
     def complete(
         self,
@@ -299,20 +346,6 @@ class ModelToolCallLoop:
                 request_id=request_id,
             )
         if not response.tool_calls:
-            if self._should_attempt_action_fallback(
-                user_text,
-                response.content,
-                intent_result,
-            ):
-                fallback_response = self._json_fallback(
-                    user_text,
-                    messages,
-                    conversation_id,
-                    intent_result,
-                    chat_fallback_text=response.content,
-                )
-                if fallback_response is not None:
-                    return fallback_response
             return AgentResponse(
                 "chat",
                 self.claim_guard.validate(
@@ -653,19 +686,39 @@ class ModelToolCallLoop:
                 return False
         return True
 
-    @staticmethod
-    def _proposal_error_message(proposal: ProposedAction) -> ToolMessage:
+    def _proposal_error_message(self, proposal: ProposedAction) -> ToolMessage:
         code = next(
             (item for item in proposal.warnings if item), "invalid_arguments"
         )
+        # Build schema context so the model knows exactly what's wrong.
+        tool = self.registry.get(proposal.tool_name)
+        schema_info: Dict[str, object] = {}
+        if tool is not None:
+            for fname, frules in tool.parameters_schema.items():
+                schema_info[fname] = {
+                    "type": frules.get("type", "string"),
+                    "required": bool(frules.get("required")),
+                }
+                if "enum" in frules:
+                    schema_info[fname]["enum"] = frules["enum"]
+                for ck in ("minimum", "maximum", "minLength", "maxLength"):
+                    if ck in frules:
+                        schema_info[fname][ck] = frules[ck]
+
         return ToolMessage(
             call_id=proposal.call_id,
             tool_name=proposal.tool_name or "unknown",
             status="retryable_error",
             success=False,
-            content="工具参数未通过本地校验，请只修正工具名或参数一次。",
+            content=(
+                "工具参数未通过本地校验，请只修正参数一次。"
+                f"允许的字段及类型：{schema_info}"
+            ),
             safe_error=code,
-            data_summary={"missing_fields": proposal.missing_fields},
+            data_summary={
+                "missing_fields": proposal.missing_fields,
+                "schema": schema_info,
+            },
         )
 
     @staticmethod

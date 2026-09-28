@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,90 @@ from modules.repositories.local_json_chat_repository import LocalJsonChatReposit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PRIVATE_DIR = PROJECT_ROOT / "data" / "private"
+
+
+# These are retrieval scaffolding rather than user topics. Removing them before
+# lexical matching prevents a greeting or "do you remember" shell from pulling
+# an otherwise unrelated old session into an ordinary chat turn.
+_HISTORY_RETRIEVAL_NOISE = (
+    "相关旧会话摘要",
+    "relation_to_current_date",
+    "source_message_time_start",
+    "source_message_time_end",
+    "主要讨论",
+    "用户决定",
+    "当前状态",
+    "未完成事项",
+    "下次可继续",
+    "我们之前",
+    "我们以前",
+    "你还记得",
+    "还记得",
+    "新的一天",
+    "又见面了",
+    "接下来",
+    "下一步",
+    "怎么办",
+    "讨论过",
+    "提到过",
+    "说过",
+    "聊过",
+    "说的",
+    "聊的",
+    "关于",
+    "相关",
+    "以前",
+    "之前",
+    "上次",
+    "那次",
+    "曾经",
+    "哪些",
+    "什么",
+    "怎么",
+    "如何",
+    "历史",
+    "会话",
+    "对话",
+    "内容",
+    "事情",
+    "这个",
+    "那个",
+    "现在",
+    "目前",
+    "如今",
+    "最近",
+    "已经",
+    "今天",
+    "昨天",
+    "明天",
+    "继续",
+    "计划",
+    "任务",
+    "完成",
+    "用户",
+    "我们",
+    "你好",
+    "您好",
+    "见面",
+)
+
+_CURRENT_STATE_MARKERS = ("现在", "目前", "如今", "已经", "刚刚")
+_EXPLICIT_HISTORY_MARKERS = ("以前", "之前", "上次", "那次", "曾经", "历史", "旧会话")
+_EMPTY_SUMMARY_FRAGMENTS = (
+    "暂无明确决定",
+    "未明确提及",
+    "暂无明确事项",
+    "日常交流",
+    "没有足够内容可供总结",
+)
+_WEAK_HISTORY_TERMS = {
+    "学习",
+    "工作",
+    "项目",
+    "问题",
+    "事情",
+    "内容",
+}
 
 
 class ChatHistoryManager:
@@ -264,7 +349,13 @@ class ChatHistoryManager:
         except (TypeError, ValueError):
             return 0
 
-    def save_summary(self, session_id: str, summary: str) -> bool:
+    def save_summary(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        persona_id: str = "roxy",
+    ) -> bool:
         clean_summary = summary.strip()
         with self.repository.transaction("history"), self.repository.transaction("summaries"):
             self._refresh_history()
@@ -273,11 +364,24 @@ class ChatHistoryManager:
             if session is None or not clean_summary:
                 return False
             summaries = self.summary_data.setdefault("summaries", {})
+            existing = summaries.get(session_id, {})
+            existing = existing if isinstance(existing, dict) else {}
+            messages = [
+                item for item in session.get("messages", []) if isinstance(item, dict)
+            ]
+            created_at = str(existing.get("created_at") or self._timestamp())
             summaries[session_id] = {
                 "session_id": session_id,
                 "summary": clean_summary,
+                "created_at": created_at,
                 "updated_at": self._timestamp(),
-                "source_message_count": len(session.get("messages", [])),
+                "source_message_count": len(messages),
+                "started_at": str(session.get("started_at", "")),
+                "time_range": {
+                    "start": str(messages[0].get("created_at", "")) if messages else "",
+                    "end": str(messages[-1].get("created_at", "")) if messages else "",
+                },
+                "persona_id": str(persona_id or "roxy"),
             }
             session["summary"] = clean_summary
             if not self._save_summaries_if_enabled():
@@ -288,13 +392,109 @@ class ChatHistoryManager:
                 return False
         return True
 
+    def update_session_summary(self, session_id: str, *, persona_id: str = "roxy") -> bool:
+        """Refresh a bounded episodic summary only at explicit/threshold boundaries."""
+        if not self.messages(session_id):
+            return False
+        summary = self.generate_rule_summary(session_id)
+        return self.save_summary(session_id, summary, persona_id=persona_id)
+
+    def finalize_session(self, session_id: str, *, persona_id: str = "roxy") -> bool:
+        """Persist a short-session-safe episodic summary before a window changes."""
+        return self.update_session_summary(session_id, persona_id=persona_id)
+
+    def relevant_summaries(
+        self,
+        query: str,
+        *,
+        exclude_session_id: str = "",
+        limit: int = 3,
+        char_budget: int = 900,
+        persona_id: str = "roxy",
+    ) -> List[Dict[str, object]]:
+        """Retrieve up to two query-centred fragments from verified old summaries.
+
+        This remains deliberately lexical and local.  It does not turn old chat
+        into memory, and it does not expose full transcripts to the model.
+        """
+        self._refresh_summaries()
+        terms = self._retrieval_terms(query)
+        if not terms or limit <= 0 or char_budget <= 0:
+            return []
+        records = self.summary_data.get("summaries", {})
+        if not isinstance(records, dict):
+            return []
+        effective_limit = min(2, max(0, int(limit)))
+        current_state_query = self._is_current_state_query(query)
+        ranked = []
+        for session_id, raw in records.items():
+            if session_id == exclude_session_id or not isinstance(raw, dict):
+                continue
+            if str(raw.get("persona_id", "roxy")) != str(persona_id or "roxy"):
+                continue
+            summary = str(raw.get("summary", "")).strip()
+            if not summary:
+                continue
+            fragment_match = self._best_summary_fragment(
+                summary,
+                terms,
+                current_state_query=current_state_query,
+            )
+            if fragment_match is None:
+                continue
+            score, coverage, fragment = fragment_match
+            ranked.append(
+                (
+                    score,
+                    coverage,
+                    str(raw.get("updated_at", "")),
+                    str(session_id),
+                    raw,
+                    fragment,
+                )
+            )
+        ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        remaining = int(char_budget)
+        result: List[Dict[str, object]] = []
+        for (
+            _score,
+            _coverage,
+            _updated_at,
+            session_id,
+            raw,
+            fragment,
+        ) in ranked[:effective_limit]:
+            if remaining <= 0:
+                break
+            excerpt = fragment[:remaining].rstrip()
+            if not excerpt:
+                continue
+            raw_time_range = raw.get("time_range", {})
+            time_range = raw_time_range if isinstance(raw_time_range, dict) else {}
+            result.append(
+                {
+                    "session_id": session_id,
+                    "summary": excerpt,
+                    "updated_at": str(raw.get("updated_at", "")),
+                    "time_range": {
+                        "start": str(time_range.get("start", "")),
+                        "end": str(time_range.get("end", "")),
+                    },
+                    "persona_id": str(raw.get("persona_id", "roxy")),
+                    "source_message_count": int(raw.get("source_message_count", 0) or 0),
+                    "trimmed": len(excerpt) < len(fragment),
+                }
+            )
+            remaining -= len(excerpt)
+        return result
+
     def should_summarize(
         self,
         session_id: str,
         message_threshold: int = 30,
         character_threshold: int = 12000,
     ) -> bool:
-        messages = self.messages(session_id)
+        messages = self._summary_messages(session_id)
         over_limit = (
             len(messages) > max(0, message_threshold)
             or self.character_count(session_id) > max(0, character_threshold)
@@ -305,7 +505,7 @@ class ChatHistoryManager:
         return previous_count == 0 or len(messages) - previous_count >= 10
 
     def generate_rule_summary(self, session_id: str) -> str:
-        messages = self.messages(session_id)
+        messages = self._summary_messages(session_id)
         user_messages = [
             str(item.get("content", "")).strip()
             for item in messages
@@ -343,6 +543,130 @@ class ChatHistoryManager:
             if isinstance(item, dict) and item.get("session_id") == session_id:
                 return item
         return None
+
+    def _summary_messages(self, session_id: str) -> List[Dict[str, object]]:
+        return [
+            item
+            for item in self.messages(session_id)
+            if not self._is_transient_summary_message(item)
+        ]
+
+    @staticmethod
+    def _is_transient_summary_message(message: Dict[str, object]) -> bool:
+        content = str(message.get("content", "")).strip().lower()
+        metadata = message.get("metadata", {})
+        transient_markers = (
+            "confirmation_",
+            "确认 id",
+            "确认id",
+            "刚才那个",
+            "刚才那条",
+            "第一个",
+            "第二个",
+            "第三个",
+        )
+        if any(marker in content for marker in transient_markers):
+            return True
+        if isinstance(metadata, dict) and any(
+            key in metadata for key in ("confirmation_id", "tool_arguments", "request_id")
+        ):
+            return True
+        return bool(re.search(r"\bconfirmation_[a-z0-9_\-]+\b", content))
+
+    @staticmethod
+    def _summary_terms(text: str) -> set:
+        normalized = str(text or "").lower()
+        latin = set(re.findall(r"[a-z0-9_]{2,}", normalized))
+        pairs = {
+            normalized[index : index + 2]
+            for index in range(max(0, len(normalized) - 1))
+            if "\u4e00" <= normalized[index] <= "\u9fff"
+            and "\u4e00" <= normalized[index + 1] <= "\u9fff"
+        }
+        return latin | pairs
+
+    @classmethod
+    def _retrieval_terms(cls, text: str) -> set:
+        normalized = str(text or "").lower()
+        for phrase in _HISTORY_RETRIEVAL_NOISE:
+            normalized = normalized.replace(phrase, " ")
+        latin = set(re.findall(r"[a-z0-9_]{2,}", normalized))
+        pairs = set()
+        for run in re.findall(r"[\u4e00-\u9fff]+", normalized):
+            pairs.update(
+                run[index : index + 2]
+                for index in range(max(0, len(run) - 1))
+            )
+        return latin | pairs
+
+    @classmethod
+    def _best_summary_fragment(
+        cls,
+        summary: str,
+        query_terms: set,
+        *,
+        current_state_query: bool,
+    ) -> Optional[tuple]:
+        best: Optional[tuple] = None
+        for fragment in cls._summary_fragments(summary):
+            fragment_terms = cls._retrieval_terms(fragment)
+            overlap = query_terms & fragment_terms
+            if not overlap:
+                continue
+            latin_overlap = any(re.fullmatch(r"[a-z0-9_]{2,}", term) for term in overlap)
+            # A single generic Chinese bigram (for example only “学习” or
+            # “工作”) is too weak for implicit continuity. A distinctive term
+            # such as “人格” may still be the useful bridge when related words
+            # are separated in the stored summary.
+            if (
+                not latin_overlap
+                and len(overlap) == 1
+                and (current_state_query or bool(overlap & _WEAK_HISTORY_TERMS))
+            ):
+                continue
+            # A present-state statement must not be overridden merely because an
+            # old state shares one generic noun (for example "工作"). A concrete
+            # multi-term topic or exact Latin identifier can still provide useful
+            # continuity in "我现在还在做 RoxyPlan".
+            coverage = len(overlap) / max(1, min(len(query_terms), 8))
+            candidate = (len(overlap), coverage, -len(fragment), fragment)
+            if best is None or candidate[:3] > best[:3]:
+                best = candidate
+        if best is None:
+            return None
+        return best[0], best[1], best[3]
+
+    @staticmethod
+    def _summary_fragments(summary: str) -> List[str]:
+        fragments: List[str] = []
+        for raw in re.split(r"[\n\r；;。！？!?]+", str(summary or "")):
+            fragment = raw.strip(" \t-：:")
+            if not fragment:
+                continue
+            if "：" in fragment:
+                label, content = fragment.split("：", 1)
+                if label.strip() in {
+                    "主要讨论",
+                    "用户决定",
+                    "当前状态",
+                    "未完成事项",
+                    "下次可继续",
+                }:
+                    fragment = content.strip()
+            if not fragment or any(
+                marker in fragment for marker in _EMPTY_SUMMARY_FRAGMENTS
+            ):
+                continue
+            if fragment not in fragments:
+                fragments.append(fragment)
+        return fragments
+
+    @staticmethod
+    def _is_current_state_query(query: str) -> bool:
+        text = str(query or "")
+        return any(marker in text for marker in _CURRENT_STATE_MARKERS) and not any(
+            marker in text for marker in _EXPLICIT_HISTORY_MARKERS
+        )
 
     def _update_title(self, session: Dict[str, object]) -> None:
         if session.get("title") != "新对话" or len(session.get("messages", [])) < 3:

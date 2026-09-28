@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from modules.intent_router import IntentRouter
+from modules.intent_router import IntentRouter, LLMIntentParser
 from modules.semantic_action_parser import SemanticActionParser
 
 
@@ -62,6 +63,49 @@ def test_progress_chat_negation_and_multi_action():
     ]
 
 
+def test_model_multi_action_keeps_all_three_explicit_tasks():
+    def chat_decision(_messages):
+        return json.dumps(
+            {
+                "mode": "write",
+                "intent": "multi_action",
+                "entities": {},
+                "proposed_tool": None,
+                "confidence": 0.98,
+                "follow_up_target": None,
+                "needs_confirmation": False,
+                "warnings": [],
+                "clarification_question": None,
+                "candidate_actions": [
+                    {"intent": "add_plan", "entities": {"title": "查车票"}},
+                    {"intent": "add_plan", "entities": {"title": "列行李清单"}},
+                    {"intent": "add_plan", "entities": {"title": "确定返程日期"}},
+                ],
+                "subject": "self",
+                "polarity": "positive",
+                "modality": "commitment",
+                "request_mode": "execute",
+                "explicit_command": True,
+            },
+            ensure_ascii=False,
+        )
+
+    parser = SemanticActionParser(
+        IntentRouter(LLMIntentParser(chat_decision), enable_llm=True),
+    )
+
+    parsed = parser.parse_unified(
+        "1. 查车票\n2. 列行李清单\n3. 确定返程日期，把这些加入今日计划",
+        allow_llm=True,
+    )
+
+    assert [item.arguments["title"] for item in parsed.candidates] == [
+        "查车票",
+        "列行李清单",
+        "确定返程日期",
+    ]
+
+
 def test_native_and_json_proposals_share_action_candidate_contract():
     parser = SemanticActionParser(
         IntentRouter(), proposal_adapter=ProposalAdapter()
@@ -74,6 +118,63 @@ def test_native_and_json_proposals_share_action_candidate_contract():
     assert native.candidates[0].arguments == fallback.candidates[0].arguments
     assert native.source == "native_tool_call"
     assert fallback.source == "json_fallback"
+
+
+def test_generic_conversational_wrappers_do_not_change_core_semantics():
+    parser = SemanticActionParser(IntentRouter(enable_llm=False))
+    queries = (
+        "请今日计划可以吗",
+        "麻烦你看看今天的计划谢谢",
+        "洛琪希，能不能帮我查看行动记录一下",
+    )
+    parsed = [parser.parse(text, allow_llm=False) for text in queries]
+    assert [item.request_mode for item in parsed] == ["query", "query", "query"]
+    assert [item.candidates[0].tool_name for item in parsed] == [
+        "show_plan",
+        "show_plan",
+        "show_action_log",
+    ]
+
+    negative = parser.parse("麻烦你不要跳舞可以吗", allow_llm=False)
+    assert negative.candidates == []
+    assert negative.request_mode == "cancellation"
+
+    advice = parser.parse("cosplay该怎么入门", allow_llm=False)
+    assert advice.request_mode == "advice"
+    assert advice.candidates == []
+
+
+def test_unified_parser_recovers_only_safe_bare_wishes_from_model_chat():
+    def chat_decision(_messages):
+        return (
+            '{"mode":"chat","intent":"chat","entities":{},'
+            '"proposed_tool":null,"confidence":0.9,'
+            '"follow_up_target":null,"needs_confirmation":false,'
+            '"warnings":[],"clarification_question":null,'
+            '"candidate_actions":[],"subject":"self",'
+            '"polarity":"positive","modality":"desire"}'
+        )
+
+    parser = SemanticActionParser(
+        IntentRouter(LLMIntentParser(chat_decision), enable_llm=True)
+    )
+
+    wish = parser.parse_unified("我想学 cosplay", allow_llm=True)
+    future_intention = parser.parse_unified("我准备晚上学习", allow_llm=True)
+    question = parser.parse_unified("我想学 cosplay 是什么意思？", allow_llm=True)
+    hypothetical = parser.parse_unified(
+        "如果以后有空，也许想学3D建模",
+        allow_llm=True,
+    )
+
+    assert wish.source == "local_wish_guard"
+    assert wish.request_mode == "possible_action"
+    assert wish.candidates[0].tool_name == "add_plan"
+    assert wish.candidates[0].explicit_command is False
+    assert future_intention.source == "llm"
+    assert future_intention.candidates == []
+    assert question.candidates == []
+    assert hypothetical.candidates == []
 
 
 if __name__ == "__main__":

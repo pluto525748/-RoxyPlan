@@ -35,6 +35,18 @@ def test_tonight_and_tomorrow_morning():
     assert tomorrow["time_period"] == "\u4e0a\u5348"
 
 
+def test_noon_is_preserved_as_its_own_time_period():
+    result = parser().parse("今天中午整理资料")
+
+    assert result["time_period"] == "中午"
+
+
+def test_yesterday_is_parsed_as_previous_calendar_date():
+    result = parser().parse("昨天的计划")
+
+    assert result["date"] == "2026-07-21"
+
+
 def test_explicit_duration_change():
     result = parser().parse(
         "\u521a\u624d\u90a3\u4e2a\u6539\u621050\u5206\u949f"
@@ -61,6 +73,25 @@ def test_ambiguous_duration_is_not_guessed():
     result = parser().parse("\u5b66\u4e6030\u4e00\u665a\u4e0a")
     assert result["ambiguous"] is True
     assert result["duration_minutes"] is None
+
+
+def test_closed_schedule_extracts_clear_items_and_keeps_choice_unresolved():
+    result = parser().extract_plan_schedule(
+        "18:00 到 18:30 吃饭休息，不碰学习\n"
+        "18:30 到 19:10 整理今天的资料\n"
+        "19:10 到 19:20 站起来活动一下\n"
+        "19:20 到 20:00 看书或者复习英语，二选一\n"
+        "20:00之后留给自己"
+    )
+
+    assert [item["title"] for item in result["items"]] == [
+        "吃饭休息，不碰学习",
+        "整理今天的资料",
+        "站起来活动一下",
+    ]
+    assert [item["duration_minutes"] for item in result["items"]] == [30, 40, 10]
+    assert len(result["unresolved"]) == 1
+    assert "二选一" in result["unresolved"][0]["title"]
 
 
 TESTS = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
