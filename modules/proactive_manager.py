@@ -44,6 +44,10 @@ class ProactiveManager:
         self._last_type_reminder_at: Dict[str, datetime] = {}
         self._review_reminded_dates: Set[str] = set()
         self._last_growth_reminder_type = ""
+        # An idle nudge is useful once per uninterrupted idle stretch.  A short
+        # test-mode cooldown must not turn the same nudge into chat spam while
+        # the user is away or deciding whether to confirm an operation.
+        self._idle_nudge_sent = False
 
     def configure(
         self,
@@ -81,6 +85,8 @@ class ProactiveManager:
         allowed_types: Optional[Iterable[str]] = None,
     ) -> Optional[Dict[str, str]]:
         print("[Proactive] check", flush=True)
+        if idle_seconds < self.idle_threshold_seconds:
+            self._idle_nudge_sent = False
         if not self.enabled or self.paused:
             print("[Proactive] skipped: disabled", flush=True)
             return None
@@ -161,6 +167,7 @@ class ProactiveManager:
             self.idle_nudge_enabled
             and pending
             and idle_seconds >= self.idle_threshold_seconds
+            and not self._idle_nudge_sent
         ):
             candidates.append(
                 {
@@ -197,6 +204,8 @@ class ProactiveManager:
         self._last_type_reminder_at[reminder_type] = now
         if reminder_type == "review_time":
             self._review_reminded_dates.add(now.date().isoformat())
+        if reminder_type == "idle_nudge":
+            self._idle_nudge_sent = True
         if reminder_type in {"plan_pending", "no_action_log"}:
             self._last_growth_reminder_type = reminder_type
 

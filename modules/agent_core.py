@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from modules.action_batch import ActionBatch
 from modules.agent_planner import AgentPlanner
-from modules.contracts import AgentResponse, ToolResult
+from modules.contracts import AgentResponse, ClientAction, ToolResult
 from modules.tool_execution_plan import ToolExecutionPlan
 from modules.tool_executor import ToolExecutor
 
@@ -20,11 +21,13 @@ class AgentCore:
         *,
         enabled: bool = True,
         action_batch_enabled: bool = True,
+        plan_postcondition_enabled: bool = True,
     ) -> None:
         self.planner = planner
         self.executor = executor
         self.enabled = bool(enabled)
         self.action_batch_enabled = bool(action_batch_enabled)
+        self.plan_postcondition_enabled = bool(plan_postcondition_enabled)
         self.execution_plan = ToolExecutionPlan(
             executor,
             result_validator=self._enforce_postcondition_shape,
@@ -36,6 +39,7 @@ class AgentCore:
         intent_result: Dict[str, object],
         *,
         confirmation_scope: Optional[str] = None,
+        expected_confirmation_state: Optional[Dict[str, object]] = None,
     ) -> AgentResponse:
         print("[Agent] request received", flush=True)
         request_id = str(intent_result.get("request_id", "")).strip() or None
@@ -68,9 +72,23 @@ class AgentCore:
             return AgentResponse("chat", "", request_id=request_id)
         print(f"[Agent] plan steps={len(plan.steps)}", flush=True)
 
-        negated = self._is_negated(user_text)
-        informational = self._is_informational(user_text)
+        safety_text = user_text
+        if (
+            str(intent_result.get("source", "")) == "fixed_command"
+            and bool(expected_confirmation_state)
+            and len(plan.steps) == 1
+            and plan.steps[0].tool == "delete_memory"
+            and str(user_text).strip().startswith(("忘记：", "忘记:"))
+        ):
+            # Words inside this exact command's literal record body are not
+            # independent negation, capability questions or execution cues.
+            safety_text = "忘记"
+        negated = self._is_negated(safety_text)
+        informational = self._is_informational(safety_text)
         require_confirmation = bool(intent_result.get("needs_confirmation", False))
+        authorization_granted = bool(
+            intent_result.get("execution_authorized", False)
+        )
         results: List[ToolResult] = []
         skipped_steps = 0
         steps = [
@@ -82,6 +100,7 @@ class AgentCore:
                 plan.steps,
                 steps,
                 confidence=confidence,
+                authorization_granted=authorization_granted,
                 confirmation_scope=confirmation_scope or "default",
                 require_confirmation=require_confirmation,
                 negated=negated,
@@ -93,14 +112,21 @@ class AgentCore:
             if index and step.depends_on_previous and not results[-1].success:
                 skipped_steps += 1
                 continue
+            target_guard_arguments = (
+                {"expected_confirmation_state": dict(expected_confirmation_state)}
+                if expected_confirmation_state and step.tool == "delete_memory"
+                else {}
+            )
             result = self.executor.execute(
                 step.tool,
                 step.arguments,
                 confidence=confidence,
+                authorization_granted=authorization_granted,
                 negated=negated,
                 informational=informational,
                 require_confirmation=require_confirmation,
                 confirmation_scope=confirmation_scope,
+                **target_guard_arguments,
             )
             result = self._enforce_postcondition_shape(result)
             results.append(result)
@@ -166,6 +192,11 @@ class AgentCore:
             self._success_message(results),
             steps,
             [item.to_dict() for item in results],
+            client_actions=self._client_actions(
+                results,
+                request_id=request_id or "",
+                conversation_id=confirmation_scope or "",
+            ),
             request_id=request_id,
         )
 
@@ -175,6 +206,7 @@ class AgentCore:
         public_steps: List[Dict[str, object]],
         *,
         confidence: float,
+        authorization_granted: bool,
         confirmation_scope: str,
         require_confirmation: bool,
         negated: bool,
@@ -186,10 +218,12 @@ class AgentCore:
             plan_steps,
             execution_policy="best_effort",
             max_actions=3,
+            request_id=request_id or "",
         )
         outcome = self.execution_plan.execute(
             batch,
             confidence=confidence,
+            authorization_granted=authorization_granted,
             confirmation_scope=confirmation_scope,
             require_confirmation=require_confirmation,
             negated=negated,
@@ -232,6 +266,11 @@ class AgentCore:
                 self._partial_message(results, len(outcome.skipped_action_ids)),
                 public_steps,
                 serialized,
+                client_actions=self._client_actions(
+                    succeeded,
+                    request_id=request_id or "",
+                    conversation_id=confirmation_scope,
+                ),
                 request_id=request_id,
             )
         if failed:
@@ -259,6 +298,11 @@ class AgentCore:
             self._success_message(results),
             public_steps,
             serialized,
+            client_actions=self._client_actions(
+                results,
+                request_id=request_id or "",
+                conversation_id=confirmation_scope,
+            ),
             request_id=request_id,
         )
 
@@ -421,6 +465,10 @@ class AgentCore:
                     failure_message,
                     steps,
                     results,
+                    client_actions=self._client_actions(
+                        [item for item in results if item.success],
+                        conversation_id=confirmation_scope or "",
+                    ),
                 )
         if not results:
             return AgentResponse("failed", "模型没有提供可执行的工具调用。")
@@ -429,7 +477,40 @@ class AgentCore:
             self._success_message(results),
             steps,
             results,
+            client_actions=self._client_actions(
+                results,
+                conversation_id=confirmation_scope or "",
+            ),
         )
+
+    @staticmethod
+    def _client_actions(
+        results: List[ToolResult],
+        *,
+        request_id: str = "",
+        conversation_id: str = "",
+    ) -> List[ClientAction]:
+        actions: List[ClientAction] = []
+        for result in results:
+            if not result.success:
+                continue
+            raw = result.data.get("client_action")
+            if not isinstance(raw, dict):
+                continue
+            arguments = raw.get("arguments", {})
+            actions.append(
+                ClientAction(
+                    name=str(raw.get("name", "")),
+                    arguments=dict(arguments) if isinstance(arguments, dict) else {},
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    source=str(raw.get("source", "tool_registry")),
+                    expires_at=(
+                        datetime.now(timezone.utc) + timedelta(seconds=30)
+                    ).isoformat(),
+                )
+            )
+        return actions
 
     @classmethod
     def success_message(cls, results: List[ToolResult]) -> str:
@@ -456,6 +537,7 @@ class AgentCore:
     def _is_write_tool(name: str) -> bool:
         return str(name) not in {
             "show_plan",
+            "inspect_plan_duplicates",
             "show_action_log",
             "generate_daily_review",
             "show_growth_log",
@@ -550,26 +632,47 @@ class AgentCore:
             "complete_plan": "你完成的是哪一条计划？",
             "delete_plan": "你想删除哪一条计划？",
             "update_plan": "你想修改哪一条计划，以及修改什么？",
+            "merge_plan": "你想合并哪些相近计划？",
             "reschedule_plan": "你想把哪一条计划改到什么时间？",
             "add_action_log": "你想把哪件已经发生的事记到行动记录里？",
         }
         return questions.get(intent, "我还缺少执行所需的信息，可以再具体说一点吗？")
 
-    @staticmethod
-    def _enforce_postcondition_shape(result: ToolResult) -> ToolResult:
+    def _enforce_postcondition_shape(self, result: ToolResult) -> ToolResult:
         if not result.success:
             return result
         required_data = {
             "add_plan": "task",
             "complete_plan": "task",
             "update_plan": "task",
+            "merge_plan": "task",
             "reschedule_plan": "task",
             "reopen_plan": "task",
             "cancel_plan": "task",
             "add_action_log": "record",
         }
         required = required_data.get(result.tool)
-        if required is None or isinstance(result.data.get(required), dict):
+        plan_writes = {
+            "add_plan",
+            "complete_plan",
+            "update_plan",
+            "merge_plan",
+            "reschedule_plan",
+            "reopen_plan",
+            "delete_plan",
+        }
+        valid_shape = required is None or isinstance(result.data.get(required), dict)
+        if (
+            valid_shape
+            and (
+                not self.plan_postcondition_enabled
+                or result.tool not in plan_writes
+                or (
+                    result.data.get("postcondition_verified") is True
+                    and bool(result.data.get("changed_resource_ids"))
+                )
+            )
+        ):
             return result
         return ToolResult(
             False,
@@ -593,7 +696,10 @@ class AgentCore:
                 review = review_result.data.get("review", {})
                 text = str(review.get("text", "")) if isinstance(review, dict) else ""
                 return (text + "\n复盘也已经保存到成长日志了。").strip()
-            return "这些步骤已经按顺序完成了。"
+            return "；".join(
+                AgentCore._success_message([item]).rstrip("。")
+                for item in results
+            ) + "。"
 
         result = results[0]
         data = result.data
@@ -630,6 +736,18 @@ class AgentCore:
         if result.tool == "update_plan":
             task = data.get("task", {})
             return f"计划已经更新：{task.get('title', '')}。"
+        if result.tool == "merge_plan":
+            task = data.get("task", {})
+            removed = data.get("removed_tasks", [])
+            title = str(task.get("title", "")).strip() or "保留的计划"
+            status = "已完成" if task.get("done") else "待完成"
+            removed_count = len(removed) if isinstance(removed, list) else 0
+            if removed_count:
+                return (
+                    f"已把{removed_count + 1}条相近计划合并为“{title}”，"
+                    f"当前状态为{status}。"
+                )
+            return f"已把新增信息合并进“{title}”，当前状态为{status}。"
         if result.tool == "reschedule_plan":
             task = data.get("task", {})
             schedule = " ".join(
@@ -688,25 +806,13 @@ class AgentCore:
             if not memories:
                 if result.tool == "list_archived_memories":
                     return "现在没有已归档记忆。"
-                base = "我现在还没有找到符合条件的正式长期记忆。"
-                pending = int(data.get("pending_candidate_count", 0) or 0)
-                conflicts = int(data.get("unresolved_conflict_count", 0) or 0)
-                if pending or conflicts:
-                    base += f"另外有 {pending} 条待审核候选、{conflicts} 条未解决冲突。"
-                return base
+                return "我现在还没有找到符合条件的正式长期记忆。"
             lines = [
                 "已归档记忆："
                 if result.tool == "list_archived_memories"
                 else "我现在记得："
             ]
             lines.extend(f"{item.get('id')}. [{item.get('category', 'other')}] {item.get('content', '')}" for item in memories)
-            pending = int(data.get("pending_candidate_count", 0) or 0)
-            conflicts = int(data.get("unresolved_conflict_count", 0) or 0)
-            if pending or conflicts:
-                lines.append(
-                    f"另有 {pending} 条待审核候选、{conflicts} 条未解决冲突，"
-                    "它们还不算正式记忆。"
-                )
             return "\n".join(lines)
         if result.tool in {"create_memory_candidate", "request_add_memory"}:
             status = result.message

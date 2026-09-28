@@ -337,7 +337,8 @@ def test_web_page_uses_persistent_conversation_and_safe_text_rendering():
             assert index.status_code == 200
             assert "今日计划" in index.text
             assert "长期记忆" in index.text
-            assert "待审核" in index.text
+            assert "待整理（高级）" not in index.text
+            assert 'data-view="memory-candidates"' not in index.text
             assert "/v1/memory-candidates" in javascript.text
             assert "localStorage" in javascript.text
             assert "roxy_conversation_id" in javascript.text

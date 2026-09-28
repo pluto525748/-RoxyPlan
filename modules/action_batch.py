@@ -75,6 +75,7 @@ class ActionBatch:
         *,
         execution_policy: str = "best_effort",
         max_actions: int = 3,
+        request_id: str = "",
     ) -> "ActionBatch":
         actions = []
         previous_id = ""
@@ -89,13 +90,19 @@ class ActionBatch:
             )
             actions.append(action)
             previous_id = action.action_id
-        return cls(
+        batch = cls(
             conversation_id,
             actions,
             dependencies={item.action_id: list(item.depends_on) for item in actions},
             execution_policy=execution_policy,
             max_actions=max_actions,
         )
+        clean_request_id = str(request_id or "").strip()
+        if clean_request_id:
+            batch.batch_id = "batch_" + hashlib.sha256(
+                clean_request_id.encode("utf-8")
+            ).hexdigest()[:24]
+        return batch
 
     def to_dict(self) -> Dict[str, object]:
         return {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import re
@@ -32,17 +33,23 @@ if str(PROJECT_ROOT) not in sys.path:
 from modules.llm_client import LLMClient, load_llm_config
 from modules.llm.routed_client import RoutedLLMClient
 from modules.llm.response_sanitizer import sanitize_public_reply
-from modules.model_action_adapter import ModelActionAdapter, ModelToolCallLoop
+from modules.llm.usage_store import ModelUsageStore
+from modules.model_action_adapter import ModelActionAdapter
 from modules.agent_core import AgentCore
 from modules.agent_planner import AgentPlanner, LLMPlanner
 from modules.business_resolver import BusinessResolver
+from modules.capability_registry import DEFAULT_CAPABILITY_REGISTRY
 from modules.chat_history_manager import ChatHistoryManager
+from modules.development_log import configure_development_log, get_development_log
 from modules.confirmation_manager import ConfirmationManager
 from modules.context_builder import ContextBuilder
-from modules.contracts import AgentResponse
+from modules.contracts import AgentResponse, ClientAction
+from modules.client_action_claim_guard import ClientActionClaimGuard
+from modules.client_action_result import ClientActionResult
 from modules.conversation_service import ConversationService, ConversationTurn
 from modules.growth import GrowthService
 from modules.growth_manager import GrowthManager
+from modules.feature_flags import validate_feature_flags
 from modules.intent_router import IntentRouter, LLMIntentParser, match_plan_task
 from modules.interaction_state_coordinator import InteractionStateCoordinator
 from modules.knowledge_manager import KnowledgeManager
@@ -52,6 +59,7 @@ from modules.memory_manager import MemoryManager
 from modules.memory_retriever import MemoryRetriever
 from modules.memory_service import MemoryService
 from modules.plan_service import PlanService
+from modules.persona_registry import PersonaRegistry
 from modules.response_composer import ResponseComposer
 from modules.semantic_action_parser import SemanticActionParser
 from modules.safety_policy import SafetyPolicy
@@ -167,9 +175,22 @@ class ChatWindow(QMainWindow):
         chat_history_manager: Optional[ChatHistoryManager] = None,
         memory_manager: Optional[MemoryManager] = None,
         memory_service: Optional[MemoryService] = None,
+        development_log=None,
+        llm_client: Optional[Any] = None,
+        pet_settings: Optional[Dict[str, Any]] = None,
+        settings_config_file: Optional[Path] = None,
     ) -> None:
         super().__init__()
+        self.development_log = development_log or get_development_log()
+        self.settings_config_file = Path(
+            settings_config_file
+            or PROJECT_ROOT / "data" / "pet_config.json"
+        )
+        self._submitted_trace = None
+        self._active_reply_trace = None
+        self._client_runtime_snapshot: Dict[str, object] = {}
         self.pet_controller = pet_controller
+        self.client_action_claim_guard = ClientActionClaimGuard()
         self.reply_thread: Optional[QThread] = None
         self.reply_worker: Optional[ChatReplyWorker] = None
         self._pending_conversation_turn: Optional[ConversationTurn] = None
@@ -238,16 +259,26 @@ class ChatWindow(QMainWindow):
             or shared_candidate_manager
             or MemoryCandidateManager(repository=self.memory_manager.repository)
         )
-        self.pet_settings = load_pet_settings()
+        self.pet_settings = (
+            dict(pet_settings)
+            if pet_settings is not None
+            else load_pet_settings(self.settings_config_file)
+        )
+        self.persona_registry = PersonaRegistry(
+            PROJECT_ROOT / "data" / "personas",
+            active_persona_id=str(self.pet_settings.get("active_persona_id", "roxy")),
+        )
+        for warning in validate_feature_flags(self.pet_settings):
+            print(f"[FeatureFlags] warning={warning}", flush=True)
         self.memory_service = memory_service or MemoryService(
             self.memory_manager,
             self.memory_candidate_manager,
             candidates_enabled=bool(
-                self.pet_settings.get("enable_memory_candidates", True)
+                self.pet_settings.get("enable_memory_candidates", False)
             ),
         )
         self.memory_service.set_candidates_enabled(
-            bool(self.pet_settings.get("enable_memory_candidates", True))
+            bool(self.pet_settings.get("enable_memory_candidates", False))
         )
         self.memory_manager = self.memory_service.memory_manager
         self.memory_candidate_manager = self.memory_service.candidate_manager
@@ -290,7 +321,7 @@ class ChatWindow(QMainWindow):
             os.environ.get("QT_QPA_PLATFORM", "").lower() == "offscreen"
             and legacy_config_empty
         )
-        self.llm_client = (
+        self.llm_client = llm_client or (
             LLMClient(llm_config)
             if use_legacy_offscreen_client
             else RoutedLLMClient(
@@ -301,7 +332,7 @@ class ChatWindow(QMainWindow):
         )
         self.intent_router = IntentRouter(
             LLMIntentParser(self.llm_client.chat),
-            enable_llm=bool(self.pet_settings.get("llm_intent_assist_enabled", False)),
+            enable_llm=isinstance(self.llm_client, RoutedLLMClient),
         )
         self.tool_registry = create_roxy_tool_registry(
             self.growth_service,
@@ -310,8 +341,16 @@ class ChatWindow(QMainWindow):
             memory_governance=self.memory_governance,
             chat_history_manager=self.chat_history_manager,
             memory_service=self.memory_service,
+            plan_postcondition_enabled=bool(
+                self.pet_settings.get("plan_postcondition_enabled", True)
+            ),
         )
-        self.confirmation_manager = ConfirmationManager(ttl_seconds=180)
+        confirmation_ttl_seconds = int(
+            self.pet_settings.get("interaction_confirmation_ttl_seconds", 180)
+        )
+        self.confirmation_manager = ConfirmationManager(
+            ttl_seconds=confirmation_ttl_seconds
+        )
         self.safety_policy = SafetyPolicy(
             medium_confidence_threshold=float(
                 self.pet_settings.get("agent_medium_confidence", 0.82)
@@ -338,9 +377,16 @@ class ChatWindow(QMainWindow):
             self.agent_planner,
             self.tool_executor,
             enabled=bool(self.pet_settings.get("agent_core_enabled", True)),
+            plan_postcondition_enabled=bool(
+                self.pet_settings.get("plan_postcondition_enabled", True)
+            ),
         )
         self.interaction_coordinator = InteractionStateCoordinator(
-            ttl_seconds=int(self.pet_settings.get("interaction_ttl_seconds", 300))
+            ttl_seconds=int(self.pet_settings.get("interaction_ttl_seconds", 300)),
+            continuation_ttl_seconds=int(
+                self.pet_settings.get("interaction_continuation_ttl_seconds", 1200)
+            ),
+            confirmation_ttl_seconds=confirmation_ttl_seconds,
         )
         self.local_feature_extractor = LocalFeatureExtractor()
         self.model_action_proposal_adapter = ModelActionAdapter(self.tool_registry)
@@ -366,17 +412,11 @@ class ChatWindow(QMainWindow):
                 self.pet_settings.get("deterministic_response_enabled", True)
             )
         )
-        self.model_action_adapter = (
-            ModelToolCallLoop(
-                self.llm_client,
-                self.tool_registry,
-                self.agent_core,
-                proposal_adapter=self.model_action_proposal_adapter,
-                semantic_parser=self.semantic_action_parser,
-            )
-            if isinstance(self.llm_client, RoutedLLMClient)
-            else None
-        )
+        # ModelActionAdapter remains the proposal/schema adapter used by the
+        # unified semantic parser.  The old ModelToolCallLoop is intentionally
+        # not constructed here: a completed reply must not start a second
+        # natural-language tool decision.
+        self.model_action_adapter = None
         self.conversation_service = ConversationService(
             intent_router=self.intent_router,
             agent_core=self.agent_core,
@@ -385,11 +425,13 @@ class ChatWindow(QMainWindow):
             context_builder=self.context_builder,
             chat_history_manager=self.chat_history_manager,
             personality_context_provider=self.build_personality_context,
+            persona_registry=self.persona_registry,
+            context_sections_provider=self.build_context_sections,
             memory_context_provider=self.build_memory_context,
             knowledge_context_provider=self.build_knowledge_context,
             memory_governance=self.memory_governance,
             enable_memory_candidates=bool(
-                self.pet_settings.get("enable_memory_candidates", True)
+                self.pet_settings.get("enable_memory_candidates", False)
             ),
             summary_message_threshold=int(
                 self.pet_settings.get("summary_message_threshold", 30)
@@ -416,6 +458,27 @@ class ChatWindow(QMainWindow):
             ),
             action_batch_enabled=bool(
                 self.pet_settings.get("action_batch_enabled", True)
+            ),
+            action_preview_enabled=bool(
+                self.pet_settings.get("action_preview_enabled", True)
+            ),
+            legacy_intent_path_enabled=bool(
+                self.pet_settings.get("legacy_intent_path_enabled", False)
+            ),
+            semantic_decision_compatibility_enabled=not isinstance(
+                self.llm_client, RoutedLLMClient
+            ),
+            interaction_diagnostics_enabled=bool(
+                self.pet_settings.get("interaction_diagnostics_enabled", False)
+            ),
+            development_log=self.development_log,
+            interaction_diagnostics_path=(
+                PROJECT_ROOT / "logs" / "interaction_diagnostics.jsonl"
+                if Path(self.memory_manager.memory_file).resolve()
+                == DEFAULT_MEMORY_FILE.resolve()
+                else Path(self.memory_manager.memory_file).parent
+                / "logs"
+                / "interaction_diagnostics.jsonl"
             ),
         )
 
@@ -560,7 +623,11 @@ class ChatWindow(QMainWindow):
 
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(
-                self, chat_history_manager=self.chat_history_manager
+                self,
+                config_file=self.settings_config_file,
+                chat_history_manager=self.chat_history_manager,
+                secret_store=getattr(self.llm_client, "secret_store", None),
+                usage_store=getattr(self.llm_client, "usage_store", None),
             )
             self.settings_dialog.settings_saved.connect(self.apply_chat_settings)
             self.settings_dialog.history_cleared.connect(
@@ -592,9 +659,12 @@ class ChatWindow(QMainWindow):
         self.context_builder.set_recent_message_limit(
             int(self.pet_settings.get("recent_context_messages", 16))
         )
+        self.persona_registry.select(
+            str(self.pet_settings.get("active_persona_id", "roxy"))
+        )
         self.intent_router.configure_llm(
             LLMIntentParser(self.llm_client.chat),
-            bool(self.pet_settings.get("llm_intent_assist_enabled", False)),
+            isinstance(self.llm_client, RoutedLLMClient),
         )
         self.agent_core.enabled = bool(
             self.pet_settings.get("agent_core_enabled", True)
@@ -615,10 +685,10 @@ class ChatWindow(QMainWindow):
             self.pet_settings.get("agent_confirm_high_risk", True)
         )
         self.conversation_service.set_memory_candidates_enabled(
-            bool(self.pet_settings.get("enable_memory_candidates", True))
+            bool(self.pet_settings.get("enable_memory_candidates", False))
         )
         self.memory_service.set_candidates_enabled(
-            bool(self.pet_settings.get("enable_memory_candidates", True))
+            bool(self.pet_settings.get("enable_memory_candidates", False))
         )
         self.semantic_action_parser.enabled = bool(
             self.pet_settings.get("unified_semantic_parser_enabled", True)
@@ -644,8 +714,22 @@ class ChatWindow(QMainWindow):
         self.conversation_service.action_batch_enabled = bool(
             self.pet_settings.get("action_batch_enabled", True)
         )
+        self.conversation_service.action_preview_enabled = bool(
+            self.pet_settings.get("action_preview_enabled", True)
+        )
+        self.conversation_service.legacy_intent_path_enabled = bool(
+            self.pet_settings.get("legacy_intent_path_enabled", False)
+        )
+        self.conversation_service.semantic_decision_compatibility_enabled = not isinstance(
+            self.llm_client, RoutedLLMClient
+        )
+        for warning in validate_feature_flags(self.pet_settings):
+            print(f"[FeatureFlags] warning={warning}", flush=True)
         self.agent_core.action_batch_enabled = (
             self.conversation_service.action_batch_enabled
+        )
+        self.agent_core.plan_postcondition_enabled = bool(
+            self.pet_settings.get("plan_postcondition_enabled", True)
         )
 
     def handle_history_cleared_from_settings(self) -> None:
@@ -656,6 +740,7 @@ class ChatWindow(QMainWindow):
     def new_chat_session(self) -> None:
         self.record_pet_interaction()
         previous_session_id = self.current_session_id
+        self.conversation_service.finalize_conversation(previous_session_id)
         self.confirmation_manager.cancel(scope=previous_session_id)
         if hasattr(self, "interaction_coordinator"):
             self.interaction_coordinator.clear_conversation(previous_session_id)
@@ -692,6 +777,20 @@ class ChatWindow(QMainWindow):
         session = self.chat_history_manager.switch_session(session_id)
         if session is None:
             return False
+        previous_session_id = self.current_session_id
+        if previous_session_id != session_id:
+            self.conversation_service.finalize_conversation(previous_session_id)
+        self.confirmation_manager.cancel(scope=previous_session_id)
+        self.confirmation_manager.cancel(scope=session_id)
+        if hasattr(self, "interaction_coordinator"):
+            self.interaction_coordinator.clear_conversation(previous_session_id)
+            self.interaction_coordinator.clear_conversation(session_id)
+        if hasattr(self.conversation_service, "state_manager"):
+            self.conversation_service.state_manager.reset(previous_session_id)
+            self.conversation_service.state_manager.reset(session_id)
+        self._pending_conversation_turn = None
+        self._pending_memory_delete_id = None
+        self._pending_plan_delete_id = None
         self.current_session_id = session_id
         self.restore_current_session()
         return True
@@ -829,8 +928,8 @@ class ChatWindow(QMainWindow):
         return self.knowledge_manager.scan()
 
     def greet_user(self) -> None:
-        nickname = str(self.memory.get("profile", {}).get("nickname", "")).strip()
-        if nickname and nickname not in {"我", "你", "用户"}:
+        nickname = self.memory_manager.preferred_name()
+        if nickname:
             self.add_message("Roxy", f"欢迎回来，{nickname}。")
             self.log_saved_memories()
         else:
@@ -869,55 +968,40 @@ class ChatWindow(QMainWindow):
             return
 
         self._message_sequence += 1
-        self.record_pet_interaction()
-        self.add_message("You", user_text)
-        self.input_box.clear()
+        trace = self.development_log.new_trace(
+            session_id=self.current_session_id, source="chat",
+        )
+        self._submitted_trace = trace
+        with self.development_log.bind(trace):
+            self.development_log.event(
+                trace, "chat_submitted",
+                user_text_hash=hashlib.sha256(user_text.encode("utf-8")).hexdigest(),
+            )
+            self.record_pet_interaction()
+            self.add_message("You", user_text)
+            self.input_box.clear()
 
-        if self.handle_chat_history_command(user_text):
-            return
+            if self.handle_chat_history_command(user_text):
+                self.development_log.event(trace, "turn_service_finished", status="completed", terminal=True)
+                return
 
-        if self.handle_memory_candidate_command(user_text):
-            return
+            if self.handle_agent_confirmation(user_text):
+                self.development_log.event(trace, "turn_service_finished", status="completed", terminal=True)
+                return
 
-        if self.handle_agent_confirmation(user_text):
-            return
+            self.handle_agent_request(user_text)
 
-        if self.handle_agent_request(user_text):
-            return
+    @staticmethod
+    def _retire_legacy_natural_handler(handler_name: str) -> bool:
+        """Seal former desktop text handlers outside the unified pipeline.
 
-        if self.handle_plan_command(user_text):
-            return
-
-        if self.handle_action_log_command(user_text):
-            return
-
-        if self.handle_growth_command(user_text):
-            return
-
-        if self.handle_memory_command(user_text):
-            return
-
-        if self.handle_personality_command(user_text):
-            return
-
-        if self.handle_knowledge_command(user_text):
-            return
-
-        if self.handle_dance_command(user_text):
-            return
-
-        if self.handle_natural_intent(user_text):
-            return
-
-        personality_reply = self.match_personality_rule(user_text)
-        if personality_reply is not None:
-            self.add_message("Roxy", personality_reply)
-            return
-
-        if self.save_first_nickname(user_text):
-            return
-
-        self.start_ai_reply(user_text)
+        These compatibility methods remain in the class for API stability and
+        for their data-management implementation history, but the desktop chat
+        entry must never let them rescan a natural-language message after
+        ConversationService has produced its one semantic decision.
+        """
+        print(f"[LegacyIntent] retired handler={handler_name}", flush=True)
+        return True
 
     def handle_agent_confirmation(self, user_text: str) -> bool:
         if not bool(self.pet_settings.get("agent_core_enabled", True)):
@@ -926,27 +1010,21 @@ class ChatWindow(QMainWindow):
         if legacy_response is not None:
             self.add_message("Roxy", legacy_response)
             return True
-        if self.confirmation_manager.pending(scope=self.current_session_id) is None:
-            return False
-        response = self.agent_core.handle_confirmation(
-            user_text,
-            confirmation_scope=self.current_session_id,
-        )
-        if response is None:
-            return False
-        self.add_message("Roxy", response.message)
-        return True
+        # Scoped confirmations created by ConversationService must return to
+        # ConversationService.  Only the exact local management confirmations
+        # above remain in this compatibility entry point.
+        return False
 
     def _handle_legacy_confirmation(self, user_text: str) -> Optional[str]:
         text = user_text.strip().strip("。.!！?？")
-        pending = self.confirmation_manager.pending()
+        pending = self.confirmation_manager.pending(scope=self.current_session_id)
         if pending is None or pending.get("tool") not in {
             "clear_chat_history", "delete_chat_session",
             "clear_memory_candidates", "delete_memory_candidate",
         }:
             return None
         if text in {"取消", "不要执行", "取消刚才的操作", "不用了"}:
-            self.confirmation_manager.cancel()
+            self.confirmation_manager.cancel(scope=self.current_session_id)
             return "好，刚才的操作已经取消。"
         expected_specific = {
             "clear_chat_history": "确认清空聊天记录",
@@ -956,7 +1034,10 @@ class ChatWindow(QMainWindow):
         }[str(pending["tool"])]
         if text not in {"确认", "确认刚才的操作", "继续执行"} and not text.startswith(expected_specific):
             return None
-        consumed = self.confirmation_manager.consume(str(pending["confirmation_id"]))
+        consumed = self.confirmation_manager.consume(
+            str(pending["confirmation_id"]),
+            scope=self.current_session_id,
+        )
         if consumed is None:
             return "刚才的确认已经过期，请重新发起操作。"
         tool = str(consumed["tool"])
@@ -988,6 +1069,7 @@ class ChatWindow(QMainWindow):
         )
 
     def handle_agent_request(self, user_text: str) -> bool:
+        self._capture_client_runtime_snapshot()
         turn = self.conversation_service.prepare(
             user_text,
             self.current_session_id,
@@ -999,16 +1081,134 @@ class ChatWindow(QMainWindow):
             if turn.requires_llm:
                 self.start_ai_reply(user_text, self._message_sequence)
                 return True
-            return False
+            self.add_message("Roxy", "这次没有得到可继续处理的结果，请换一种说法。")
+            return True
         self._pending_conversation_turn = None
-        self.add_message(
-            "Roxy",
-            turn.response.message,
+        self._present_agent_response(
+            turn.response,
             intent=str(turn.intent_result.get("intent", "")) or None,
         )
         return True
 
+    def _present_agent_response(
+        self,
+        response: AgentResponse,
+        *,
+        intent: Optional[str] = None,
+    ) -> List[ClientActionResult]:
+        trace = self.development_log.current_trace() or self._active_reply_trace
+        response_session_id = str(
+            response.conversation_id or (trace.session_id if trace is not None else "")
+            or self.current_session_id
+        )
+        if response_session_id != self.current_session_id:
+            return []
+        results: List[ClientActionResult] = []
+        dispatcher_enabled = bool(
+            self.pet_settings.get("unified_client_action_dispatcher_enabled", True)
+        )
+        dispatcher = getattr(
+            self.pet_controller, "client_action_dispatcher", None
+        )
+        if dispatcher_enabled and response.client_actions:
+            if dispatcher is not None:
+                results = dispatcher.dispatch_all(response.client_actions)
+            else:
+                results = [
+                    ClientActionResult.rejected(
+                        action,
+                        status="failed",
+                        reason_code="pet_unavailable",
+                        display_message="桌宠当前不可用，动作没有执行。",
+                    )
+                    for action in response.client_actions
+                ]
+        elif response.client_actions and bool(
+            self.pet_settings.get("legacy_direct_pet_action_enabled", False)
+        ):
+            for action in response.client_actions:
+                accepted = bool(
+                    self.pet_controller
+                    and self.pet_controller.execute_client_action(action.to_dict())
+                )
+                results.append(
+                    ClientActionResult(
+                        action_id=action.action_id,
+                        name=action.name,
+                        status="running" if accepted else "failed",
+                        accepted=accepted,
+                        started=accepted,
+                        reason_code="legacy_direct",
+                    )
+                )
+        elif response.client_actions:
+            results = [
+                ClientActionResult.rejected(
+                    action,
+                    status="rejected",
+                    reason_code="dispatcher_disabled",
+                    display_message="当前客户端未启用这个桌宠动作，这次没有执行。",
+                )
+                for action in response.client_actions
+            ]
+        snapshot = self._capture_client_runtime_snapshot()
+        for result in results:
+            self.conversation_service.state_manager.observe_client_action_result(
+                response_session_id,
+                {
+                    "name": result.name,
+                    "status": result.status,
+                    "accepted": result.accepted,
+                    "started": result.started,
+                    "completed": result.completed,
+                    "reason_code": result.reason_code,
+                    "source": "desktop_dispatcher",
+                    "observed_at": snapshot["observed_at"],
+                    "state": snapshot["pet_state"],
+                },
+            )
+        message = response.message
+        if bool(self.pet_settings.get("client_action_claim_guard_enabled", True)):
+            message = self.client_action_claim_guard.validate(
+                message,
+                results,
+                action_expected=(
+                    any(item.name == "play_dance" for item in response.client_actions)
+                    or any(item.tool == "play_dance" for item in response.tool_results)
+                ),
+            )
+        with self.development_log.bind(trace):
+            self._refresh_memory_dialog_after_verified_save(response)
+            self.add_message("Roxy", sanitize_public_reply(message), intent=intent)
+        return results
+
+    def _refresh_memory_dialog_after_verified_save(
+        self,
+        response: AgentResponse,
+    ) -> None:
+        if self.memory_dialog is None:
+            return
+        for result in response.tool_results:
+            if not result.success or result.tool not in {
+                "save_formal_memory", "delete_memory", "update_memory", "archive_memory",
+            }:
+                continue
+            operation = result.data.get("memory_operation", {})
+            operation = operation if isinstance(operation, dict) else {}
+            if operation.get("memory_id") is None:
+                continue
+            self.memory_dialog.refresh_all()
+            reason = {
+                "save_formal_memory": "formal_memory_saved",
+                "delete_memory": "formal_memory_deleted",
+                "update_memory": "formal_memory_updated",
+                "archive_memory": "formal_memory_archived",
+            }[result.tool]
+            print(f"[MemoryUI] refreshed reason={reason}", flush=True)
+            return
+
     def ask_ai(self, user_text: str) -> str:
+        self._capture_client_runtime_snapshot()
         turn = self.conversation_service.prepare(
             user_text,
             self.current_session_id,
@@ -1025,6 +1225,7 @@ class ChatWindow(QMainWindow):
             self.add_message("Roxy", "我还在思考上一条消息，请稍等一下。")
             return
 
+        self._capture_client_runtime_snapshot()
         turn = self._pending_conversation_turn
         self._pending_conversation_turn = None
         if turn is None or turn.message != user_text or not turn.requires_llm:
@@ -1036,7 +1237,8 @@ class ChatWindow(QMainWindow):
             )
         if turn.response is not None or turn.deferred:
             response = self.conversation_service.complete(turn)
-            self.add_message("Roxy", response.message)
+            with self.development_log.bind(turn.trace_context):
+                self._present_agent_response(response)
             return
 
         if turn_sequence is None:
@@ -1045,6 +1247,7 @@ class ChatWindow(QMainWindow):
             turn_sequence = self._message_sequence
         self._active_reply_sequence = int(turn_sequence)
         self._active_reply_request_id = turn.request_id
+        self._active_reply_trace = turn.trace_context
         self.start_pet_thinking()
         self.reply_thread = QThread(self)
         self.reply_worker = ChatReplyWorker(
@@ -1072,8 +1275,17 @@ class ChatWindow(QMainWindow):
             if turn_sequence is not None
             else self._active_reply_sequence
         )
-        if completed_sequence != self._message_sequence:
+        trace = self._active_reply_trace
+        if (
+            completed_sequence != self._message_sequence
+            or (trace is not None and trace.session_id != self.current_session_id)
+        ):
             print("[Conversation] stale response ignored", flush=True)
+            self.development_log.event(
+                trace, "reply_not_displayed", status="ignored",
+                reason_code="session_changed" if trace and trace.session_id != self.current_session_id else "reply_stale",
+                terminal=True,
+            )
             if self._last_visible_assistant_message:
                 self.conversation_service.state_manager.observe_assistant(
                     self.current_session_id,
@@ -1086,7 +1298,11 @@ class ChatWindow(QMainWindow):
             if isinstance(response, AgentResponse)
             else self._active_reply_request_id
         )
-        self.add_message("Roxy", sanitize_public_reply(reply))
+        with self.development_log.bind(trace):
+            if isinstance(response, AgentResponse):
+                self._present_agent_response(response)
+            else:
+                self.add_message("Roxy", sanitize_public_reply(reply))
         print(
             f"[Conversation] completed request_id={request_id or 'untracked'}",
             flush=True,
@@ -1097,6 +1313,7 @@ class ChatWindow(QMainWindow):
         self.reply_worker = None
         self._active_reply_sequence = 0
         self._active_reply_request_id = ""
+        self._active_reply_trace = None
 
     def record_pet_interaction(self) -> None:
         if self.pet_controller is not None and hasattr(self.pet_controller, "record_interaction"):
@@ -1146,13 +1363,15 @@ class ChatWindow(QMainWindow):
                 "delete_chat_session",
                 {"session_id": str(session["session_id"])},
                 "删除本地聊天会话",
+                scope=self.current_session_id,
             )
             self.add_message("Roxy", "删除后无法恢复。确定的话，请回复“确认”或“取消”。")
             return True
 
         if text == "清空聊天记录":
             self.confirmation_manager.create(
-                "clear_chat_history", {}, "清空全部本地聊天历史"
+                "clear_chat_history", {}, "清空全部本地聊天历史",
+                scope=self.current_session_id,
             )
             self.add_message(
                 "Roxy",
@@ -1168,6 +1387,8 @@ class ChatWindow(QMainWindow):
         return False
 
     def handle_plan_command(self, user_text: str) -> bool:
+        if self._retire_legacy_natural_handler("handle_plan_command"):
+            return False
         text = user_text.strip()
         add_prefixes = ("今日计划：", "今日计划:", "添加计划：", "添加计划:")
         for prefix in add_prefixes:
@@ -1262,6 +1483,8 @@ class ChatWindow(QMainWindow):
         self.add_message("Roxy", str(review["text"]))
 
     def handle_action_log_command(self, user_text: str) -> bool:
+        if self._retire_legacy_natural_handler("handle_action_log_command"):
+            return False
         text = user_text.strip()
         for prefix in ("记录：", "记录:", "行动记录：", "行动记录:"):
             if text.startswith(prefix):
@@ -1285,6 +1508,8 @@ class ChatWindow(QMainWindow):
         return False
 
     def handle_growth_command(self, user_text: str) -> bool:
+        if self._retire_legacy_natural_handler("handle_growth_command"):
+            return False
         text = user_text.strip()
         if text in {"今日复盘", "复盘一下", "今天完成了什么"}:
             self.show_today_review()
@@ -1314,6 +1539,8 @@ class ChatWindow(QMainWindow):
         return False
 
     def handle_natural_intent(self, user_text: str) -> bool:
+        if self._retire_legacy_natural_handler("handle_natural_intent"):
+            return False
         if not bool(self.pet_settings.get("smart_intent_enabled", True)):
             return False
         result = self.intent_router.route(user_text)
@@ -1528,18 +1755,28 @@ class ChatWindow(QMainWindow):
             self.pet_controller.notify_plan_completed()
 
     def handle_dance_command(self, user_text: str) -> bool:
-        normalized_text = user_text.lower()
-        if not any(trigger in normalized_text for trigger in ("跳舞", "跳一段", "dance")):
+        if self._retire_legacy_natural_handler("handle_dance_command"):
             return False
-
-        started = False
-        if self.pet_controller is not None and hasattr(self.pet_controller, "start_dance"):
-            started = bool(self.pet_controller.start_dance())
-
-        if started:
-            self.add_message("Roxy", "好，我跳一小段。")
-        else:
-            self.add_message("Roxy", "还没有舞蹈动作素材哦。")
+        normalized_text = user_text.lower()
+        if any(term in normalized_text for term in ("不想跳", "不要跳", "别跳")):
+            return False
+        if not any(trigger in normalized_text for trigger in ("跳舞", "跳一段", "跳一个舞", "dance")):
+            return False
+        response = AgentResponse(
+            "completed",
+            "好，我跳一小段。",
+            client_actions=[
+                ClientAction(
+                    "play_dance",
+                    {"dance_id": None},
+                    request_id=f"local_{self._message_sequence}",
+                    conversation_id=self.current_session_id,
+                    source="fixed_command_compatibility",
+                )
+            ],
+            conversation_id=self.current_session_id,
+        )
+        self._present_agent_response(response, intent="dance")
         return True
 
     def start_pet_thinking(self) -> None:
@@ -1551,6 +1788,7 @@ class ChatWindow(QMainWindow):
             self.pet_controller.stop_thinking()
 
     def build_llm_messages(self, user_text: str) -> List[Dict[str, str]]:
+        self._capture_client_runtime_snapshot()
         return self.conversation_service.build_llm_messages(
             user_text,
             self.current_session_id,
@@ -1565,7 +1803,8 @@ class ChatWindow(QMainWindow):
                 personality_context,
                 memory_context,
                 knowledge_context,
-                "请用当前人格回复用户。优先帮助用户学习、健康、项目、赚钱和长期成长。不要声称你接入了数据库或语音。",
+                "请用当前人格回复用户。使用自然纯文本，不使用 Markdown 或 **加粗** 标记。"
+                "优先帮助用户学习、健康、项目、赚钱和长期成长。不要声称你接入了数据库或语音。",
             ]
         )
 
@@ -1614,17 +1853,146 @@ class ChatWindow(QMainWindow):
             ]
         )
 
+    def available_personas(self) -> List[Dict[str, str]]:
+        return self.persona_registry.available_personas()
+
+    def _capture_client_runtime_snapshot(self) -> Dict[str, object]:
+        """Copy Qt-owned facts on the UI thread; workers consume only this copy."""
+        if QThread.currentThread() != self.thread():
+            return dict(self._client_runtime_snapshot)
+        observed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        manager = getattr(self.pet_controller, "action_manager", None)
+        manager_state = str(getattr(manager, "current_state", "unknown"))
+        # The thinking decoration can temporarily override the manager label
+        # while existing dance frames still render. Read the actual UI-owned
+        # frame state rather than deriving animation playback from reply text.
+        dancing = bool(getattr(self.pet_controller, "_dance_frames", []))
+        pet_state = "dancing" if dancing else manager_state
+        if pet_state not in {"idle", "thinking", "sleeping", "dancing", "reminding"}:
+            pet_state = "unknown"
+        dispatcher_available = bool(
+            self.pet_controller is not None
+            and (
+                (
+                    self.pet_settings.get("unified_client_action_dispatcher_enabled", True)
+                    and getattr(self.pet_controller, "client_action_dispatcher", None) is not None
+                )
+                or self.pet_settings.get("legacy_direct_pet_action_enabled", False)
+            )
+            and manager is not None
+        )
+        capabilities = []
+        for tool_name in self.tool_registry.names(enabled_only=True):
+            tool = self.tool_registry.get(tool_name)
+            capability = DEFAULT_CAPABILITY_REGISTRY.for_tool(tool_name)
+            if tool is None or not tool.model_visible or capability is None:
+                continue
+            if capability.domain == "pet" and not dispatcher_available:
+                continue
+            capabilities.append({
+                "name": capability.capability_id,
+                "description": capability.description,
+            })
+        snapshot = {
+            "client": "desktop",
+            "source": "desktop_ui_snapshot",
+            "observed_at": observed_at,
+            "pet_available": self.pet_controller is not None,
+            "pet_actions_available": dispatcher_available,
+            "pet_state": pet_state,
+            "manager_state": manager_state if manager_state in {
+                "idle", "thinking", "sleeping", "dancing", "reminding"
+            } else "unknown",
+            "capabilities": capabilities,
+            "conversation_id": self.current_session_id,
+        }
+        self._client_runtime_snapshot = snapshot
+        references = self.conversation_service.state_manager.reference_context(self.current_session_id)
+        prior = references.get("prior_client_action", {})
+        reason = str(getattr(manager, "last_reason", ""))
+        if (
+            isinstance(prior, dict) and prior.get("name") == "play_dance"
+            and prior.get("status") == "running" and not dancing
+            and pet_state != "dancing" and reason in {"completed", "cancelled", "action_failed", "exception"}
+        ):
+            status = (
+                "finished" if reason == "completed" else "cancelled" if reason == "cancelled" else "failed"
+            )
+            self.conversation_service.state_manager.observe_client_action_result(
+                self.current_session_id,
+                {
+                    **prior,
+                    "status": status,
+                    "completed": status == "finished",
+                    "reason_code": reason,
+                    "state": pet_state,
+                    "source": "desktop_state_snapshot",
+                    "observed_at": observed_at,
+                },
+            )
+        return dict(snapshot)
+
+    def build_context_sections(self) -> Dict[str, object]:
+        plans = self.plan_service.list_plans()
+        pending = [item for item in plans if not item.get("done") and item.get("status") != "cancelled"]
+        completed = [item for item in plans if item.get("done") or item.get("status") == "completed"]
+        actions = self.plan_service.action_records()
+        memories = self.memory_manager.working_memories()
+        goals = [
+            str(item.get("content", "")).strip()
+            for item in memories
+            if isinstance(item, dict)
+            and str(item.get("content", "")).strip()
+            and str(item.get("scope", "")) != "temporary_state"
+            and (
+                str(item.get("category", "")).lower() in {"goal", "long_term_goal"}
+                or "长期目标" in str(item.get("content", ""))
+            )
+        ][:3]
+        runtime = dict(self._client_runtime_snapshot)
+        runtime_session_id = str(runtime.pop("conversation_id", ""))
+        return {
+            "client_runtime_session_id": runtime_session_id,
+            "client_runtime": (
+                "程序已核验的客户端快照（只读，仅说明采集时的能力和状态，不授权执行）：\n"
+                + json.dumps(runtime, ensure_ascii=False, separators=(",", ":"))
+                + "\n能力列表来自当前启用的程序目录；桌面动画只在 pet_actions_available=true 时可派发。"
+                "这是当前桌面客户端，不代表 Local Web 也能播放动画。"
+                "pet_state 是 observed_at 时采集的真实状态，不等于动画现在仍在运行。"
+                "可以说明具备播放能力，但不能凭能力列表说已经播放；执行事实只认真实客户端结果。"
+                "不要向用户展示JSON、内部字段或工具名称。"
+                if runtime else "客户端本轮状态尚未取得，不要推测桌宠正在执行什么动作。"
+            ),
+            "user_goals": "重要长期目标：\n" + "\n".join(f"- {item}" for item in goals) if goals else "",
+            "today_pending": "今日未完成计划：\n" + "\n".join(
+                f"- {str(item.get('title', '')).strip()}" for item in pending[:8] if str(item.get("title", "")).strip()
+            ) if pending else "",
+            "today_completed": "今日已完成摘要：\n" + "\n".join(
+                f"- {str(item.get('title', '')).strip()}" for item in completed[:6] if str(item.get("title", "")).strip()
+            ) if completed else "",
+            "actions": "今日行动记录：\n" + "\n".join(
+                f"- {str(item.get('content', '')).strip()}" for item in actions[:6] if str(item.get("content", "")).strip()
+            ) if actions else "",
+            "item_counts": {
+                "user_important_goals": len(goals),
+                "today_unfinished_plan": len(pending),
+                "today_completed_summary": len(completed),
+                "today_action_records": len(actions),
+            },
+        }
+
     def build_memory_context(
         self, memories: Optional[List[Dict[str, object]]] = None
     ) -> str:
-        profile = self.memory.get("profile", {})
-        nickname = profile.get("nickname") or "未设置"
+        nickname = self.memory_manager.preferred_name() or "未设置"
         source_items = (
-            self.memory_manager.memories("active") if memories is None else memories
+            self.memory_manager.working_memories() if memories is None else memories
         )
         memory_lines = []
         for item in source_items:
             if not isinstance(item, dict):
+                continue
+            if str(item.get("scope", "")) == "temporary_state":
                 continue
             content = str(item.get("content", "")).strip()
             if content:
@@ -1679,7 +2047,7 @@ class ChatWindow(QMainWindow):
         return None
 
     def render_reply(self, template: str) -> str:
-        nickname = self.memory.get("profile", {}).get("nickname") or "你"
+        nickname = self.memory_manager.preferred_name() or "你"
         values = {
             "nickname": nickname,
             "name": str(self.personality.get("name") or "未设置"),
@@ -1739,7 +2107,8 @@ class ChatWindow(QMainWindow):
         text = user_text.strip()
         if text == "清空待确认记忆":
             self.confirmation_manager.create(
-                "clear_memory_candidates", {}, "清空待确认记忆"
+                "clear_memory_candidates", {}, "清空待确认记忆",
+                scope=self.current_session_id,
             )
             self.add_message("Roxy", "这会忽略全部待确认记忆。确定的话，请回复“确认”或“取消”。")
             return True
@@ -1757,7 +2126,8 @@ class ChatWindow(QMainWindow):
                 self.add_message("Roxy", f"没有找到候选记忆 {candidate_id}。")
                 return True
             self.confirmation_manager.create(
-                "delete_memory_candidate", {"candidate_id": candidate_id}, "删除候选记忆"
+                "delete_memory_candidate", {"candidate_id": candidate_id}, "删除候选记忆",
+                scope=self.current_session_id,
             )
             self.add_message("Roxy", "删除后无法恢复。确定的话，请回复“确认”或“取消”。")
             return True
@@ -1828,6 +2198,8 @@ class ChatWindow(QMainWindow):
         return True
 
     def handle_memory_command(self, user_text: str) -> bool:
+        if self._retire_legacy_natural_handler("handle_memory_command"):
+            return False
         # 先判断所有记忆命令，再进入普通聊天或首次昵称逻辑。
         text = user_text.strip()
         if text in {"我的记忆", "查看长期记忆", "你记得我什么"}:
@@ -2103,14 +2475,34 @@ class ChatWindow(QMainWindow):
             if normalized_sender in {"system", "系统"}
             else "assistant"
         )
+        trace = self.development_log.current_trace()
+        if trace and trace.session_id != self.current_session_id:
+            trace = None
+        if role == "assistant" and record_history and trace:
+            self.development_log.event(
+                trace, "reply_displayed",
+                response_hash=hashlib.sha256(message.encode("utf-8", errors="replace")).hexdigest(),
+                terminal=True,
+            )
         if record_history:
-            self.chat_history_manager.add_message(
+            saved_metadata = dict(metadata or {})
+            if trace and self.development_log.enabled:
+                saved_metadata.update(trace.to_metadata())
+            saved = self.chat_history_manager.add_message(
                 self.current_session_id,
                 role,
                 message,
                 intent=intent,
-                metadata=metadata,
+                metadata=saved_metadata,
             )
+            with self.development_log.bind(trace):
+                self.development_log.event(
+                    trace, "history_written", success=saved is not None,
+                    message_id=str(saved.get("id", "")) if saved else "",
+                    status="success" if saved else "unavailable",
+                    reason_code="history_disabled" if not self.chat_history_manager.enabled else
+                    ("history_save_failed" if saved is None else ""),
+                )
             session = self.chat_history_manager.get_session(self.current_session_id)
             if session is not None:
                 self.session_title_label.setText(str(session.get("title", "新对话")))
@@ -2162,15 +2554,109 @@ class ChatWindow(QMainWindow):
         scroll_bar.setValue(scroll_bar.maximum())
 
 
+def _acceptance_root_from_argv(argv: List[str]) -> Optional[Path]:
+    """Return an external, explicit data root for real desktop acceptance."""
+    if "--acceptance-root" not in argv:
+        return None
+    index = argv.index("--acceptance-root")
+    if index + 1 >= len(argv) or str(argv[index + 1]).startswith("--"):
+        raise ValueError("--acceptance-root requires an absolute directory")
+    root = Path(argv[index + 1])
+    if not root.is_absolute():
+        raise ValueError("--acceptance-root must be an absolute directory")
+    resolved = root.resolve()
+    project = PROJECT_ROOT.resolve()
+    if resolved == project or project in resolved.parents:
+        raise ValueError("--acceptance-root must be outside the project directory")
+    return resolved
+
+
+def _acceptance_desktop_pet(root: Path, logger) -> DesktopPet:
+    """Compose the production desktop against isolated writable stores."""
+    private_dir = root / "data" / "private"
+    settings = load_pet_settings(PROJECT_ROOT / "data" / "pet_config.json")
+    growth_service = GrowthManager(private_dir)
+    history_manager = ChatHistoryManager(
+        private_dir,
+        enabled=bool(settings.get("chat_history_enabled", True)),
+    )
+    memory_service = MemoryService.from_data_root(
+        root,
+        memory_file=root / "memory.json",
+        private_dir=private_dir,
+        default_data=default_memory(),
+        candidates_enabled=bool(settings.get("enable_memory_candidates", False)),
+    )
+    llm_client = RoutedLLMClient(
+        PROJECT_ROOT,
+        settings=settings,
+        legacy_config=load_llm_config(CONFIG_FILE),
+        usage_store=ModelUsageStore(root),
+    )
+    isolated_config = root / "data" / "pet_config.json"
+    isolated_tips = root / "data" / "pet_tips.json"
+
+    def chat_factory(pet_controller):
+        return ChatWindow(
+            pet_controller=pet_controller,
+            growth_service=growth_service,
+            chat_history_manager=history_manager,
+            memory_service=memory_service,
+            development_log=logger,
+            llm_client=llm_client,
+            pet_settings=settings,
+            settings_config_file=isolated_config,
+        )
+
+    return DesktopPet(
+        chat_factory=chat_factory,
+        growth_service=growth_service,
+        chat_history_manager=history_manager,
+        config_file=isolated_config,
+        tips_file=isolated_tips,
+    )
+
+
 def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName("RoxyPlan")
+    args = sys.argv[1:]
+    acceptance_root = _acceptance_root_from_argv(args)
+    logger = configure_development_log(
+        (acceptance_root or PROJECT_ROOT) / "logs" / "development",
+        enabled="--no-development-log" not in args,
+    )
+    logger.event(None, "run_started")
+    previous_exception_hook = sys.excepthook
 
-    print("[PET] using frontend.desktop_pet.DesktopPet", flush=True)
-    pet = DesktopPet(chat_factory=lambda pet_controller: ChatWindow(pet_controller=pet_controller))
-    pet.show()
+    def report_exception(error_type, error, traceback):
+        logger.record_exception(None, error)
+        previous_exception_hook(error_type, error, traceback)
 
-    return app.exec()
+    sys.excepthook = report_exception
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("RoxyPlan")
+
+        print("[PET] using frontend.desktop_pet.DesktopPet", flush=True)
+        pet = (
+            _acceptance_desktop_pet(acceptance_root, logger)
+            if acceptance_root is not None
+            else DesktopPet(
+                chat_factory=lambda pet_controller: ChatWindow(
+                    pet_controller=pet_controller
+                )
+            )
+        )
+        pet.show()
+
+        if "--open-chat" in args:
+            QTimer.singleShot(0, pet.open_chat_window)
+        return app.exec()
+    except Exception as error:
+        logger.record_exception(None, error)
+        raise
+    finally:
+        logger.event(None, "run_finished", terminal=True)
+        sys.excepthook = previous_exception_hook
 
 
 if __name__ == "__main__":

@@ -116,6 +116,26 @@ def test_candidate_generation_quality_and_sensitive_boundary():
         assert len(candidates.pending()) == 2
 
 
+def test_memory_candidates_require_user_source_and_ignore_execution_text():
+    with tempfile.TemporaryDirectory() as temp:
+        governance, _memory, candidates = build_governance(Path(temp))
+
+        user_fact = governance.propose_from_text("我喜欢机器人", source_role="user")
+        assert user_fact["status"] == "added"
+
+        assistant_echo = governance.propose_from_text(
+            "好，我记住了：你喜欢机器人",
+            source_role="assistant",
+        )
+        rejected_execution = governance.propose_from_text(
+            "目前还没有执行这项操作。你可以明确告诉我要执行什么，我会在实际成功后再确认结果。",
+            source_role="assistant",
+        )
+        assert assistant_echo["status"] == "skipped"
+        assert rejected_execution["status"] == "skipped"
+        assert len(candidates.pending()) == 1
+
+
 def test_accept_reject_edit_deduplicate_and_audit():
     with tempfile.TemporaryDirectory() as temp:
         governance, memory, candidates = build_governance(Path(temp))
@@ -251,11 +271,17 @@ def local_token(value):
             os.environ["ROXY_LOCAL_TOKEN"] = previous
 
 
-def test_conversation_generation_and_web_governance_api():
+def test_candidate_compatibility_web_governance_api():
     async def scenario():
         with tempfile.TemporaryDirectory() as temp:
             service = build_service(Path(temp))
-            service.handle("我的长期目标是掌握机器学习", "web_candidate")
+            service.memory_service.set_candidates_enabled(True)
+            created = service.memory_service.create_candidate(
+                "我的长期目标是掌握机器学习",
+                source="compatibility_test",
+                explicit=False,
+            )
+            assert created.success
             assert len(service.memory_candidate_manager.pending()) == 1
             service.handle("梯度下降为什么这样更新", "web_candidate")
             assert len(service.memory_candidate_manager.pending()) == 1
@@ -304,5 +330,5 @@ if __name__ == "__main__":
     test_conflict_does_not_overwrite_and_all_resolutions()
     test_candidates_and_archived_memories_do_not_enter_retrieval()
     test_disabled_and_corrupt_files_degrade_safely()
-    test_conversation_generation_and_web_governance_api()
+    test_candidate_compatibility_web_governance_api()
     print("memory governance tests passed")

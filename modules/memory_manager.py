@@ -42,6 +42,15 @@ MEMORY_SCOPES = {
     "constraint",
 }
 
+_INVALID_LEGACY_NICKNAMES = {"", "我", "你", "用户", "未设置"}
+_PREFERRED_NAME_PATTERNS = (
+    re.compile(r"^(?:以后(?:请)?|今后(?:请)?)?(?:叫我|称呼我(?:为)?)(.+)$"),
+    re.compile(r"^(?:我的)?名字(?:叫|是)(.+)$"),
+    re.compile(r"^我叫(.+)$"),
+    re.compile(r"^(?:用户)?昵称(?:是|为)(.+)$"),
+    re.compile(r"^你的名字(?:叫|是)(.+)$"),
+)
+
 
 class MemoryManager:
     """Versioned local long-term memory storage with safe legacy migration."""
@@ -112,6 +121,117 @@ class MemoryManager:
                 == category
             ]
         return items
+
+    def preferred_name_record(
+        self,
+        *,
+        memories: Optional[List[Dict[str, object]]] = None,
+    ) -> Optional[Dict[str, object]]:
+        """Resolve one preferred name, with formal memory outranking legacy profile."""
+
+        candidates: List[Tuple[datetime, int, Dict[str, object], str]] = []
+        source_memories = self.working_memories() if memories is None else memories
+        for item in source_memories:
+            if str(item.get("scope", "")) == "temporary_state":
+                continue
+            name = self.extract_preferred_name(str(item.get("content", "")))
+            if not name:
+                continue
+            timestamp = str(item.get("updated_at") or item.get("created_at") or "")
+            try:
+                updated_at = datetime.fromisoformat(timestamp).astimezone(timezone.utc)
+            except (TypeError, ValueError, OSError):
+                updated_at = datetime.min.replace(tzinfo=timezone.utc)
+            candidates.append(
+                (updated_at, self._safe_int(item.get("id"), 0), item, name)
+            )
+        if candidates:
+            _timestamp, _memory_id, memory, name = max(
+                candidates, key=lambda value: (value[0], value[1])
+            )
+            result = deepcopy(memory)
+            result["preferred_name"] = name
+            result["authority"] = "formal_memory"
+            return result
+
+        self._refresh_memories()
+        profile = self.data.get("profile", {})
+        nickname = (
+            str(profile.get("nickname", "")).strip()
+            if isinstance(profile, dict)
+            else ""
+        )
+        if nickname in _INVALID_LEGACY_NICKNAMES:
+            return None
+        return {
+            "id": None,
+            "content": f"用户昵称是{nickname}",
+            "preferred_name": nickname,
+            "category": "other",
+            "scope": "stable_identity",
+            "authority": "legacy_profile",
+        }
+
+    def preferred_name(self) -> str:
+        record = self.preferred_name_record()
+        return str(record.get("preferred_name", "")).strip() if record else ""
+
+    def working_memories(
+        self,
+        *,
+        category: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> List[Dict[str, object]]:
+        """Verified runtime view; retained temporary/archived data is not deleted."""
+
+        conflicted_ids = {
+            int(item.get("old_memory_id", 0) or 0)
+            for item in self.conflicts("pending")
+            if int(item.get("old_memory_id", 0) or 0) > 0
+        }
+        current_time = (now or self.now_provider()).astimezone(timezone.utc)
+
+        def valid(item: Dict[str, object]) -> bool:
+            try:
+                valid_from = item.get("valid_from")
+                valid_until = item.get("valid_until")
+                if (
+                    valid_from
+                    and datetime.fromisoformat(str(valid_from)).astimezone(timezone.utc) > current_time
+                ):
+                    return False
+                if (
+                    valid_until
+                    and datetime.fromisoformat(str(valid_until)).astimezone(timezone.utc) < current_time
+                ):
+                    return False
+            except (TypeError, ValueError, OSError):
+                return False
+            return True
+
+        return [
+            item
+            for item in self.memories("active", category=category)
+            if str(item.get("scope", "")) != "temporary_state"
+            and int(item.get("id", 0) or 0) not in conflicted_ids
+            and valid(item)
+        ]
+
+    @staticmethod
+    def extract_preferred_name(content: str) -> str:
+        text = str(content or "").strip().strip("。.!！?？；;")
+        for pattern in _PREFERRED_NAME_PATTERNS:
+            match = pattern.fullmatch(text)
+            if match is None:
+                continue
+            name = re.sub(
+                r"(?:你应该知道|你知道吧|就行|即可|好了|吧|呀|啊|呢)$",
+                "",
+                match.group(1).strip(),
+            ).strip(" ，,。.!！?？；;：:")
+            if name and name not in _INVALID_LEGACY_NICKNAMES and len(name) <= 40:
+                return name
+        return ""
 
     def get(self, memory_id: int) -> Optional[Dict[str, object]]:
         self._refresh_memories()
@@ -242,6 +362,8 @@ class MemoryManager:
             old_value = deepcopy(item)
             if content is not None and content.strip():
                 item["content"] = content.strip()
+                if tags is None:
+                    item["tags"] = self.extract_tags(item["content"])
             if category is not None:
                 item["category"] = self.normalize_category(category)
             if importance is not None:
@@ -733,7 +855,8 @@ class MemoryManager:
         text = str(content).strip().strip("。.!！?？")
         patterns = (
             r"(?:现在|目前|当前)(?:正在)?(?:在|住在|位于|已经回到|已经回)\s*([\u4e00-\u9fff]{2,8}?)(?:上学|实习|工作|生活|了|$)",
-            r"(?:是|来自)\s*([\u4e00-\u9fff]{2,8}?)(?:人|的|$)",
+            r"(?:我)?来自\s*([\u4e00-\u9fff]{2,8}?)(?:$|。|，|,)",
+            r"我是\s*([\u4e00-\u9fff]{2,8}?)(?:人|的)(?:$|。|，|,)",
             r"(?:老家|家乡)(?:在|是)\s*([\u4e00-\u9fff]{2,8})(?:$|。)",
         )
         for pattern in patterns:

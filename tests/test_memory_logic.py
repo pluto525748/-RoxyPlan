@@ -16,6 +16,8 @@ from PySide6.QtWidgets import QApplication
 
 import frontend.pet_app as pet_app
 from frontend.pet_app import ChatWindow, default_memory, extract_nickname
+from modules.chat_history_manager import ChatHistoryManager
+from modules.growth_manager import GrowthManager
 from modules.llm_client import LLMClient
 
 
@@ -33,6 +35,18 @@ def roxy_personality_fixture():
         ],
         "fallback_reply": "你好，{nickname}，我是{name}。",
     }
+
+
+def build_isolated_chat_window(root: Path) -> ChatWindow:
+    original_config_file = pet_app.CONFIG_FILE
+    pet_app.CONFIG_FILE = root / "config.json"
+    try:
+        return ChatWindow(
+            growth_service=GrowthManager(root / "growth"),
+            chat_history_manager=ChatHistoryManager(root / "chat"),
+        )
+    finally:
+        pet_app.CONFIG_FILE = original_config_file
 
 
 def test_extract_nickname_from_sentence():
@@ -72,12 +86,12 @@ def test_chat_window_memory_lifecycle():
         original_memory_file = pet_app.MEMORY_FILE
         pet_app.MEMORY_FILE = Path(temp_dir) / "memory.json"
         try:
-            first_window = ChatWindow()
+            first_window = build_isolated_chat_window(Path(temp_dir))
             assert first_window.save_first_nickname("我叫煜") is True
             assert first_window.memory["profile"]["nickname"] == "煜"
             assert first_window.default_reply() == "你好，煜，我是Roxy。"
 
-            second_window = ChatWindow()
+            second_window = build_isolated_chat_window(Path(temp_dir))
             assert second_window.memory["profile"]["nickname"] == "煜"
             assert second_window.default_reply() == "你好，煜，我是Roxy。"
         finally:
@@ -106,7 +120,7 @@ def test_missing_memory_json_is_created_from_example():
             encoding="utf-8",
         )
         try:
-            window = ChatWindow()
+            window = build_isolated_chat_window(Path(temp_dir))
 
             assert pet_app.MEMORY_FILE.exists()
             loaded = json.loads(pet_app.MEMORY_FILE.read_text(encoding="utf-8"))
@@ -132,8 +146,10 @@ def test_rule_personality_replies():
             encoding="utf-8",
         )
         try:
-            window = ChatWindow()
-            window.memory["profile"]["nickname"] = "煜"
+            window = build_isolated_chat_window(Path(temp_dir))
+            # Identity now reads through the shared manager authority, rather
+            # than mutating the UI's potentially stale legacy data alias.
+            window.memory_manager.update_profile({"nickname": "煜"})
 
             assert window.match_personality_rule("你好") == "你好，煜。"
             assert window.match_personality_rule("你是谁") == "我是Roxy，一个成长陪伴桌宠。"
@@ -168,7 +184,7 @@ def test_knowledge_scan_loads_txt_and_md_files():
             encoding="utf-8",
         )
         try:
-            window = ChatWindow()
+            window = build_isolated_chat_window(Path(temp_dir))
 
             assert window.knowledge_file_names() == ["guide.md", "notes.txt", "roxy.txt"]
             assert window.handle_knowledge_command("查看知识") is True
@@ -248,7 +264,7 @@ def test_llm_prompt_contains_personality_and_memory():
             encoding="utf-8",
         )
         try:
-            window = ChatWindow()
+            window = build_isolated_chat_window(Path(temp_dir))
             window.memory_manager.update_profile({"nickname": "煜"})
             window.memory_manager.add_memory(
                 "我喜欢洛琪希",

@@ -3,6 +3,17 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.pytest_tmp/
+.pytest-basetemp/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test-results/
+tests/nlu_benchmark/reports/*.json
+*.tmp
+*.lock
 
 logs/
 *.log
@@ -23,6 +34,8 @@ data/knowledge/*
 !data/knowledge/.gitkeep
 !data/knowledge/README.md
 .env
+.env.*
+!.env.example
 apikey.txt
 api_key.txt
 secret.txt

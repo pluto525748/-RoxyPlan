@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.chat_history_manager import ChatHistoryManager
+from modules.growth_manager import GrowthManager
 from PySide6.QtWidgets import QApplication
 from frontend import pet_app
 from frontend.pet_app import ChatWindow
@@ -125,15 +126,24 @@ def test_chat_window_restores_sessions_and_clear_needs_second_command():
         root = Path(temp_dir)
         manager = make_manager(root)
         original_memory_file = pet_app.MEMORY_FILE
+        original_config_file = pet_app.CONFIG_FILE
         pet_app.MEMORY_FILE = root / "memory.json"
+        pet_app.CONFIG_FILE = root / "config.json"
+        growth = GrowthManager(root / "growth")
         try:
-            first = ChatWindow(chat_history_manager=manager)
+            first = ChatWindow(
+                chat_history_manager=manager,
+                growth_service=growth,
+            )
             first.add_message("You", "讨论本地会话恢复")
             first.add_message("Roxy", "好，我们继续。")
             session_id = first.current_session_id
             first.close()
 
-            second = ChatWindow(chat_history_manager=manager)
+            second = ChatWindow(
+                chat_history_manager=manager,
+                growth_service=growth,
+            )
             assert second.current_session_id == session_id
             assert "讨论本地会话恢复" in second.transcript.toPlainText()
 
@@ -153,6 +163,7 @@ def test_chat_window_restores_sessions_and_clear_needs_second_command():
             app.processEvents()
         finally:
             pet_app.MEMORY_FILE = original_memory_file
+            pet_app.CONFIG_FILE = original_config_file
 
 
 if __name__ == "__main__":

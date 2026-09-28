@@ -1,0 +1,278 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-08-04T21:00:00+08:00",
+  "provenance": "optimization",
+  "description": "V2.1 可见优化集。基于中文 NLP 研究语言现象生成的全新对话结构，不是已有案例的改写。开发 Agent 可查看，用于定位和修复。",
+  "methodology": [
+    "改变对话结构（单轮→多轮、陈述→追问）",
+    "改变上下文距离（指代间隔轮数不同）",
+    "改变指代对象（竞争指代、省略主语）",
+    "改变否定作用域（部分否定、整体否定后追加）",
+    "改变纠正顺序（先肯定后否定 vs 先否定后替换）",
+    "改变任务组合（计划+记忆、行动+提醒边界）"
+  ],
+  "cases": [
+    {
+      "id": "opt_v2_001",
+      "provenance": "optimization",
+      "category": "statement_vs_command",
+      "phenomenon": "statement_with_action_verb_in_subordinate_clause",
+      "description": "陈述句的从属分句包含动作词，不应触发工具",
+      "seed": {},
+      "turns": [
+        {
+          "text": "刚才看了篇文章，说每天记录三件小事能提高幸福感",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {"plan_count": 0}
+    },
+    {
+      "id": "opt_v2_002",
+      "provenance": "optimization",
+      "category": "negation_scope",
+      "phenomenon": "partial_negation_with_alternative",
+      "description": "不是不想做A，而是想做B — 否定A不应触发A工具",
+      "seed": {},
+      "turns": [
+        {
+          "text": "不是不想删计划，我是想先把明天那条改到后天再决定删不删",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_003",
+      "provenance": "optimization",
+      "category": "anaphora_resolution",
+      "phenomenon": "competing_reference_across_turns",
+      "description": "跨轮指代存在两个竞争对象时，必须澄清而非猜测",
+      "seed": {"tasks": ["阅读论文", "写代码"]},
+      "turns": [
+        {
+          "text": "你有什么建议",
+          "expect": {"status": "chat"},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        },
+        {
+          "text": "把第一个完成掉",
+          "expect": {"status": "completed", "tool_calls": ["complete_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "complete_plan", "entities": {"query": "阅读论文"}, "proposed_tool": "complete_plan", "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_004",
+      "provenance": "optimization",
+      "category": "multi_intent_binding",
+      "phenomenon": "two_clause_mixed_intent_with_binding",
+      "description": "两个分句：一个读一个写，参数正确绑定",
+      "seed": {},
+      "turns": [
+        {
+          "text": "看看今天有什么任务，然后把学英语加进去",
+          "expect": {"status": "completed", "tool_calls": ["show_plan", "add_plan"], "write_count": 1},
+          "semantic": {
+            "mode": "write", "intent": "multi_action", "entities": {},
+            "candidate_actions": [
+              {"intent": "show_plan", "entities": {}},
+              {"intent": "add_plan", "entities": {"title": "学英语"}}
+            ],
+            "confidence": 0.9
+          }
+        }
+      ],
+      "panel_expectations": {"plan_count": 1}
+    },
+    {
+      "id": "opt_v2_005",
+      "provenance": "optimization",
+      "category": "conditional_execution",
+      "phenomenon": "unless_conditional_no_execution",
+      "description": "除非条件句 — 条件不满足时不执行任何工具",
+      "seed": {},
+      "turns": [
+        {
+          "text": "除非我今天下午能把报告写完，否则先别加学习计划",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_006",
+      "provenance": "optimization",
+      "category": "correction_chain",
+      "phenomenon": "explicit_task_reschedule_with_time",
+      "description": "用户明确说把某任务改到某时间",
+      "seed": {"tasks": ["学数学"]},
+      "turns": [
+        {
+          "text": "把学数学改到下午3点",
+          "expect": {"status": "completed", "tool_calls": ["reschedule_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "reschedule_plan", "entities": {"query": "学数学", "schedule_text": "下午3点"}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_007",
+      "provenance": "optimization",
+      "category": "topic_drop",
+      "phenomenon": "chinese_null_subject_with_action_verb",
+      "description": "中文主语省略 + 动作词 — 需要从上下文推断主语",
+      "seed": {"tasks": ["做晚饭"]},
+      "turns": [
+        {
+          "text": "做完了",
+          "expect": {"status": "completed", "tool_calls": ["complete_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "complete_plan", "entities": {"query": "做晚饭"}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_008",
+      "provenance": "optimization",
+      "category": "tool_keyword_in_knowledge_discussion",
+      "phenomenon": "delete_appears_in_technical_discussion",
+      "description": "技术讨论中的'删除'不应触发计划删除",
+      "seed": {},
+      "turns": [
+        {
+          "text": "如果模型输出里出现了需要删除的脏数据，一般怎么处理比较安全",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_009",
+      "provenance": "optimization",
+      "category": "memory_plan_boundary",
+      "phenomenon": "plan_disguised_as_memory_query",
+      "description": "问记忆但实际想问计划 — 不应混淆两个工具域",
+      "seed": {"tasks": ["复习数据结构"], "memories": [{"content": "我需要每周复习一次数据结构", "category": "plan_reference"}]},
+      "turns": [
+        {
+          "text": "你记得我这周有什么要做的吗",
+          "expect": {"status": "completed", "tool_calls": ["show_plan"], "write_count": 0},
+          "semantic": {"mode": "read", "intent": "show_plan", "entities": {}, "proposed_tool": "show_plan", "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_010",
+      "provenance": "optimization",
+      "category": "insufficient_authorization",
+      "phenomenon": "third_party_action_without_authorization",
+      "description": "帮别人做某事 — 没有明确写授权时不写入",
+      "seed": {},
+      "turns": [
+        {
+          "text": "我室友说他今天跑了10公里，我觉得应该帮他记录一下",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_011",
+      "provenance": "optimization",
+      "category": "rhetorical_question",
+      "phenomenon": "rhetorical_question_with_delete_keyword",
+      "description": "反问句用删除但实际反对删除 — 不应触发任何工具",
+      "seed": {},
+      "turns": [
+        {
+          "text": "你不是说这个不能删吗，怎么又让我删掉",
+          "expect": {"status": "chat", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_012",
+      "provenance": "optimization",
+      "category": "toolresult_failure_reply",
+      "phenomenon": "write_fails_but_reply_still_claims_success",
+      "description": "工具执行失败后回复不得声称成功",
+      "seed": {},
+      "turns": [
+        {
+          "text": "删掉一个根本不存在的计划",
+          "expect": {"status": "failed", "tool_calls": [], "write_count": 0, "no_claims": true},
+          "semantic": {"mode": "write", "intent": "delete_plan", "entities": {"query": "根本不存在的计划"}, "proposed_tool": "delete_plan", "confidence": 0.5, "needs_confirmation": true}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_013",
+      "provenance": "optimization",
+      "category": "multi_turn_panel_state",
+      "phenomenon": "three_turn_plan_build_then_verify_panel",
+      "description": "三轮构建计划后验证面板最终状态",
+      "seed": {},
+      "turns": [
+        {
+          "text": "添加计划：复习操作系统",
+          "expect": {"status": "completed", "tool_calls": ["add_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "add_plan", "entities": {"title": "复习操作系统"}, "proposed_tool": "add_plan", "confidence": 0.95}
+        },
+        {
+          "text": "再加一条：做操作系统习题",
+          "expect": {"status": "completed", "tool_calls": ["add_plan"], "write_count": 1},
+          "semantic": {"mode": "write", "intent": "add_plan", "entities": {"title": "做操作系统习题"}, "proposed_tool": "add_plan", "confidence": 0.95}
+        },
+        {
+          "text": "看看现在计划什么样",
+          "expect": {"status": "completed", "tool_calls": ["show_plan"], "write_count": 0},
+          "semantic": {"mode": "read", "intent": "show_plan", "entities": {}, "proposed_tool": "show_plan", "confidence": 0.95}
+        }
+      ],
+      "panel_expectations": {"plan_count": 2}
+    },
+    {
+      "id": "opt_v2_014",
+      "provenance": "optimization",
+      "category": "cross_session_boundary",
+      "phenomenon": "fresh_conversation_no_pending_inheritance",
+      "description": "新对话不应继承旧对话的 pending 状态",
+      "seed": {"tasks": ["旧对话残留任务"]},
+      "turns": [
+        {
+          "text": "第二个是什么",
+          "expect": {"status": "chat"},
+          "semantic": {"mode": "chat", "intent": "chat", "entities": {}, "confidence": 0.5}
+        }
+      ],
+      "panel_expectations": {}
+    },
+    {
+      "id": "opt_v2_015",
+      "provenance": "optimization",
+      "category": "dialect_incomplete_utterance",
+      "phenomenon": "northern_dialect_fragment",
+      "description": "北方口语碎片 — 儿化音和不完整表达",
+      "seed": {},
+      "turns": [
+        {
+          "text": "今儿个还没整啥呢",
+          "expect": {"status": "completed", "tool_calls": ["show_plan"], "write_count": 0},
+          "semantic": {"mode": "read", "intent": "show_plan", "entities": {"status_filter": "pending"}, "proposed_tool": "show_plan", "confidence": 0.9}
+        }
+      ],
+      "panel_expectations": {}
+    }
+  ]
+}

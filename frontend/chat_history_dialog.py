@@ -117,15 +117,18 @@ class ChatHistoryDialog(QDialog):
 
     def _operation_widget(self, session_id: str) -> QWidget:
         widget = QWidget()
+        widget.setAccessibleName(f"会话操作 {session_id}")
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(5)
         open_button = QPushButton("打开")
         open_button.setObjectName("openButton")
+        open_button.setAccessibleName(f"打开会话 {session_id}")
         open_button.clicked.connect(
             lambda checked=False, value=session_id: self._open(value)
         )
         delete_button = QPushButton("删除")
+        delete_button.setAccessibleName(f"删除会话 {session_id}")
         delete_button.clicked.connect(
             lambda checked=False, value=session_id: self._delete(value)
         )

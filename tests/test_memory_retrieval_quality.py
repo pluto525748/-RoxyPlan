@@ -202,8 +202,15 @@ def test_context_sources_remain_separate():
     )
 
     assert messages[0]["content"] == "人格设定"
-    assert messages[1]["content"].startswith("长期记忆：")
-    assert messages[2]["content"].startswith("当前会话摘要：")
+    summary_index = next(
+        index
+        for index, item in enumerate(messages)
+        if item["content"].startswith("当前会话摘要：")
+    )
+    memory_index = next(
+        index for index, item in enumerate(messages) if "我在做肌电项目" in item["content"]
+    )
+    assert summary_index < memory_index
     assert messages[-1] == {"role": "user", "content": "肌电项目下一步怎么办"}
 
 

@@ -22,6 +22,14 @@
 
 ## 2. 计划
 
+先连续输入 20 次：
+
+```text
+今日计划
+```
+
+预期：20 次都直接读取计划，不询问确认、不调用普通聊天、不要求换一种说法。再分别验证“我的计划”“今天要做什么”“看看今天安排了什么”。
+
 ```text
 下午帮我留50分钟学特征工程，放进今天要做的事里
 看看我今天要做什么
@@ -30,6 +38,23 @@
 ```
 
 预期：前三步真实新增、查询和完成；最后一句只询问学习内容/时长，不擅自创建。
+
+继续回答：
+
+```text
+不知道，你帮我安排一下
+第二个，一个小时
+```
+
+预期：系统先给 2～3 个建议；选择后保留下午，按第二个建议真实创建 60 分钟计划。
+
+在同一会话创建“下午学线性规划40分钟”后说：
+
+```text
+刚才那个改成一小时
+```
+
+预期：原计划标题不变，真实时长更新为 60 分钟。
 
 再新建一个聊天会话后说：
 
@@ -65,8 +90,7 @@
 
 ```text
 有哪些待确认记忆
-忽略第一个
-第二个确认
+忽略第一个，第二个确认
 ```
 
 预期：按刚才列表的真实顺序处理，不编造 ID，不重复确认。
@@ -81,6 +105,8 @@
 
 预期：计划时长更新，行动记录新增；回复逐项对应真实结果，不出现 `None`。
 
+再对一个不存在的计划执行同类句子。预期：计划更新失败，但独立行动记录继续执行，整体为部分成功。
+
 ## 6. 状态与安全
 
 ```text
@@ -94,7 +120,7 @@
 
 ## 7. 日志检查
 
-控制台应能看到非敏感诊断：`[Interaction]`、`[Semantic]`、`[Planner]`、`[Tool]`。日志不应出现 API Key、reasoning_content、完整健康记忆或本地私人路径。
+控制台应能看到非敏感诊断：`[Interaction]`、`[Semantic]`、`[Planner]`、`[Tool]`。本地配置开启 `interaction_diagnostics_enabled` 后还会出现 `[Diagnostic]`；导出只含正文长度与哈希。日志不应出现 API Key、reasoning_content、完整健康记忆或本地私人路径。
 
 ## 回滚
 
@@ -106,7 +132,8 @@
   "unified_semantic_parser_enabled": false,
   "business_resolver_enabled": false,
   "deterministic_response_enabled": false,
-  "action_batch_enabled": false
+  "action_batch_enabled": false,
+  "plan_postcondition_enabled": false
 }
 ```
 

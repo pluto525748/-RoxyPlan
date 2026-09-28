@@ -30,6 +30,8 @@ from modules.llm.settings import (
     ModelSettings,
 )
 from modules.llm.usage_store import ModelUsageStore
+from modules.feature_flags import SEMANTIC_FLAG_DEFAULTS
+from modules.persona_registry import PersonaRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +39,7 @@ PET_CONFIG_FILE = PROJECT_ROOT / "data" / "pet_config.json"
 KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "knowledge"
 
 DEFAULT_SETTINGS = {
+    **SEMANTIC_FLAG_DEFAULTS,
     "pet_scale": 1.0,
     "pet_always_on_top": True,
     "auto_tips_enabled": True,
@@ -51,10 +54,12 @@ DEFAULT_SETTINGS = {
     "proactive_interval_minutes": 10,
     "proactive_check_seconds_test": 30,
     "evening_review_enabled": True,
+    "auto_complete_yesterday_review": True,
     "idle_nudge_enabled": True,
     "chat_history_enabled": True,
     "restore_last_session": True,
-    "enable_memory_candidates": True,
+    "enable_memory_candidates": False,
+    "active_persona_id": "roxy",
     "recent_context_messages": 16,
     "smart_intent_enabled": True,
     "llm_intent_assist_enabled": False,
@@ -65,12 +70,13 @@ DEFAULT_SETTINGS = {
     "agent_max_steps": 3,
     "agent_medium_confidence": 0.82,
     "agent_confirm_high_risk": True,
-    "interaction_coordinator_enabled": True,
-    "unified_semantic_parser_enabled": True,
-    "business_resolver_enabled": True,
-    "deterministic_response_enabled": True,
-    "action_batch_enabled": True,
+    "plan_postcondition_enabled": True,
+    "interaction_diagnostics_enabled": False,
+    "client_action_claim_guard_enabled": True,
+    "pet_action_state_machine_enabled": True,
     "interaction_ttl_seconds": 300,
+    "interaction_continuation_ttl_seconds": 1200,
+    "interaction_confirmation_ttl_seconds": 180,
     "auto_summary_enabled": True,
     "summary_message_threshold": 30,
     "summary_character_threshold": 12000,
@@ -199,6 +205,11 @@ class SettingsDialog(QDialog):
         self.evening_review_enabled = QCheckBox("晚间提醒进行今日复盘")
         form.addRow("晚间复盘提醒", self.evening_review_enabled)
 
+        self.auto_complete_yesterday_review = QCheckBox(
+            "启动桌面程序时自动补全昨日成长复盘"
+        )
+        form.addRow("昨日复盘补全", self.auto_complete_yesterday_review)
+
         self.idle_nudge_enabled = QCheckBox("长时间未互动时轻声提醒")
         form.addRow("未互动提醒", self.idle_nudge_enabled)
 
@@ -208,8 +219,9 @@ class SettingsDialog(QDialog):
         self.restore_last_session = QCheckBox("启动聊天窗口时恢复最近会话")
         form.addRow("恢复最近对话", self.restore_last_session)
 
-        self.enable_memory_candidates = QCheckBox("从稳定表达中生成待审核记忆，不直接写入长期记忆")
-        form.addRow("记忆候选", self.enable_memory_candidates)
+        # Legacy compatibility state only.  Do not add this widget to the form:
+        # candidate memory is no longer a user-facing product option.
+        self.enable_memory_candidates = QCheckBox()
 
         self.recent_context_messages = self._spin_box(4, 40, " 条")
         form.addRow("最近上下文", self.recent_context_messages)
@@ -244,13 +256,21 @@ class SettingsDialog(QDialog):
         self.agent_medium_confidence.setDecimals(2)
         form.addRow("中风险置信度", self.agent_medium_confidence)
 
-        self.agent_confirm_high_risk = QCheckBox("删除、归档和恢复操作始终确认")
+        self.agent_confirm_high_risk = QCheckBox("删除和其他不可逆操作始终确认")
         self.agent_confirm_high_risk.setChecked(True)
         self.agent_confirm_high_risk.setEnabled(False)
         form.addRow("高风险确认", self.agent_confirm_high_risk)
 
         self.auto_summary_enabled = QCheckBox("对话过长时生成本地会话摘要")
         form.addRow("自动会话摘要", self.auto_summary_enabled)
+
+        self.active_persona_id = QComboBox()
+        registry = PersonaRegistry(PROJECT_ROOT / "data" / "personas")
+        for persona in registry.available_personas():
+            self.active_persona_id.addItem(
+                str(persona["display_name"]), str(persona["persona_id"])
+            )
+        form.addRow("当前人格", self.active_persona_id)
 
         clear_history_button = QPushButton("清空本地聊天历史")
         clear_history_button.clicked.connect(self._clear_chat_history)
@@ -433,6 +453,9 @@ class SettingsDialog(QDialog):
         self.evening_review_enabled.setChecked(
             bool(self.config.get("evening_review_enabled", True))
         )
+        self.auto_complete_yesterday_review.setChecked(
+            bool(self.config.get("auto_complete_yesterday_review", True))
+        )
         self.idle_nudge_enabled.setChecked(
             bool(self.config.get("idle_nudge_enabled", True))
         )
@@ -443,7 +466,7 @@ class SettingsDialog(QDialog):
             bool(self.config.get("restore_last_session", True))
         )
         self.enable_memory_candidates.setChecked(
-            bool(self.config.get("enable_memory_candidates", True))
+            bool(self.config.get("enable_memory_candidates", False))
         )
         self.recent_context_messages.setValue(
             int(self.config.get("recent_context_messages", 16))
@@ -474,6 +497,10 @@ class SettingsDialog(QDialog):
         self.auto_summary_enabled.setChecked(
             bool(self.config.get("auto_summary_enabled", True))
         )
+        persona_index = self.active_persona_id.findData(
+            str(self.config.get("active_persona_id", "roxy"))
+        )
+        self.active_persona_id.setCurrentIndex(persona_index if persona_index >= 0 else 0)
         self.pet_scale.setValue(float(self.config.get("pet_scale", 1.0)))
         self.study_test_seconds.setValue(
             int(self.config.get("study_reminder_seconds_test", 10))
@@ -661,6 +688,9 @@ class SettingsDialog(QDialog):
                     self.config.get("proactive_check_seconds_test", 30)
                 ),
                 "evening_review_enabled": self.evening_review_enabled.isChecked(),
+                "auto_complete_yesterday_review": (
+                    self.auto_complete_yesterday_review.isChecked()
+                ),
                 "idle_nudge_enabled": self.idle_nudge_enabled.isChecked(),
                 "chat_history_enabled": self.chat_history_enabled.isChecked(),
                 "restore_last_session": self.restore_last_session.isChecked(),
@@ -680,6 +710,7 @@ class SettingsDialog(QDialog):
                 ),
                 "agent_confirm_high_risk": True,
                 "auto_summary_enabled": self.auto_summary_enabled.isChecked(),
+                "active_persona_id": str(self.active_persona_id.currentData() or "roxy"),
                 "summary_message_threshold": int(
                     self.config.get("summary_message_threshold", 30)
                 ),

@@ -85,7 +85,7 @@ def test_web_show_memory_is_deterministic():
         response = service.handle("你记得我什么", "web_memory")
 
         assert response.status == "completed"
-        assert "我正在学习机器学习" in response.message
+        assert "你正在学习机器学习" in response.message
 
 
 def test_web_plan_add_show_and_complete_flow():
@@ -119,6 +119,23 @@ def test_web_action_log_review_and_growth_log_flow():
         assert review.status == "completed"
         assert saved.status == "completed"
         assert growth_log.status == "completed"
+
+
+def test_web_daily_review_uses_llm_for_natural_summary_when_available():
+    with tempfile.TemporaryDirectory() as temp:
+        llm = RecordingLLM("（轻轻点头）今天确实推进了一些事情。")
+        service, growth, _memory, _history = build_service(Path(temp), llm)
+        growth.add_task("整理项目文档")
+        growth.complete_by_id(1)
+
+        response = service.handle("今日复盘", "web_natural_review")
+
+        assert response.status == "completed"
+        assert response.message == "（轻轻点头）今天确实推进了一些事情。"
+        assert llm.calls
+        joined = "\n".join(str(item.get("content", "")) for item in llm.calls[-1])
+        assert "已核验的今日复盘 JSON" in joined
+        assert "整理项目文档" in joined
 
 
 def test_web_context_skips_unrelated_sensitive_memory():

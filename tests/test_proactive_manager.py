@@ -16,9 +16,11 @@ from modules.proactive_manager import ProactiveManager
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from frontend.settings_dialog import SettingsDialog
+from modules.llm.secret_store import SecretStore
+from modules.llm.usage_store import ModelUsageStore
 
 
-class TestClock:
+class FakeClock:
     def __init__(self, value):
         self.value = value
 
@@ -27,7 +29,7 @@ class TestClock:
 
 
 def build_managers(temp_dir, hour=10, minute=0, **proactive_options):
-    clock = TestClock(datetime(2026, 7, 15, hour, minute, 0))
+    clock = FakeClock(datetime(2026, 7, 15, hour, minute, 0))
     growth = GrowthManager(Path(temp_dir) / "private", now_provider=clock)
     proactive = ProactiveManager(
         growth,
@@ -149,11 +151,53 @@ def test_idle_nudge_requires_pending_plan_and_idle_time():
         assert ready["type"] == "idle_nudge"
 
 
+def test_idle_nudge_is_emitted_once_per_idle_stretch():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, growth, proactive = build_managers(
+            temp_dir,
+            idle_threshold_seconds=300,
+        )
+        growth.add_task("继续推进项目")
+
+        first = proactive.check(
+            idle_seconds=300,
+            seconds_since_interaction=300,
+            allowed_types={"idle_nudge"},
+        )
+        clock.value += timedelta(minutes=2)
+        repeated = proactive.check(
+            idle_seconds=420,
+            seconds_since_interaction=420,
+            allowed_types={"idle_nudge"},
+        )
+        reset = proactive.check(
+            idle_seconds=0,
+            seconds_since_interaction=0,
+            allowed_types={"idle_nudge"},
+        )
+        clock.value += timedelta(minutes=2)
+        next_stretch = proactive.check(
+            idle_seconds=300,
+            seconds_since_interaction=300,
+            allowed_types={"idle_nudge"},
+        )
+
+        assert first["type"] == "idle_nudge"
+        assert repeated is None
+        assert reset is None
+        assert next_stretch["type"] == "idle_nudge"
+
+
 def test_settings_dialog_saves_proactive_options():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
-        config_file = Path(temp_dir) / "pet_config.json"
-        dialog = SettingsDialog(config_file=config_file)
+        root = Path(temp_dir)
+        config_file = root / "pet_config.json"
+        dialog = SettingsDialog(
+            config_file=config_file,
+            secret_store=SecretStore(root),
+            usage_store=ModelUsageStore(root),
+        )
         dialog.proactive_enabled.setChecked(False)
         dialog.proactive_interval_minutes.setValue(18)
         dialog.evening_review_enabled.setChecked(False)

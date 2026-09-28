@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import QApplication
 from frontend import pet_app
 from frontend.pet_app import ChatWindow
 from modules.growth_manager import GrowthManager
-from modules.intent_router import IntentRouter, match_plan_task
+from modules.intent_router import IntentRouter, LLMIntentParser, match_plan_task
 
 
 class FakePetController:
@@ -125,8 +126,44 @@ def test_reminder_control_intents():
 
     assert paused["intent"] == "reminder_control"
     assert paused["slots"]["action"] == "pause"
+    assert paused["source"] == "fixed_command"
     assert later["slots"]["action"] == "pause"
     assert resumed["slots"]["action"] == "resume"
+    assert resumed["source"] == "fixed_command"
+
+
+def test_exact_reminder_controls_keep_direction_without_semantic_model():
+    def fail_if_called(_messages):
+        raise AssertionError("exact reminder controls must not call the model")
+
+    router = IntentRouter(
+        enable_llm=True,
+        llm_parser=LLMIntentParser(fail_if_called),
+    )
+
+    for text in ("先别提醒我", "暂停提醒", "接下来先别提醒我"):
+        result = router.route_semantic_decision(text)
+        assert result["intent"] == "reminder_control"
+        assert result["slots"]["action"] == "pause"
+    for text in ("恢复提醒", "继续提醒我", "重新开启提醒"):
+        result = router.route_semantic_decision(text)
+        assert result["intent"] == "reminder_control"
+        assert result["slots"]["action"] == "resume"
+
+
+def test_explicit_pet_sleep_command_does_not_capture_user_rest_chat():
+    def fail_if_called(_messages):
+        raise AssertionError("explicit pet sleep must not call the model")
+
+    router = IntentRouter(
+        enable_llm=True,
+        llm_parser=LLMIntentParser(fail_if_called),
+    )
+
+    sleep = router.route_semantic_decision("洛琪希，你休息一下")
+    assert sleep["intent"] == "sleep_pet"
+    assert sleep["source"] == "fixed_command"
+    assert IntentRouter().route("我休息一下")["intent"] == "chat"
 
 
 def test_fixed_commands_keep_priority_with_structured_intents():
@@ -138,13 +175,42 @@ def test_fixed_commands_keep_priority_with_structured_intents():
         "记录：完成测试": "add_action_log",
         "今日复盘": "daily_review",
         "记住：我喜欢蓝色": "add_memory_request",
-        "忘记：我喜欢蓝色": "chat",
+        "忘记：我喜欢蓝色": "delete_memory",
     }
 
     for command, intent in fixed_commands.items():
         result = router.route(command)
         assert result["intent"] == intent
         assert result["source"] == "fixed_command"
+
+
+def test_structured_request_authority_fields_survive_router_enrichment():
+    payload = json.dumps(
+        {
+            "mode": "write",
+            "intent": "add_plan",
+            "confidence": 0.97,
+            "entities": {"title": "阅读算法"},
+            "proposed_tool": "add_plan",
+            "follow_up_target": None,
+            "needs_confirmation": False,
+            "warnings": [],
+            "clarification_question": None,
+            "candidate_actions": [],
+            "subject": "self",
+            "polarity": "positive",
+            "modality": "desire",
+            "request_mode": "execute",
+            "explicit_command": True,
+        },
+        ensure_ascii=False,
+    )
+    router = IntentRouter(LLMIntentParser(lambda _messages: payload), enable_llm=True)
+
+    result = router.route_semantic_decision("把阅读算法加入今天计划")
+
+    assert result["request_mode"] == "execute"
+    assert result["explicit_command"] is True
 
 
 def test_chat_window_natural_growth_flow_does_not_call_llm():
@@ -166,7 +232,9 @@ def test_chat_window_natural_growth_flow_does_not_call_llm():
             window.start_ai_reply = fail_if_model_called
             for message in (
                 "我今天想学半小时机器学习",
-                "刚才把机器学习学完了",
+                "把它加入今天计划",
+                "把机器学习计划标记完成",
+                "确认",
                 "今天推进了舞蹈模块",
                 "今天状态怎么样",
                 "保存今天的复盘",
@@ -176,7 +244,7 @@ def test_chat_window_natural_growth_flow_does_not_call_llm():
 
             tasks = manager.tasks()
             assert len(tasks) == 1
-            assert tasks[0]["done"] is True
+            assert tasks[0]["done"] is True, tasks
             assert len(manager.records_for_date()) == 1
             assert len(manager.entries()) == 1
             assert "标记完成" in window.transcript.toPlainText()
@@ -205,7 +273,7 @@ def test_chat_window_controls_reminders_and_notifies_completion():
             for message in (
                 "把整理测试文档加入今天计划",
                 "测试文档整理完了",
-                "先别提醒我",
+                "接下来先别提醒我",
                 "恢复提醒",
             ):
                 window.input_box.setText(message)

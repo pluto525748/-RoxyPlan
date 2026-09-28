@@ -87,13 +87,17 @@ class MemoryRetriever:
             if int(item.get("old_memory_id", 0) or 0) > 0
         }
 
-        active_memories = self.memory_manager.memories("active")
+        active_memories = self.memory_manager.working_memories(
+            now=self.now_provider()
+        )
         has_current_location = any(
             item.get("scope") == "current_state" and item.get("location")
             for item in active_memories
         )
         for memory in active_memories:
             if int(memory.get("id", 0) or 0) in conflicted_memory_ids:
+                continue
+            if str(memory.get("scope", "")) == "temporary_state":
                 continue
             category = str(memory.get("category", "other"))
             if category in suppressed and category not in query_categories:

@@ -24,6 +24,7 @@ from modules.safety_policy import SafetyPolicy
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import create_roxy_tool_registry
 from server.agent_service import AgentService
+from tests.isolation_support import build_isolated_memory_manager
 
 
 class RecordingLLM:
@@ -138,11 +139,14 @@ def test_04_missing_action_content_clarifies():
 
 def test_05_llm_structured_fallback_is_validated():
     payload = json.dumps(
-        {
-            "intent": "add_plan",
-            "confidence": 0.91,
-            "entities": {"tasks": ["练习线性代数20分钟"]},
-            "needs_confirmation": False,
+            {
+                "mode": "write",
+                "intent": "add_plan",
+                "confidence": 0.91,
+                "entities": {"tasks": ["练习线性代数20分钟"]},
+                "proposed_tool": "add_plan",
+                "follow_up_target": None,
+                "needs_confirmation": False,
             "warnings": [],
             "clarification_question": None,
             "candidate_actions": [],
@@ -166,11 +170,16 @@ def test_06_invalid_llm_output_falls_back_to_chat():
 def test_07_desktop_intent_pass_can_be_deferred():
     with tempfile.TemporaryDirectory() as temp:
         payload = json.dumps(
-            {
-                "intent": "add_plan",
-                "confidence": 0.95,
-                "entities": {"tasks": ["阅读算法20分钟"]},
-                "needs_confirmation": False,
+                {
+                    "mode": "write",
+                    "intent": "add_plan",
+                    "confidence": 0.95,
+                    "entities": {"tasks": ["阅读算法20分钟"]},
+                    "proposed_tool": "add_plan",
+                    "follow_up_target": None,
+                    "needs_confirmation": False,
+                    "request_mode": "execute",
+                    "explicit_command": True,
             },
             ensure_ascii=False,
         )
@@ -187,6 +196,39 @@ def test_07_desktop_intent_pass_can_be_deferred():
         response = service.conversation_service.complete(turn)
         assert response.status == "completed"
         assert growth.tasks()[0]["title"] == "阅读算法20分钟"
+
+
+def test_07b_deferred_intent_pass_observes_user_message_only_once():
+    with tempfile.TemporaryDirectory() as temp:
+        payload = json.dumps(
+            {
+                "mode": "chat",
+                "intent": "chat",
+                "confidence": 0.99,
+                "entities": {},
+                "proposed_tool": None,
+                "follow_up_target": None,
+                "needs_confirmation": False,
+            },
+            ensure_ascii=False,
+        )
+        llm = StructuredIntentLLM(payload)
+        service, _growth, _memory, _history = build_service(Path(temp), llm)
+        service.intent_router.configure_llm(LLMIntentParser(llm.chat), True)
+        state = service.conversation_service.state_manager
+        state.observe_user("deferred-state", "我想学习数学")
+
+        turn = service.conversation_service.prepare(
+            "加入今天计划",
+            "deferred-state",
+            record_history=False,
+            allow_llm_intent=False,
+        )
+        response = service.conversation_service.complete(turn)
+        context = state.reference_context("deferred-state")
+
+        assert response.status == "chat"
+        assert context["previous_user_message"] == "我想学习数学"
 
 
 def test_08_ordinary_chat_does_not_execute_tool():
@@ -296,6 +338,22 @@ def test_17_reopen_completed_plan():
         assert growth.tasks()[0]["status"] == "pending"
 
 
+def test_completed_plan_edit_prompt_can_reopen_its_exact_target():
+    with tempfile.TemporaryDirectory() as temp:
+        service, growth, _memory, _history = build_service(Path(temp), NoCallLLM())
+        service.handle("今日计划：学习机器学习30分钟", "s")
+        service.handle("这件事做完了", "s")
+
+        blocked = service.handle("刚才那个改成50分钟", "s")
+        reopened = service.handle("好，重新打开这个。", "s")
+
+        assert blocked.status == "clarification"
+        assert "重新打开这个" in blocked.message
+        assert reopened.status == "completed"
+        assert [item.tool for item in reopened.tool_results] == ["reopen_plan"]
+        assert growth.tasks()[0]["status"] == "pending"
+
+
 def test_18_cancel_plan_requires_confirmation():
     with tempfile.TemporaryDirectory() as temp:
         service, growth, _memory, _history = build_service(Path(temp), NoCallLLM())
@@ -317,14 +375,13 @@ def test_19_pronoun_delete_requires_exact_confirmation():
         assert growth.tasks(include_cancelled=True) == []
 
 
-def test_20_similar_plan_is_not_duplicated_silently():
+def test_20_semantically_similar_plan_is_allowed_when_title_differs():
     with tempfile.TemporaryDirectory() as temp:
         service, growth, _memory, _history = build_service(Path(temp), NoCallLLM())
         service.handle("今日计划：学习机器学习30分钟", "s")
         response = service.handle("今日计划：学习机器学习50分钟", "s")
-        assert response.status == "clarification"
-        assert len(growth.tasks()) == 1
-        assert "仍然添加" in response.message
+        assert response.status == "completed"
+        assert len(growth.tasks()) == 2
 
 
 def test_21_user_can_explicitly_keep_similar_plans():
@@ -334,6 +391,26 @@ def test_21_user_can_explicitly_keep_similar_plans():
         response = service.handle("仍然添加：学习机器学习50分钟", "s")
         assert response.status == "completed"
         assert len(growth.tasks()) == 2
+
+
+def test_21b_duplicate_continuation_preserves_pending_plan_arguments():
+    with tempfile.TemporaryDirectory() as temp:
+        service, growth, _memory, _history = build_service(Path(temp), NoCallLLM())
+        service.handle("今天下午学习机器学习30分钟", "duplicate-continuation")
+
+        pending = service.handle(
+            "今天下午学习机器学习30分钟",
+            "duplicate-continuation",
+        )
+        continued = service.handle("继续保留这条计划", "duplicate-continuation")
+
+        assert pending.status == "clarification"
+        assert continued.status == "completed"
+        assert len(growth.tasks()) == 2
+        duplicate = growth.tasks()[1]
+        assert duplicate["title"] == "学习机器学习30分钟"
+        assert duplicate["time_slot"] == "下午"
+        assert duplicate["duration_minutes"] == 30
 
 
 def test_22_ambiguous_task_match_clarifies():
@@ -541,23 +618,22 @@ def test_36_current_dialogue_overrides_formal_location_without_silent_write():
             allow_conflict=True,
         )
         response = service.handle("我现在已经回洛阳了", "s")
-        assert "待审核" in response.message
+        assert "洛阳" in response.message
         assert all(item.get("location") != "洛阳" for item in memory.memories("active"))
-        assert service.memory_candidate_manager.pending()[0]["memory_fields"]["location"] == "洛阳"
+        assert service.memory_candidate_manager.pending() == []
         messages = service.conversation_service.build_llm_messages("周末附近去哪", "s")
         combined = "\n".join(item["content"] for item in messages)
         assert "现在位于洛阳" in combined
         assert "当前在沈阳" not in combined
 
 
-def test_37_candidate_is_not_presented_as_formal_memory():
+def test_37_explicit_memory_is_presented_as_formal_memory():
     with tempfile.TemporaryDirectory() as temp:
         service, _growth, _memory, _history = build_service(Path(temp), NoCallLLM())
         queued = service.handle("请记住我喜欢晚上学习", "s")
         shown = service.handle("你知道我什么", "s")
-        assert "待审核" in queued.message
-        assert "正式长期记忆" in shown.message
-        assert "我现在记得" not in shown.message
+        assert "记住" in queued.message or "保存" in queued.message
+        assert "你喜欢晚上学习" in shown.message
 
 
 def test_38_unresolved_conflict_is_not_silently_retrieved():
@@ -693,7 +769,7 @@ def test_50_acquaintance_question_reads_formal_memory_without_llm():
         response = service.handle("你认识我吗", "s")
 
         assert response.status == "completed"
-        assert "我正在学习机器学习" in response.message
+        assert "你正在学习机器学习" in response.message
 
 
 def test_51_new_learning_interest_clarifies_mode_instead_of_guessing():
@@ -734,7 +810,7 @@ def test_53_natural_scheduled_study_block_is_persisted_with_metadata():
         assert tasks[0]["duration_minutes"] == 180
 
 
-def test_54_previous_assistant_suggestion_becomes_candidate_not_formal_memory():
+def test_54_previous_assistant_suggestion_uses_explicit_formal_save_path():
     with tempfile.TemporaryDirectory() as temp:
         llm = RecordingLLM("下午任务：练习发声20分钟。")
         service, _growth, memory, _history = build_service(Path(temp), llm)
@@ -744,16 +820,15 @@ def test_54_previous_assistant_suggestion_becomes_candidate_not_formal_memory():
         candidates = service.memory_candidate_manager.pending()
 
         assert response.status == "completed"
-        assert "待审核记忆" in response.message
-        assert "临时安排" in response.message
-        assert memory.memories("active") == []
-        assert len(candidates) == 1
-        assert "练习发声" in str(candidates[0]["content"])
+        assert "记住" in response.message or "保存" in response.message
+        assert len(candidates) == 0
+        assert len(memory.memories("active")) == 1
+        assert "练习发声" in str(memory.memories("active")[0]["content"])
 
 
 def test_55_generic_learning_words_do_not_select_specific_learning_memory():
     with tempfile.TemporaryDirectory() as temp:
-        memory = MemoryManager(Path(temp) / "memory.json")
+        memory = build_isolated_memory_manager(Path(temp))
         memory.add_memory("我正在学习机器学习", category="learning")
 
         results = MemoryRetriever(memory).retrieve(
@@ -766,7 +841,7 @@ def test_55_generic_learning_words_do_not_select_specific_learning_memory():
 
 def test_56_specific_learning_topic_still_retrieves_matching_memory():
     with tempfile.TemporaryDirectory() as temp:
-        memory = MemoryManager(Path(temp) / "memory.json")
+        memory = build_isolated_memory_manager(Path(temp))
         memory.add_memory("我正在学习机器学习", category="learning")
 
         results = MemoryRetriever(memory).retrieve(
@@ -812,7 +887,7 @@ def test_58_daily_plan_and_action_phrases_execute_without_llm():
         assert "AI 前沿电台" in growth.records_for_date()[0]["content"]
 
 
-def test_59_explicit_sensitive_memory_only_creates_candidate():
+def test_59_explicit_sensitive_memory_saves_without_second_confirmation():
     with tempfile.TemporaryDirectory() as temp:
         service, _growth, memory, _history = build_service(
             Path(temp), NoCallLLM()
@@ -820,8 +895,8 @@ def test_59_explicit_sensitive_memory_only_creates_candidate():
         response = service.handle("这点请记住：我的肠胃比较敏感", "s")
 
         assert response.status == "completed"
-        assert "待审核" in response.message
-        assert memory.memories("active") == []
+        assert len(memory.memories("active")) == 1
+        assert service.interaction_coordinator.current("s").state != "awaiting_confirmation"
 
 
 def test_60_past_conversation_query_never_returns_null_text():

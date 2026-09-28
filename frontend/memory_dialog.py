@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from modules.memory_candidate_manager import MemoryCandidateManager
 from modules.memory_manager import MEMORY_CATEGORIES, MemoryManager
 from modules.memory_service import MemoryOperationResult, MemoryService
+from modules.development_log import get_development_log
 
 
 CATEGORY_LABELS = {
@@ -94,16 +95,18 @@ class MemoryDialog(QDialog):
 
         title = QLabel("记忆管理")
         title.setObjectName("memoryTitle")
-        subtitle = QLabel("长期记忆保存在本地；候选需确认，冲突需由你选择。")
+        subtitle = QLabel("长期记忆保存在本地，可在这里查看、编辑、归档和搜索。")
         subtitle.setObjectName("memorySubtitle")
         root.addWidget(title)
         root.addWidget(subtitle)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_active_tab(), "长期记忆")
-        self.tabs.addTab(self._build_candidate_tab(), "待确认")
         self.tabs.addTab(self._build_conflict_tab(), "冲突")
         self.tabs.addTab(self._build_archived_tab(), "已归档")
+        # Keep the compatibility widget alive for advanced callers without
+        # exposing candidate review as a normal user tab.
+        self._candidate_compatibility_tab = self._build_candidate_tab()
         root.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -223,7 +226,6 @@ class MemoryDialog(QDialog):
 
     def refresh_all(self) -> None:
         self.refresh_memories()
-        self.refresh_candidates()
         self.refresh_conflicts()
         self.refresh_archived()
 
@@ -396,8 +398,11 @@ class MemoryDialog(QDialog):
         return widget
 
     def _accept(self, candidate_id: int) -> None:
+        logger, trace = self._begin_operation("ui_memory_accept_candidate")
         if self._legacy_accept_callback is not None:
-            accepted = bool(self._legacy_accept_callback(candidate_id))
+            accepted = bool(self._operation_call(
+                logger, trace, lambda: self._legacy_accept_callback(candidate_id)
+            ))
             operation = MemoryOperationResult(
                 accepted,
                 "success" if accepted else "not_found",
@@ -410,16 +415,22 @@ class MemoryDialog(QDialog):
                 ),
             )
         else:
-            operation = self.memory_service.accept_candidate(
-                candidate_id,
-                source="desktop_panel",
+            operation = self._operation_call(
+                logger, trace,
+                lambda: self.memory_service.accept_candidate(
+                    candidate_id, source="desktop_panel"
+                ),
             )
+        self._finish_operation(logger, trace, operation)
         self.refresh_all()
         self.status_label.setText(operation.safe_message)
 
     def _reject(self, candidate_id: int) -> None:
+        logger, trace = self._begin_operation("ui_memory_reject_candidate")
         if self._legacy_reject_callback is not None:
-            rejected = bool(self._legacy_reject_callback(candidate_id))
+            rejected = bool(self._operation_call(
+                logger, trace, lambda: self._legacy_reject_callback(candidate_id)
+            ))
             operation = MemoryOperationResult(
                 rejected,
                 "success" if rejected else "not_found",
@@ -432,23 +443,31 @@ class MemoryDialog(QDialog):
                 ),
             )
         else:
-            operation = self.memory_service.reject_candidate(
-                candidate_id,
-                source="desktop_panel",
+            operation = self._operation_call(
+                logger, trace,
+                lambda: self.memory_service.reject_candidate(
+                    candidate_id, source="desktop_panel"
+                ),
             )
+        self._finish_operation(logger, trace, operation)
         self.refresh_all()
         self.status_label.setText(operation.safe_message)
 
     def _edit(self, memory_id: int) -> None:
-        found = self.memory_service.get_memory(memory_id)
+        logger, trace = self._begin_operation("ui_memory_update", memory_id)
+        found = self._operation_call(
+            logger, trace, lambda: self.memory_service.get_memory(memory_id)
+        )
         memory = found.data.get("memory", {}) if found.success else {}
         if not memory:
+            self._finish_operation(logger, trace, found)
             self.status_label.setText(found.safe_message)
             return
         content, accepted = QInputDialog.getMultiLineText(
             self, "编辑记忆", "记忆内容", str(memory.get("content", ""))
         )
         if not accepted or not content.strip():
+            logger.event(trace, "ui_operation_cancelled", status="cancelled")
             return
         importance, accepted = QInputDialog.getInt(
             self,
@@ -459,13 +478,20 @@ class MemoryDialog(QDialog):
             5,
         )
         if accepted:
-            operation = self.memory_service.update_memory(
-                memory_id, content=content, importance=importance
+            operation = self._operation_call(
+                logger, trace,
+                lambda: self.memory_service.update_memory(
+                    memory_id, content=content, importance=importance
+                ),
             )
+            self._finish_operation(logger, trace, operation)
             self.refresh_all()
             self.status_label.setText(operation.safe_message)
+        else:
+            logger.event(trace, "ui_operation_cancelled", status="cancelled")
 
     def _delete(self, memory_id: int) -> None:
+        logger, trace = self._begin_operation("ui_memory_delete", memory_id)
         answer = QMessageBox.question(
             self,
             "删除长期记忆",
@@ -474,28 +500,78 @@ class MemoryDialog(QDialog):
             QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            operation = self.memory_service.delete_memory(memory_id)
+            operation = self._operation_call(
+                logger, trace, lambda: self.memory_service.delete_memory(memory_id)
+            )
+            self._finish_operation(logger, trace, operation)
             self.refresh_all()
             self.status_label.setText(operation.safe_message)
+        else:
+            logger.event(trace, "ui_operation_cancelled", status="cancelled")
 
     def _archive(self, memory_id: int) -> None:
-        operation = self.memory_service.archive_memory(memory_id)
+        logger, trace = self._begin_operation("ui_memory_archive", memory_id)
+        operation = self._operation_call(
+            logger, trace, lambda: self.memory_service.archive_memory(memory_id)
+        )
+        self._finish_operation(logger, trace, operation)
         self.refresh_all()
         self.status_label.setText(operation.safe_message)
 
     def _restore(self, memory_id: int) -> None:
-        operation = self.memory_service.restore_memory(memory_id)
+        logger, trace = self._begin_operation("ui_memory_restore", memory_id)
+        operation = self._operation_call(
+            logger, trace, lambda: self.memory_service.restore_memory(memory_id)
+        )
+        self._finish_operation(logger, trace, operation)
         self.refresh_all()
         self.status_label.setText(operation.safe_message)
 
     def _resolve_conflict(self, conflict_id: int, resolution: str) -> None:
-        operation = self.memory_service.resolve_conflict(
-            conflict_id,
-            resolution,
-            source="desktop_panel",
+        logger, trace = self._begin_operation("ui_memory_resolve_conflict")
+        operation = self._operation_call(
+            logger, trace,
+            lambda: self.memory_service.resolve_conflict(
+                conflict_id, resolution, source="desktop_panel"
+            ),
         )
+        self._finish_operation(logger, trace, operation)
         self.refresh_all()
         self.status_label.setText(operation.safe_message)
+
+    @staticmethod
+    def _begin_operation(source, memory_id=None):
+        logger = get_development_log()
+        trace = logger.new_trace(source=source)
+        logger.event(trace, "ui_operation_started", memory_id=memory_id)
+        return logger, trace
+
+    @staticmethod
+    def _operation_call(logger, trace, callback):
+        try:
+            with logger.bind(trace):
+                return callback()
+        except Exception as error:
+            logger.record_exception(trace, error)
+            logger.event(
+                trace, "ui_operation_finished", status="failed",
+                error_type=type(error).__name__,
+            )
+            raise
+
+    @staticmethod
+    def _finish_operation(logger, trace, operation):
+        # The result data and summary may contain the edited/deleted private text.
+        # Only symbolic outcome and object IDs are projected into developer logs.
+        logger.event(
+            trace, "ui_operation_finished",
+            status=operation.status,
+            success=operation.success,
+            changed=operation.success and operation.status != "already_processed",
+            memory_id=operation.memory_id,
+            reason_code=operation.error_code or operation.status,
+            tool=operation.operation,
+        )
 
     def showEvent(self, event) -> None:  # noqa: N802
         print("[MemoryUI] open", flush=True)

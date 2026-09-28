@@ -53,6 +53,102 @@ def test_plan_is_bounded_and_invalid_llm_falls_back():
         assert len(bounded.steps) == 3
 
 
+def test_planner_does_not_reinterpret_authoritative_semantic_result():
+    with tempfile.TemporaryDirectory() as temp:
+        calls = []
+
+        class RecordingPlanner:
+            def plan(self, *args):
+                calls.append(args)
+                return None
+
+        planner = AgentPlanner(
+            make_registry(Path(temp)),
+            llm_planner=RecordingPlanner(),
+            enable_llm=True,
+        )
+        plan = planner.plan(
+            "原始文本不应再次解释",
+            {
+                "intent": "chat",
+                "entities": {},
+                "semantic_authoritative": True,
+            },
+        )
+        assert plan.steps == []
+        assert calls == []
+
+
+def test_authoritative_intent_without_resolved_actions_cannot_select_tool():
+    with tempfile.TemporaryDirectory() as temp:
+        planner = AgentPlanner(make_registry(Path(temp)))
+
+        plan = planner.plan(
+            "把任意内容加入计划",
+            {
+                "intent": "add_plan",
+                "entities": {"title": "不应执行"},
+                "semantic_authoritative": True,
+            },
+        )
+
+        assert plan.steps == []
+        assert plan.source == "authoritative_guard"
+
+
+def test_plan_reference_arguments_are_canonical_strings_before_pipeline():
+    with tempfile.TemporaryDirectory() as temp:
+        registry = make_registry(Path(temp))
+
+        completed = AgentPlanner._arguments_for(
+            "complete_plan",
+            {"task_id": 17},
+            registry=registry,
+        )
+        deleted = AgentPlanner._arguments_for(
+            "delete_plan",
+            {"task_id": 23},
+            registry=registry,
+        )
+
+        assert completed == {"match_text": "17"}
+        assert deleted == {"task_ref": "23"}
+
+
+def test_resolved_plan_actions_reuse_canonical_argument_shaping():
+    with tempfile.TemporaryDirectory() as temp:
+        planner = AgentPlanner(make_registry(Path(temp)))
+
+        plan = planner.plan(
+            "继续当前计划操作",
+            {
+                "intent": "resolved_actions",
+                "resolved_actions": [
+                    {
+                        "tool_name": "add_plan",
+                        "arguments": {
+                            "title": "机器学习",
+                            "date": "2026-08-10",
+                            "time_slot": "下午",
+                            "duration_minutes": 30,
+                        },
+                    },
+                    {
+                        "tool_name": "complete_plan",
+                        "arguments": {"task_id": 17},
+                    },
+                ],
+            },
+        )
+
+        assert plan.steps[0].arguments == {
+            "title": "机器学习",
+            "time_slot": "下午",
+            "duration_minutes": 30,
+        }
+        assert plan.steps[1].arguments == {"match_text": "17"}
+
+
 if __name__ == "__main__":
     test_single_and_multi_step_rule_plans()
     test_plan_is_bounded_and_invalid_llm_falls_back()

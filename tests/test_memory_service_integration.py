@@ -246,13 +246,15 @@ def test_deterministic_memory_phrases_and_explicit_candidate_ids():
         "待审核记忆有哪些",
         "哪些记忆还没确认",
     ):
-        assert router.route(text)["intent"] == "show_memory_candidates"
+        result = router.route(text)
+        assert result["intent"] == "chat"
+        assert result["source"] == "retired_memory_candidate"
     accepted = router.route("确认候选4")
     rejected = router.route("忽略候选5")
-    assert accepted["intent"] == "accept_memory_candidate"
-    assert accepted["entities"]["candidate_id"] == 4
-    assert rejected["intent"] == "reject_memory_candidate"
-    assert rejected["entities"]["candidate_id"] == 5
+    assert accepted["intent"] == "chat"
+    assert accepted["source"] == "retired_memory_candidate"
+    assert rejected["intent"] == "chat"
+    assert rejected["source"] == "retired_memory_candidate"
 
 
 def test_accept_all_uses_ids_returned_by_repository():
@@ -289,9 +291,14 @@ def test_tool_results_match_persisted_state_and_positive_id_schema():
             item["function"]["name"]: item["function"]["parameters"]
             for item in registry.model_tool_schemas()
         }
-        assert contracts["accept_memory_candidate"]["additionalProperties"] is False
-        assert contracts["accept_memory_candidate"]["properties"]["candidate_id"]["minimum"] == 1
-        assert contracts["archive_memory"]["properties"]["memory_id"]["minimum"] == 1
+        assert "accept_memory_candidate" not in contracts
+        assert "archive_memory" not in contracts
+        assert registry.get("accept_memory_candidate").parameters_schema[
+            "candidate_id"
+        ]["minimum"] == 1
+        assert registry.get("archive_memory").parameters_schema["memory_id"][
+            "minimum"
+        ] == 1
 
 
 def test_action_claim_guard_requires_matching_memory_tool_success():
@@ -306,7 +313,14 @@ def test_action_claim_guard_requires_matching_memory_tool_success():
     )
     allowed = guard.validate(
         claim,
-        [ToolResult(True, "create_memory_candidate", "added")],
+        [
+            ToolResult(
+                True,
+                "create_memory_candidate",
+                "added",
+                operation_kind="write",
+            )
+        ],
     )
     blocked_already_processed = guard.validate(
         claim,

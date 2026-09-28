@@ -91,11 +91,18 @@ class MemoryGovernanceService:
         *,
         explicit: bool = False,
         source: str = "conversation",
+        source_role: str = "user",
     ) -> Dict[str, object]:
         if not self.enabled:
             return {"status": "disabled", "candidate": None}
 
         original = str(source_text).strip()
+        if self._is_non_user_source(source_role, source) or self._looks_like_assistant_or_tool_text(original):
+            return {
+                "status": "skipped",
+                "candidate": None,
+                "reason": "non_user_or_execution_text",
+            }
         content = self._strip_memory_request(original) if explicit else original
         if not content:
             return {"status": "skipped", "candidate": None, "reason": "empty"}
@@ -430,6 +437,33 @@ class MemoryGovernanceService:
     @classmethod
     def _is_sensitive(cls, content: str) -> bool:
         return any(re.search(pattern, content, flags=re.IGNORECASE) for pattern in SENSITIVE_PATTERNS)
+
+    @staticmethod
+    def _is_non_user_source(source_role: str, source: str) -> bool:
+        role = str(source_role or "user").strip().lower()
+        origin = str(source or "").strip().lower()
+        return role in {"assistant", "system", "tool", "agent", "execution"} or origin in {
+            "assistant",
+            "system",
+            "tool",
+            "agent",
+            "execution",
+            "tool_result",
+        }
+
+    @staticmethod
+    def _looks_like_assistant_or_tool_text(content: str) -> bool:
+        text = re.sub(r"\s+", "", str(content or "").strip())
+        if not text:
+            return False
+        patterns = (
+            r"^(?:好[，,:：]?我(?:已经|已)?记住了)[：,:：]",
+            r"^(?:我(?:已经|已)?记住了)[：,:：]",
+            r"^(?:目前|现在|本轮|这次).{0,30}(?:还没有|未|没有)(?:执行|完成|成功)",
+            r"^(?:工具|操作|请求).{0,20}(?:不可用|失败|未执行|没有执行)",
+            r"^(?:已|已经)(?:添加|加入|保存|完成|记录|更新|删除|归档|恢复).{0,24}(?:计划|行动|记忆|操作|任务)?",
+        )
+        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
     @staticmethod
     def _is_transient_or_question(content: str) -> bool:

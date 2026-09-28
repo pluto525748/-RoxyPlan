@@ -19,7 +19,7 @@ from frontend.growth_dialog import GrowthDialog
 from frontend.pet_app import ChatWindow
 
 
-class TestClock:
+class FakeClock:
     def __init__(self, value):
         self.value = value
 
@@ -99,7 +99,7 @@ def test_save_growth_log_overwrites_same_day():
 
 def test_data_is_isolated_by_date():
     with tempfile.TemporaryDirectory() as temp_dir:
-        clock = TestClock(datetime(2026, 7, 15, 23, 50, 0))
+        clock = FakeClock(datetime(2026, 7, 15, 23, 50, 0))
         manager = GrowthManager(Path(temp_dir) / "private", now_provider=clock)
         manager.add_task("第一天计划")
         manager.add_record("第一天行动")

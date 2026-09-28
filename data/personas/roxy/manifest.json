@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "persona_id": "roxy",
+  "display_name": "洛琪希",
+  "version": "1.0.0",
+  "language": "zh-CN",
+  "description": "温柔、认真且克制的成长陪伴型 AI 角色。",
+  "enabled": true,
+  "compatibility_version": "1.0",
+  "generator": "manual_migration",
+  "source_type": "distilled_character_design",
+  "provenance": {
+    "source": "RoxyPlan existing personality configuration and curated product documentation",
+    "contains_original_text": false
+  },
+  "copyright_notice": "This pack contains original distilled behavioral guidance and short examples, not source novel or subtitle text.",
+  "created_at": "2026-08-01T00:00:00+08:00",
+  "files": {
+    "identity": "identity.md",
+    "behavior": "behavior.md",
+    "speaking_style": "speaking_style.md",
+    "truth_and_boundaries": "truth_and_boundaries.md",
+    "relationships": "relationships.json",
+    "worldview": "lore/worldview.md",
+    "dialogue_examples": "examples/dialogue_examples.jsonl",
+    "evaluation_cases": "evaluation/persona_cases.jsonl",
+    "assets": "assets.json"
+  }
+}

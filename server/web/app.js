@@ -401,7 +401,6 @@ async function setMemoryView(name) {
   });
   const memoryLoaders = {
     confirmed: () => loadMemories(byId("memorySearchInput").value.trim()),
-    candidates: loadMemoryCandidates,
     conflicts: loadMemoryConflicts,
     audit: loadMemoryAudit,
   };
@@ -559,7 +558,6 @@ document.querySelectorAll("[data-memory-view]").forEach((button) => {
   button.addEventListener("click", () => setMemoryView(button.dataset.memoryView).catch(handleError));
 });
 
-byId("rejectLowValueButton").addEventListener("click", () => rejectLowValueCandidates().catch(handleError));
 
 byId("saveReviewButton").addEventListener("click", async () => {
   try {

@@ -7,19 +7,21 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from PySide6.QtCore import Property, QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import Property, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from frontend.pet_action_manager import PetActionManager
+from frontend.client_action_dispatcher import DesktopClientActionDispatcher
 from frontend.pet_actions import PetActionController
 from frontend.pet_bubble import PetBubble
 from frontend.growth_dialog import GrowthDialog
 from frontend.settings_dialog import SettingsDialog
-from modules.client_action_policy import ClientActionPolicy
+from modules.contracts import ClientAction
 from modules.growth_manager import GrowthManager
 from modules.chat_history_manager import ChatHistoryManager
 from modules.proactive_manager import ProactiveManager
+from modules.review_backfill import ReviewBackfillRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -46,10 +48,11 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "proactive_interval_minutes": 10,
     "proactive_check_seconds_test": 30,
     "evening_review_enabled": True,
+    "auto_complete_yesterday_review": True,
     "idle_nudge_enabled": True,
     "chat_history_enabled": True,
     "restore_last_session": True,
-    "enable_memory_candidates": True,
+    "enable_memory_candidates": False,
     "recent_context_messages": 16,
     "auto_summary_enabled": True,
     "summary_message_threshold": 30,
@@ -91,14 +94,30 @@ PET_STATES = {"idle", "happy", "thinking", "study", "sleep"}
 class DesktopPet(QWidget):
     """Chibi mage-teacher desktop pet with simple local interactions."""
 
-    def __init__(self, chat_factory: Optional[Callable[[], QWidget]] = None) -> None:
+    # Signal emitted when a plan is completed (from any thread).
+    # Connected to _on_plan_completed which runs UI operations on the
+    # main thread via Qt::QueuedConnection when emitted from a worker.
+    _plan_completed = Signal()
+
+    def __init__(
+        self,
+        chat_factory: Optional[Callable[[], QWidget]] = None,
+        *,
+        growth_service: Optional[Any] = None,
+        chat_history_manager: Optional[ChatHistoryManager] = None,
+        config_file: Path = PET_CONFIG_FILE,
+        tips_file: Path = PET_TIPS_FILE,
+    ) -> None:
         super().__init__()
+        self._plan_completed.connect(self._on_plan_completed)
         print("[PET] DesktopPet init", flush=True)
         self.chat_factory = chat_factory
+        self.config_file = Path(config_file)
+        self.tips_file = Path(tips_file)
         self.chat_window: Optional[QWidget] = None
         self.settings_dialog: Optional[SettingsDialog] = None
         self.growth_dialog: Optional[GrowthDialog] = None
-        self.growth_service = GrowthManager()
+        self.growth_service = growth_service or GrowthManager()
         self.growth_manager = self.growth_service
         # The chat bootstrap owns the shared MemoryService and assigns its
         # candidate manager here. Avoid opening the same private files through
@@ -106,7 +125,11 @@ class DesktopPet(QWidget):
         self.memory_service = None
         self.memory_candidate_manager = None
         self.config = self._load_config()
-        self.chat_history_manager = ChatHistoryManager(
+        self.review_backfill_runner = ReviewBackfillRunner(
+            self.growth_service,
+            notification_callback=self._show_review_backfill_warning,
+        )
+        self.chat_history_manager = chat_history_manager or ChatHistoryManager(
             enabled=bool(self.config.get("chat_history_enabled", True))
         )
         self.proactive_manager = ProactiveManager(
@@ -143,7 +166,7 @@ class DesktopPet(QWidget):
         self.bubble = PetBubble()
         self.actions = PetActionController(self)
         self.action_manager = PetActionManager(self)
-        self.client_action_policy = ClientActionPolicy()
+        self.client_action_dispatcher = DesktopClientActionDispatcher(self)
         self.auto_tip_timer = QTimer(self)
         self.auto_tip_timer.setSingleShot(True)
         self.auto_tip_timer.timeout.connect(self._show_auto_tip)
@@ -171,6 +194,8 @@ class DesktopPet(QWidget):
         self._start_study_reminder_timer()
         self._start_proactive_timer()
         self.sleep_check_timer.start(1000)
+        if bool(self.config.get("auto_complete_yesterday_review", True)):
+            QTimer.singleShot(0, self._run_startup_review_backfill)
 
     @property
     def state(self) -> str:
@@ -306,6 +331,12 @@ class DesktopPet(QWidget):
         self.bubble.show_message(text, self.frameGeometry(), duration)
         self.action_manager.play_action("nod")
 
+    def _run_startup_review_backfill(self) -> None:
+        self.review_backfill_runner.run()
+
+    def _show_review_backfill_warning(self, message: str) -> None:
+        self.show_bubble(message, duration_ms=9000, record_interaction=False)
+
     def show_random_encouragement(self) -> None:
         self.show_bubble(random.choice(self.tips or ENCOURAGEMENTS))
 
@@ -355,7 +386,9 @@ class DesktopPet(QWidget):
         self.record_interaction()
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(
-                self, chat_history_manager=self.chat_history_manager
+                self,
+                config_file=self.config_file,
+                chat_history_manager=self.chat_history_manager,
             )
             self.settings_dialog.settings_saved.connect(self.apply_saved_settings)
             self.settings_dialog.history_cleared.connect(
@@ -420,6 +453,11 @@ class DesktopPet(QWidget):
         self.proactive_manager.resume()
 
     def notify_plan_completed(self) -> None:
+        """Thread-safe: emits _plan_completed signal for main-thread delivery."""
+        self._plan_completed.emit()
+
+    def _on_plan_completed(self) -> None:
+        """Main-thread slot: present encouragement after a plan is completed."""
         if self.action_manager.current_state in {"dancing", "sleeping"}:
             return
         reminder = self.proactive_manager.task_completed_reminder()
@@ -427,33 +465,17 @@ class DesktopPet(QWidget):
             self._present_proactive_reminder(reminder, include_chat=False)
 
     def start_dance(self) -> bool:
-        return self.action_manager.play_action("dance")
+        result = self.client_action_dispatcher.dispatch(
+            ClientAction("play_dance", {"dance_id": None}, source="desktop_menu")
+        )
+        return result.accepted
 
     def agent_sleep(self) -> bool:
         return bool(self.action_manager.play_action("sleep"))
 
     def execute_client_action(self, action: Dict[str, object]) -> bool:
-        """Validate and execute one declarative action from an Agent response."""
-        allowed, item, reason = self.client_action_policy.validate(action)
-        if not allowed or item is None:
-            print(f"[CLIENT_ACTION] blocked: {reason}", flush=True)
-            return False
-
-        arguments = item.arguments
-        handlers = {
-            "nod": lambda: self.action_manager.play_action("nod"),
-            "jump": lambda: self.action_manager.play_action("jump"),
-            "show_bubble": lambda: self.show_bubble(
-                str(arguments["text"]),
-                int(arguments.get("duration_ms", 6000)),
-            ),
-            "play_dance": lambda: self.action_manager.play_action("dance"),
-            "sleep": lambda: self.action_manager.play_action("sleep"),
-            "wake": lambda: self.action_manager.play_action("wake"),
-            "scale": lambda: self.action_manager.play_action("scale"),
-        }
-        result = handlers[item.name]()
-        return result is not False
+        """Compatibility wrapper around the single declarative dispatcher."""
+        return self.client_action_dispatcher.dispatch(action).accepted
 
     def _start_dance_frames(self) -> bool:
         self.record_interaction()
@@ -490,11 +512,17 @@ class DesktopPet(QWidget):
         elif chosen == actions["dance"]:
             self.start_dance()
         elif chosen == actions["encourage"]:
-            self.action_manager.play_action("jump")
+            self.client_action_dispatcher.dispatch(
+                ClientAction("jump", source="desktop_menu")
+            )
         elif chosen == actions["sleep"]:
-            self.action_manager.play_action("sleep")
+            self.client_action_dispatcher.dispatch(
+                ClientAction("sleep", source="desktop_menu")
+            )
         elif chosen == actions["wake"]:
-            self.action_manager.play_action("wake")
+            self.client_action_dispatcher.dispatch(
+                ClientAction("wake", source="desktop_menu")
+            )
         elif chosen == actions["quit"]:
             QApplication.quit()
 
@@ -882,6 +910,30 @@ class DesktopPet(QWidget):
             print("[Proactive] skipped: busy", flush=True)
             return
 
+        chat_window = self.chat_window
+        coordinator = getattr(chat_window, "interaction_coordinator", None)
+        conversation_id = str(
+            getattr(chat_window, "current_session_id", "") or ""
+        ).strip()
+        if conversation_id:
+            coordinator_pending = bool(
+                coordinator is not None
+                and coordinator.current(conversation_id).pending
+            )
+            confirmation_manager = getattr(
+                chat_window, "confirmation_manager", None
+            )
+            confirmation_pending = bool(
+                confirmation_manager is not None
+                and confirmation_manager.pending(scope=conversation_id) is not None
+            )
+            if coordinator_pending or confirmation_pending:
+                print(
+                    "[Proactive] skipped: chat interaction pending",
+                    flush=True,
+                )
+                return
+
         idle_seconds = time.monotonic() - self._last_interaction_at
         allowed_types = {"idle_nudge"} if current_state == "sleeping" else None
         reminder = self.proactive_manager.check(
@@ -935,12 +987,12 @@ class DesktopPet(QWidget):
         return 30 * 60
 
     def _load_config(self) -> Dict[str, object]:
-        if not PET_CONFIG_FILE.exists():
-            self._write_json(PET_CONFIG_FILE, DEFAULT_CONFIG)
+        if not self.config_file.exists():
+            self._write_json(self.config_file, DEFAULT_CONFIG)
             return dict(DEFAULT_CONFIG)
 
         try:
-            with PET_CONFIG_FILE.open("r", encoding="utf-8") as file:
+            with self.config_file.open("r", encoding="utf-8") as file:
                 loaded = json.load(file)
         except (OSError, json.JSONDecodeError):
             loaded = {}
@@ -951,17 +1003,17 @@ class DesktopPet(QWidget):
         return config
 
     def _save_config(self) -> None:
-        self._write_json(PET_CONFIG_FILE, self.config)
+        self._write_json(self.config_file, self.config)
 
     def _load_tips(self) -> List[str]:
-        if not PET_TIPS_FILE.exists():
-            print(f"[TIP] load failed: {PET_TIPS_FILE} does not exist; writing defaults", flush=True)
-            self._write_json(PET_TIPS_FILE, DEFAULT_TIPS)
+        if not self.tips_file.exists():
+            print(f"[TIP] load failed: {self.tips_file} does not exist; writing defaults", flush=True)
+            self._write_json(self.tips_file, DEFAULT_TIPS)
             print(f"[TIP] loaded {len(DEFAULT_TIPS)} tips", flush=True)
             return list(DEFAULT_TIPS)
 
         try:
-            with PET_TIPS_FILE.open("r", encoding="utf-8") as file:
+            with self.tips_file.open("r", encoding="utf-8") as file:
                 loaded = json.load(file)
         except OSError as exc:
             print(f"[TIP] load failed: {PET_TIPS_FILE}: {exc}", flush=True)

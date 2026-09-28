@@ -1,49 +1,55 @@
-# RoxyPlan 文档
+# RoxyPlan 文档索引
 
-本目录记录 RoxyPlan 的产品设计、架构边界、阶段路线和后续能力规划。
+更新时间：2026-09-27
 
-## 当前阶段
+RoxyPlan 的产品阶段仍为 **V0.9 本地成长陪伴桌宠原型**；V2.2 是既有中文交互与成长闭环的稳定化工作流，不代表新增产品阶段。文档分为“当前约定与状态”“专题设计”“版本历史”和“研究资料”；旧版本文档保留带日期的证据，不覆盖最新明确决定。文档不能替代真实执行结果或当天验证。
 
-项目当前处于 **V0.9 桌宠交互与轻量成长闭环原型阶段**。
+## 建议阅读顺序
 
-如果只想快速了解“现在做到什么程度”，优先阅读 `current_status.md`。
+1. [`../README.md`](../README.md)：项目说明书、安装、启动、核心能力和隐私边界。
+2. [`../AGENTS.md`](../AGENTS.md)：硬限制、目录边界与接手规则。
+3. [`capability_boundaries.md`](capability_boundaries.md)：当前能力范围、推荐自然表达、确认与可靠退出契约；上线操作说明的维护依据。
+4. [`project_workflow.md`](project_workflow.md)：稳定项目档案、用户开发习惯、协作偏好、最小修复和数据保护。
+5. [`agent_engineering_experience.md`](agent_engineering_experience.md)：历史来源去重后的 Agent Engineering 经验、认知修正、适用边界和复盘模板。
+6. [`current_status.md`](current_status.md)：带日期的完成度、验证状态和剩余问题；最新测试结果只在此维护。
+7. [`chinese_interaction_reliability.md`](chinese_interaction_reliability.md) 与 [`../tests/README.md`](../tests/README.md)：中文资料来源、隔离验证、测试 lane 和报告方式。
+8. [`v2_2_agent_handover.md`](v2_2_agent_handover.md)：V2.2 带日期的历史基线与交接证据，接手时仍需刷新实际状态。
+9. [`current_architecture_inventory.md`](current_architecture_inventory.md) 与 [`runtime_call_chains.md`](runtime_call_chains.md)：模块职责和运行链。两者仍含 V1.8.3 历史描述，遇到冲突时核对当前约定、状态及实际代码，不能用旧架构说明扩大能力。
 
-已实现的原型能力包括：
+## 当前专题
 
-- PySide6 桌面角色与轻量聊天窗口
-- 透明背景图片加载和桌面常驻
-- 随机气泡提示与 88 条本地提示语
-- `jump`、`nod`、`thinking / shake`、`study / scale`、`sleep / wake` 状态动作
-- 本地人格数据与基础长期记忆读写
-- `memory.example.json` 示例记忆文件与本地私有 `memory.json`
-- `data/knowledge/` 读取 `.txt` / `.md` 文件正文
-- 轻量关键词匹配，将相关知识片段加入聊天 prompt
-- 设置面板入口和多帧舞蹈素材播放框架
-- 今日计划、任务完成记录和简单复盘聊天命令
-- Ollama / Qwen 本地模型调用尝试
-- QThread / Worker 异步回复
-- 基础测试脚本和 Windows 启动脚本
+- [`product_principles.md`](product_principles.md)：产品与安全原则。
+- [`semantic_action_protocol.md`](semantic_action_protocol.md)：结构化语义动作契约的历史演进。
+- [`business_resolver.md`](business_resolver.md)：业务对象、参数和引用校验边界。
+- [`tool_schema_and_validation.md`](tool_schema_and_validation.md)：工具 schema 与执行校验。
+- [`response_truthfulness.md`](response_truthfulness.md)：ToolResult 与最终回复事实边界。
+- [`interaction_state_machine.md`](interaction_state_machine.md)：按 conversation 隔离的澄清、确认和引用状态。
+- [`memory_system.md`](memory_system.md)：正式记忆、候选兼容、冲突、审计和归档。
+- [`chat_history_system.md`](chat_history_system.md)：消息、摘要与上下文连续性。
+- [`development_logging.md`](development_logging.md)：最小开发事件、逐轮关联、按钮来源与只读最近交互排查。
+- [`roxy_personality.md`](roxy_personality.md)：洛琪希人格设计原则；运行时人格包位于 `data/personas/roxy/`。
+- [`client_action_protocol.md`](client_action_protocol.md) 与 [`pet_action_state_machine.md`](pet_action_state_machine.md)：声明式客户端动作和桌宠状态机。
+- [`local_web_v0_1.md`](local_web_v0_1.md)：可信局域网 Local Web 边界。
+- [`storage_architecture.md`](storage_architecture.md)：本地 Repository 和 JSON 存储边界。
 
-## 文档索引
+## 当前里程碑
 
-- `current_status.md`：当前完成度、已实现能力、原型边界和下一步建议
-- `product_design.md`：产品定位和完整体验设想
-- `roxy_personality.md`：Roxy 人格、表达和安全边界
-- `pet_interaction.md`：桌宠状态和交互设计
-- `ROADMAP.md`：当前阶段与后续路线
-- `ARCHITECTURE.md`：现有模块边界和数据流
-- `MEMORY.md`：长期记忆原型说明
-- `knowledge_feed_design.md`：知识文件解析、检索和引用规划
-- `growth_system.md`：成长记录、周报和月报规划
-- `memory_design.md`：长期记忆分类和字段设计
-- `voice_system.md`：语音能力规划
-- `mobile_design.md`：移动端轻量访问规划
-- `data_architecture.md`：长期数据架构设想
-- `mvp_plan.md`、`product_roadmap.md`：阶段范围和版本规划
+- [`CHANGELOG.md`](CHANGELOG.md)：版本变更历史；V1.9—V2.1 的最终条目仍需在里程碑封板时统一补齐。
+- [`ROADMAP.md`](ROADMAP.md)：产品路线；其中 V1.8.3 以前的版本描述保留历史意义。
+- [`technical_debt_register.md`](technical_debt_register.md)：技术债登记。
+- [`deprecation_plan.md`](deprecation_plan.md)：旧入口的兼容与停用计划。
 
-## 阅读说明
+## 历史与研究
 
-- 标记为“已实现”的内容对应当前 V0.9 原型。
-- `current_status.md` 和本文件优先反映当前代码状态。
-- 设计文档中的数据库、语音、向量知识库、移动端和复杂成长系统仍属于计划中能力。
-- 文档描述的是原型演进方向，不代表完整商业产品承诺。
+- `analysis/`：阶段性架构审计、基线和完成报告；[`roxyplan_local_asset_map_2026-09-27.md`](analysis/roxyplan_local_asset_map_2026-09-27.md) 是本地目录整理前的只读资产快照，不作为永久运行状态。
+- `research/`：开源架构、工具调用和本地规则研究。
+- `v1_*_completion_report.md`、`release_*.md`、`manual_acceptance_*.md`：对应版本的历史验收记录。
+- `product_design.md`、`memory_design.md`、`voice_system.md`、`mobile_design.md`、`knowledge_feed_design.md`：包含长期设计或未来规划，不能全部视为已实现。
+
+## 状态用语
+
+- “已实现”：代码已经存在，并有隔离自动测试或真实运行证据。
+- “离线验证通过”：只代表 Stub/Fake 与本地程序边界通过，不代表在线模型质量。
+- “真实模型验收通过”：必须有真实 Provider、模型名、时间、案例数和脱敏报告。
+- “计划中”：尚未完成，不应出现在用户能力承诺中。
+- 任何缺少真实运行证据的在线验收都必须标记为“待运行”。

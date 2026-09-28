@@ -122,7 +122,7 @@ def atomic_write_json(
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, target)
+            _replace_with_windows_retry(temporary, target)
             temporary = None
         return True
     except (OSError, TimeoutError) as error:
@@ -191,6 +191,26 @@ def _acquire_os_lock(handle, timeout_seconds: float) -> None:
             if time.monotonic() >= deadline:
                 raise TimeoutError("Timed out waiting for local JSON lock")
             time.sleep(0.05)
+
+
+def _replace_with_windows_retry(source: Path, target: Path) -> None:
+    """Replace a JSON file despite brief Windows scanner/reader locks.
+
+    The repository transaction already serializes RMW cycles.  Windows can
+    still report a short-lived sharing violation when an external scanner has
+    the destination open; dropping the write would leave the business record
+    and its audit trail out of sync.  Retry only that transient permission
+    error, while the same transaction lock remains held.
+    """
+
+    delays = (0.02, 0.04, 0.08, 0.16, 0.32)
+    for delay in delays:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(source, target)
 
 
 def _release_os_lock(handle) -> None:

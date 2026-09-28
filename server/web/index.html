@@ -93,7 +93,6 @@
     <section id="memoriesView" class="view" data-view-panel="memories" hidden>
       <div class="memory-subnav" role="tablist" aria-label="记忆治理">
         <button class="memory-tab active" type="button" data-memory-view="confirmed">长期记忆</button>
-        <button class="memory-tab" type="button" data-memory-view="candidates">待审核</button>
         <button class="memory-tab" type="button" data-memory-view="conflicts">冲突</button>
         <button class="memory-tab" type="button" data-memory-view="audit">审计</button>
       </div>
@@ -105,14 +104,6 @@
           <button class="secondary-button" type="submit">搜索</button>
         </form>
         <div id="memoryList" class="item-list"></div>
-      </div>
-
-      <div data-memory-panel="candidates" hidden>
-        <div class="view-heading">
-          <h2>待审核候选</h2>
-          <button id="rejectLowValueButton" class="danger-button compact" type="button">拒绝低价值</button>
-        </div>
-        <div id="candidateList" class="item-list"></div>
       </div>
 
       <div data-memory-panel="conflicts" hidden>

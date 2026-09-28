@@ -3,16 +3,34 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Dict, List, Mapping, Optional, Union
 from uuid import uuid4
 
 
 SCHEMA_VERSION = "1.0"
+
+
+class ResponseOutcome(Enum):
+    """Single source of truth for what happened in a conversation turn.
+
+    Only ToolResult.success can produce SUCCESS — no other path may set it.
+    """
+
+    CHAT = "chat"
+    SUCCESS = "success"
+    CLARIFY = "clarify"
+    FAILURE = "failure"
 JsonValue = Union[None, bool, int, float, str, List["JsonValue"], Dict[str, "JsonValue"]]
 
 
 def _stable_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_json_value(value: object, path: str = "value") -> JsonValue:
@@ -226,6 +244,7 @@ class ToolResult:
     status: str = ""
     message_code: str = ""
     display_message: str = ""
+    operation_kind: str = "unknown"
 
     def __post_init__(self) -> None:
         self.success = bool(self.success)
@@ -239,6 +258,9 @@ class ToolResult:
         self.status = _safe_string(self.status, "completed" if self.success else "failed")
         self.message_code = _safe_string(self.message_code, self.message)
         self.display_message = _safe_string(self.display_message, self.message)
+        self.operation_kind = _safe_string(self.operation_kind, "unknown").lower()
+        if self.operation_kind not in {"read", "write", "unknown"}:
+            self.operation_kind = "unknown"
 
     @property
     def error_code(self) -> Optional[str]:
@@ -254,6 +276,7 @@ class ToolResult:
             "message": self.message,
             "message_code": self.message_code,
             "display_message": self.display_message,
+            "operation_kind": self.operation_kind,
             "data": ensure_json_value(self.data, "ToolResult.data"),
             "error": self.error.to_dict() if isinstance(self.error, ToolError) else None,
         }
@@ -272,6 +295,7 @@ class ToolResult:
             status=_safe_string(data.get("status")),
             message_code=_safe_string(data.get("message_code")),
             display_message=_safe_string(data.get("display_message")),
+            operation_kind=_safe_string(data.get("operation_kind"), "unknown"),
         )
 
 
@@ -567,6 +591,12 @@ class ClientAction:
     expires_at: Optional[str] = None
     schema_version: str = SCHEMA_VERSION
     action_id: str = field(default_factory=lambda: _stable_id("action"))
+    request_id: str = ""
+    conversation_id: str = ""
+    created_at: str = field(default_factory=_utc_now_iso)
+    idempotency_key: str = field(default_factory=lambda: _stable_id("idem"))
+    source: str = "agent"
+    status: str = "requested"
 
     def __post_init__(self) -> None:
         self.name = _safe_string(self.name)
@@ -574,6 +604,14 @@ class ClientAction:
         self.expires_at = _safe_string(self.expires_at) or None
         self.schema_version = _safe_string(self.schema_version, SCHEMA_VERSION)
         self.action_id = _safe_string(self.action_id, _stable_id("action"))
+        self.request_id = _safe_string(self.request_id)
+        self.conversation_id = _safe_string(self.conversation_id)
+        self.created_at = _safe_string(self.created_at, _utc_now_iso())
+        self.idempotency_key = _safe_string(
+            self.idempotency_key, _stable_id("idem")
+        )
+        self.source = _safe_string(self.source, "agent")
+        self.status = _safe_string(self.status, "requested")
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -581,7 +619,13 @@ class ClientAction:
             "action_id": self.action_id,
             "name": self.name,
             "arguments": ensure_json_value(self.arguments, "ClientAction.arguments"),
+            "request_id": self.request_id,
+            "conversation_id": self.conversation_id,
+            "created_at": self.created_at,
             "expires_at": self.expires_at,
+            "idempotency_key": self.idempotency_key,
+            "source": self.source,
+            "status": self.status,
         }
 
     @classmethod
@@ -593,6 +637,14 @@ class ClientAction:
             expires_at=_safe_string(data.get("expires_at")) or None,
             schema_version=_safe_string(data.get("schema_version"), SCHEMA_VERSION),
             action_id=_safe_string(data.get("action_id"), _stable_id("action")),
+            request_id=_safe_string(data.get("request_id")),
+            conversation_id=_safe_string(data.get("conversation_id")),
+            created_at=_safe_string(data.get("created_at"), _utc_now_iso()),
+            idempotency_key=_safe_string(
+                data.get("idempotency_key"), _stable_id("idem")
+            ),
+            source=_safe_string(data.get("source"), "agent"),
+            status=_safe_string(data.get("status"), "requested"),
         )
 
 

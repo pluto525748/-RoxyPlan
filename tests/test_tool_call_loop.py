@@ -24,6 +24,7 @@ from modules.model_action_adapter import ModelToolCallLoop
 from modules.safety_policy import SafetyPolicy
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import create_roxy_tool_registry
+from tests.isolation_support import build_isolated_memory_manager
 
 
 class ScriptedProvider(LLMProvider):
@@ -74,7 +75,7 @@ class LocalScriptedProvider(ScriptedProvider):
 
 def build_loop(root, responses, pet_controller=None):
     growth = GrowthManager(root / "private")
-    memory = MemoryManager(root / "memory.json")
+    memory = build_isolated_memory_manager(root)
     registry = create_roxy_tool_registry(growth, memory, pet_controller)
     confirmation = ConfirmationManager()
     executor = ToolExecutor(registry, SafetyPolicy(), confirmation)
@@ -215,7 +216,7 @@ def test_json_fallback_write_requires_confirmation():
         assert growth.tasks() == []
 
 
-def test_valid_prose_without_tool_call_gets_one_json_action_retry():
+def test_valid_prose_without_tool_call_does_not_reopen_json_action_routing():
     fallback_payload = (
         '{"kind":"action","actions":[{"call_id":"json_claim_1",'
         '"tool_name":"add_plan","arguments":{"title":"学习特征工程"}}]}'
@@ -231,13 +232,13 @@ def test_valid_prose_without_tool_call_gets_one_json_action_retry():
     with tempfile.TemporaryDirectory() as temp:
         loop, growth, provider, _executor = build_loop(Path(temp), responses)
         result = complete(loop, "下午帮我留 50 分钟学特征工程，放进今天要做的事里")
-        assert result.status == "confirmation_required"
+        assert result.status == "chat"
         assert growth.tasks() == []
-        assert len(provider.calls) == 2
+        assert len(provider.calls) == 1
         assert "已经帮你加入" not in result.message
 
 
-def test_dance_request_uses_json_fallback_and_real_registered_action():
+def test_dance_prose_without_tool_call_does_not_reopen_json_action_routing():
     class Pet:
         def __init__(self):
             self.dance_calls = 0
@@ -264,10 +265,13 @@ def test_dance_request_uses_json_fallback_and_real_registered_action():
             Path(temp), responses, pet
         )
         result = complete(loop, "跳个舞看看")
-        assert result.status == "completed"
-        assert pet.dance_calls == 1
-        assert len(provider.calls) == 2
-        assert "不能" not in result.message
+        assert result.status == "chat"
+        # The Agent layer must never call Qt/Pet methods directly. The desktop
+        # UI consumes the declarative action on its own thread.
+        assert pet.dance_calls == 0
+        assert result.client_actions == []
+        assert len(provider.calls) == 1
+        assert result.message == responses[0].content
 
 
 def test_local_provider_can_supply_constrained_json_fallback():
@@ -278,7 +282,7 @@ def test_local_provider_can_supply_constrained_json_fallback():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         growth = GrowthManager(root / "private")
-        memory = MemoryManager(root / "memory.json")
+        memory = build_isolated_memory_manager(root)
         registry = create_roxy_tool_registry(growth, memory)
         executor = ToolExecutor(
             registry,

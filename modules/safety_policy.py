@@ -32,6 +32,7 @@ class SafetyPolicy:
         *,
         risk_level: str,
         confidence: float,
+        authorization_granted: bool = False,
         requires_confirmation: bool = False,
         confirmed: bool = False,
         negated: bool = False,
@@ -51,6 +52,10 @@ class SafetyPolicy:
         if confirmation_needed and not confirmed:
             print(f"[Safety] risk={risk} confirmation required", flush=True)
             return SafetyDecision(False, "confirmation_required", "confirmation_required")
-        if risk == "medium" and float(confidence) < self.medium_confidence_threshold:
+        if (
+            risk == "medium"
+            and not authorization_granted
+            and float(confidence) < self.medium_confidence_threshold
+        ):
             return SafetyDecision(False, "clarification", "confidence_too_low")
         return SafetyDecision(True, "allowed", "allowed")

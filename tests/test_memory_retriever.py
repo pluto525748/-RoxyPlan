@@ -111,7 +111,9 @@ def test_chat_context_injects_related_memory_only():
 
         assert "我正在学习 Python 列表" in combined
         assert "肠胃比较敏感" not in combined
-        assert manager.get(int(learning["id"]))["use_count"] == 1
+        # Building a prompt is not evidence that the final answer used a fact.
+        # ConversationService settles usage only after the final reply exists.
+        assert manager.get(int(learning["id"]))["use_count"] == 0
         window.close()
         app.processEvents()
 

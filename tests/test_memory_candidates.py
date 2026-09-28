@@ -16,13 +16,18 @@ from PySide6.QtWidgets import QApplication
 from frontend import pet_app
 from frontend.memory_dialog import MemoryDialog
 from frontend.pet_app import ChatWindow
+from modules.chat_history_manager import ChatHistoryManager
 from modules.growth_manager import GrowthManager
 from modules.intent_router import IntentRouter
 from modules.memory_candidate_manager import MemoryCandidateManager
 from modules.memory_manager import MemoryManager
+from tests.isolation_support import (
+    build_isolated_candidate_manager,
+    build_isolated_memory_service,
+)
 
 
-class TestClock:
+class FakeClock:
     def __init__(self, value):
         self.value = value
 
@@ -33,7 +38,7 @@ class TestClock:
 def test_missing_file_is_created():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "private" / "memory_candidates.json"
-        manager = MemoryCandidateManager(path)
+        manager = build_isolated_candidate_manager(Path(temp_dir))
 
         assert path.exists()
         assert manager.pending() == []
@@ -45,9 +50,9 @@ def test_missing_file_is_created():
 
 def test_add_candidate_and_skip_duplicate():
     with tempfile.TemporaryDirectory() as temp_dir:
-        path = Path(temp_dir) / "memory_candidates.json"
-        clock = TestClock(datetime(2026, 7, 15, 10, 0, 0))
-        manager = MemoryCandidateManager(path, now_provider=clock)
+        root = Path(temp_dir)
+        clock = FakeClock(datetime(2026, 7, 15, 10, 0, 0))
+        manager = build_isolated_candidate_manager(root, now_provider=clock)
 
         first, added = manager.add_candidate(
             "我喜欢晚上学习",
@@ -69,7 +74,7 @@ def test_add_candidate_and_skip_duplicate():
 
 def test_pending_reject_and_clear():
     with tempfile.TemporaryDirectory() as temp_dir:
-        manager = MemoryCandidateManager(Path(temp_dir) / "memory_candidates.json")
+        manager = build_isolated_candidate_manager(Path(temp_dir))
         first, _ = manager.add_candidate("我周末适合整理项目", "stable_habit", "source 1")
         manager.add_candidate("不要自动生图", "project_preference", "source 2")
 
@@ -82,7 +87,7 @@ def test_pending_reject_and_clear():
         assert manager.pending() == []
 
 
-def test_candidate_intent_rules_and_normal_chat_fallback():
+def test_ordinary_statements_fall_back_to_chat_and_explicit_memory_stays_deterministic():
     router = IntentRouter()
     examples = {
         "我喜欢晚上学习": "user_preference",
@@ -93,31 +98,35 @@ def test_candidate_intent_rules_and_normal_chat_fallback():
         "以后 Codex 提示词不要太长": "project_preference",
     }
 
-    for text, category in examples.items():
+    for text in examples:
         result = router.route(text)
-        assert result["intent"] == "memory_candidate"
-        assert result["slots"]["category"] == category
+        assert result["intent"] == "chat"
 
     assert router.route("我喜欢你")["intent"] == "chat"
     assert router.route("今天有点累，想聊聊天")["intent"] == "chat"
-    assert router.route("记住：我喜欢晚上学习")["reason"] == "fixed_command"
+    assert router.route("记住：我喜欢晚上学习")["intent"] == "add_memory_request"
     assert router.route("帮我记住我喜欢晚上学习")["intent"] == "add_memory_request"
 
 
 def _build_chat_window(root: Path):
-    candidate_manager = MemoryCandidateManager(root / "private" / "memory_candidates.json")
+    memory_service = build_isolated_memory_service(
+        root,
+        default_data=pet_app.default_memory(),
+    )
+    candidate_manager = memory_service.candidate_manager
     growth_manager = GrowthManager(root / "growth")
     window = ChatWindow(
         growth_service=growth_manager,
-        memory_candidate_manager=candidate_manager,
+        memory_service=memory_service,
+        chat_history_manager=ChatHistoryManager(root / "history"),
     )
-    window.start_ai_reply = lambda _text: (_ for _ in ()).throw(
-        AssertionError("Memory candidate commands must not call the LLM")
+    window.start_ai_reply = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("deterministic memory commands must not call the LLM")
     )
     return window, candidate_manager
 
 
-def test_confirm_candidate_writes_memory_once():
+def test_explicit_memory_from_desktop_writes_formal_memory_once():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -134,24 +143,12 @@ def test_confirm_candidate_writes_memory_once():
         )
         try:
             window, manager = _build_chat_window(root)
-            window.input_box.setText("我喜欢晚上学习")
-            window.send_message()
-
-            assert manager.pending() == []
-            assert window.memory["memories"] == []
-
-            window.input_box.setText("确认")
-            window.send_message()
-            assert len(manager.pending()) == 1
-
-            window.input_box.setText("确认记忆1")
-            window.send_message()
             window.input_box.setText("记住：我喜欢晚上学习")
             window.send_message()
 
+            assert manager.pending() == []
             loaded = json.loads(pet_app.MEMORY_FILE.read_text(encoding="utf-8"))
             assert [item["content"] for item in loaded["memories"]] == ["我喜欢晚上学习"]
-            assert manager.get(1)["status"] == "accepted"
             window.close()
             app.processEvents()
         finally:
@@ -159,7 +156,7 @@ def test_confirm_candidate_writes_memory_once():
             pet_app.MEMORY_EXAMPLE_FILE = original_example_file
 
 
-def test_ignore_candidate_does_not_write_memory():
+def test_chat_cannot_reject_internal_candidate_or_write_formal_memory():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -176,16 +173,14 @@ def test_ignore_candidate_does_not_write_memory():
         )
         try:
             window, manager = _build_chat_window(root)
-            window.input_box.setText("不要自动生图")
-            window.send_message()
-            window.input_box.setText("确认")
-            window.send_message()
+            manager.add_candidate("不要自动生图", "project_preference", "automatic_discovery")
             window.input_box.setText("忽略记忆1")
             window.send_message()
 
             loaded = json.loads(pet_app.MEMORY_FILE.read_text(encoding="utf-8"))
             assert loaded["memories"] == []
-            assert manager.get(1)["status"] == "rejected"
+            assert manager.get(1)["status"] == "pending"
+            assert "候选记忆功能已经停用" in window.transcript.toPlainText()
             window.close()
             app.processEvents()
         finally:
@@ -196,7 +191,7 @@ def test_ignore_candidate_does_not_write_memory():
 def test_memory_dialog_lists_source_and_runs_callbacks():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
-        manager = MemoryCandidateManager(Path(temp_dir) / "memory_candidates.json")
+        manager = build_isolated_candidate_manager(Path(temp_dir))
         candidate, _ = manager.add_candidate(
             "我周末适合整理项目",
             "stable_habit",
@@ -212,6 +207,11 @@ def test_memory_dialog_lists_source_and_runs_callbacks():
         dialog.show()
         app.processEvents()
 
+        assert all(
+            dialog.tabs.tabText(index) != "待整理（高级）"
+            for index in range(dialog.tabs.count())
+        )
+        dialog.refresh_candidates()
         assert dialog.table.rowCount() == 1
         assert dialog.table.item(0, 0).text() == "稳定习惯"
         assert dialog.table.item(0, 2).text() == "我周末适合整理项目"
@@ -225,12 +225,9 @@ def test_memory_dialog_shows_confirmed_archived_and_conflict_sections():
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
-        candidate_manager = MemoryCandidateManager(root / "memory_candidates.json")
-        memory_manager = MemoryManager(
-            root / "memory.json",
-            backup_dir=root / "backups",
-            conflict_file=root / "memory_conflicts.json",
-        )
+        memory_service = build_isolated_memory_service(root)
+        candidate_manager = memory_service.candidate_manager
+        memory_manager = memory_service.memory_manager
         active = memory_manager.add_memory("RoxyPlan 是长期项目", category="project")["memory"]
         archived = memory_manager.add_memory("旧的学习习惯", category="habit")["memory"]
         memory_manager.archive(int(archived["id"]))
@@ -238,10 +235,7 @@ def test_memory_dialog_shows_confirmed_archived_and_conflict_sections():
         memory_manager.add_memory("我现在更适合早上学习", category="preference")
 
         dialog = MemoryDialog(
-            candidate_manager,
-            lambda _candidate_id: True,
-            lambda _candidate_id: True,
-            memory_manager=memory_manager,
+            memory_service=memory_service,
         )
         dialog.show()
         app.processEvents()

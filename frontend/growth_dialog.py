@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from modules.growth_manager import GrowthManager
+from modules.development_log import get_development_log
 
 
 class GrowthDialog(QDialog):
@@ -143,9 +145,20 @@ class GrowthDialog(QDialog):
         log_group = QGroupBox("成长日志")
         log_group.setMinimumHeight(170)
         log_layout = QVBoxLayout(log_group)
+        month_row = QHBoxLayout()
+        month_row.addWidget(QLabel("自然月"))
+        self.month_selector = QComboBox()
+        self.month_selector.currentIndexChanged.connect(
+            lambda _index: self.refresh_growth_logs(refresh_months=False)
+        )
+        month_row.addWidget(self.month_selector, 1)
+        log_layout.addLayout(month_row)
+        self.month_summary_label = QLabel()
+        self.month_summary_label.setWordWrap(True)
+        log_layout.addWidget(self.month_summary_label)
         self.growth_log_list = QListWidget()
-        self.growth_log_list.setMaximumHeight(110)
-        refresh_log_button = QPushButton("查看最近成长日志")
+        self.growth_log_list.setMaximumHeight(180)
+        refresh_log_button = QPushButton("查看本月成长日志")
         refresh_log_button.clicked.connect(self.refresh_growth_logs)
         log_layout.addWidget(self.growth_log_list)
         log_layout.addWidget(refresh_log_button)
@@ -251,12 +264,63 @@ class GrowthDialog(QDialog):
         for record in self.growth_manager.action_store.records_for_date():
             self.action_list.addItem(f"{record.get('time', '')}  {record.get('content', '')}")
 
-    def refresh_growth_logs(self) -> None:
+    def refresh_growth_logs(self, *, refresh_months: bool = True) -> None:
+        selected_month = str(self.month_selector.currentData() or "").strip()
+        if refresh_months:
+            entries = self.growth_manager.growth_store.entries()
+            available = sorted(
+                {
+                    str(entry.get("date", ""))[:7]
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and len(str(entry.get("date", ""))) >= 7
+                },
+                reverse=True,
+            )
+            current_month = (
+                self.growth_manager.current_month()
+                if hasattr(self.growth_manager, "current_month")
+                else ""
+            )
+            target_month = selected_month or current_month
+            if current_month and current_month not in available:
+                available.insert(0, current_month)
+            self.month_selector.blockSignals(True)
+            self.month_selector.clear()
+            for month in available:
+                self.month_selector.addItem(month, month)
+            index = self.month_selector.findData(target_month)
+            self.month_selector.setCurrentIndex(index if index >= 0 else 0)
+            self.month_selector.blockSignals(False)
+        month = str(self.month_selector.currentData() or "").strip()
         self.growth_log_list.clear()
-        if hasattr(self.growth_manager, "recent_entries"):
-            entries = self.growth_manager.recent_entries(7)
+        if hasattr(self.growth_manager, "entries_for_month") and month:
+            entries = self.growth_manager.entries_for_month(month)
+            statistics = self.growth_manager.monthly_statistics(month)
         else:
             entries = list(reversed(self.growth_manager.growth_store.entries()))[:7]
+            statistics = {
+                "logged_days": len(entries),
+                "total_plans": sum(
+                    int(entry.get("review", {}).get("total", 0) or 0)
+                    for entry in entries
+                    if isinstance(entry, dict)
+                ),
+                "completed_plans": sum(
+                    int(entry.get("review", {}).get("done", 0) or 0)
+                    for entry in entries
+                    if isinstance(entry, dict)
+                ),
+                "action_count": sum(
+                    len(entry.get("review", {}).get("actions", []))
+                    for entry in entries
+                    if isinstance(entry, dict)
+                ),
+            }
+        self.month_summary_label.setText(
+            "记录 {logged_days} 天 · 计划 {completed_plans}/{total_plans} 完成 · "
+            "计划外行动 {action_count} 条".format(**statistics)
+        )
         if not entries:
             self.growth_log_list.addItem("还没有保存过复盘。")
             return
@@ -273,12 +337,17 @@ class GrowthDialog(QDialog):
         title = self.plan_input.text().strip()
         if not title:
             return
-        self.growth_manager.plan_store.add_task(title)
+        self._run_logged_write(
+            "ui_plan_add", lambda: self.growth_manager.plan_store.add_task(title)
+        )
         self.plan_input.clear()
         self.refresh_plans()
 
     def delete_plan(self, task_id: int) -> None:
-        self.growth_manager.plan_store.delete_by_id(task_id)
+        self._run_logged_write(
+            "ui_plan_delete",
+            lambda: self.growth_manager.plan_store.delete_by_id(task_id),
+        )
         self.refresh_plans()
 
     def _on_plan_item_changed(self, item: QTableWidgetItem) -> None:
@@ -286,14 +355,20 @@ class GrowthDialog(QDialog):
             return
         task_id = item.data(Qt.ItemDataRole.UserRole)
         if item.checkState() == Qt.CheckState.Checked and task_id is not None:
-            self.growth_manager.plan_store.complete_by_id(int(task_id))
+            self._run_logged_write(
+                "ui_plan_complete",
+                lambda: self.growth_manager.plan_store.complete_by_id(int(task_id)),
+            )
         self.refresh_plans()
 
     def add_action(self) -> None:
         content = self.action_input.text().strip()
         if not content:
             return
-        self.growth_manager.action_store.add_record(content, source="manual")
+        self._run_logged_write(
+            "ui_growth_add_action",
+            lambda: self.growth_manager.action_store.add_record(content, source="manual"),
+        )
         self.action_input.clear()
         self.refresh_actions()
 
@@ -302,10 +377,64 @@ class GrowthDialog(QDialog):
         self.review_text.setPlainText(str(review["text"]))
 
     def save_review(self) -> None:
-        self.growth_manager.save_today_review()
+        self._run_logged_write(
+            "ui_growth_save_review", self.growth_manager.save_today_review
+        )
         self.generate_review()
         self.refresh_growth_logs()
         QMessageBox.information(self, "已保存", "今天的复盘已保存到本地成长日志。")
+
+    @staticmethod
+    def _run_logged_write(source, callback):
+        """Keep UI writes distinct from chat, even inside an existing trace."""
+        logger = get_development_log()
+        trace = logger.new_trace(source=source)
+        logger.event(trace, "ui_operation_started")
+        try:
+            with logger.bind(trace):
+                result = callback()
+        except Exception as error:
+            logger.record_exception(trace, error)
+            logger.event(
+                trace, "ui_operation_finished", status="failed",
+                success=False, persisted=False,
+                error_type=type(error).__name__,
+            )
+            raise
+
+        changed = True
+        record = result
+        if isinstance(result, tuple) and len(result) == 2:
+            record, changed = result
+        if not isinstance(record, dict):
+            logger.event(
+                trace, "ui_operation_finished", status="not_found"
+                if record is None and source != "ui_growth_save_review" else "unknown",
+                success=False, persisted=False,
+            )
+            return result
+        if record.get("duplicate"):
+            changed = False
+        fields = {
+            "status": "success" if changed else "unchanged",
+            "success": True,
+            "changed": bool(changed),
+            "persisted": bool(changed),
+            "date": record.get("date"),
+            "record_id": record.get("uid"),
+            "changed_resource_ids": [record["uid"]]
+            if changed and record.get("uid") else [],
+        }
+        if source == "ui_growth_save_review":
+            fields["revision"] = record.get("revision")
+            review = record.get("review")
+            if isinstance(review, dict):
+                fields.update({
+                    key: review.get(key)
+                    for key in ("total", "done", "pending", "action_count")
+                })
+        logger.event(trace, "ui_operation_finished", **fields)
+        return result
 
     def showEvent(self, event) -> None:  # noqa: N802
         print("[GrowthUI] open", flush=True)

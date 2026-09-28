@@ -56,6 +56,7 @@ def test_export_contains_schema_and_policy_but_not_handler():
     assert contract["function"]["name"] == "set_timer"
     assert contract["risk_level"] == "medium"
     assert contract["side_effect"] is True
+    assert contract["operation_kind"] == "write"
     assert contract["sequential"] is True
     assert "handler" not in contract
     json.dumps(contract)

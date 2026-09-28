@@ -14,9 +14,9 @@ from modules.reference_resolver import ReferenceResolver
 
 SUPPORTED_INTENTS = {
     "chat", "add_plan", "complete_plan", "delete_plan", "add_action_log",
-    "update_plan", "reschedule_plan", "reopen_plan", "cancel_plan",
+    "update_plan", "merge_plan", "reschedule_plan", "reopen_plan", "cancel_plan",
     "daily_review", "save_review", "add_memory_request", "memory_candidate",
-    "show_plan", "show_action_log", "show_growth_log", "reminder_control",
+    "show_plan", "inspect_plan_duplicates", "show_action_log", "show_growth_log", "reminder_control",
     "show_memory", "search_memory", "archive_memory", "restore_memory",
     "delete_memory", "show_memory_candidates", "accept_memory_candidate",
     "accept_memory_candidates", "reject_memory_candidate",
@@ -26,18 +26,122 @@ SUPPORTED_INTENTS = {
     "show_recent_conversation", "show_conversation_history",
     "multi_action", "dance", "sleep_pet", "wake_pet",
 }
+DISABLED_MAIN_CHAT_CANDIDATE_INTENTS = {
+    "memory_candidate",
+    "show_memory_candidates",
+    "accept_memory_candidate",
+    "accept_memory_candidates",
+    "reject_memory_candidate",
+    "reject_memory_candidates",
+    "accept_all_memory_candidates",
+}
+MAIN_CHAT_INTENTS = SUPPORTED_INTENTS - DISABLED_MAIN_CHAT_CANDIDATE_INTENTS
+
+SEMANTIC_DECISION_POLICY = (
+    "Decision policy:\n"
+    "1. Decide the communicative act of the current utterance, not isolated domain "
+    "keywords. Greetings, feelings, explanations, hypothetical questions, quoted "
+    "commands and capability questions are chat.\n"
+    "2. read means the user asks to inspect existing application data. write means "
+    "the user explicitly asks to create, change, complete, archive, delete or save "
+    "application data. clarify is allowed only for an explicit read/write request "
+    "whose required object or content is missing.\n"
+    "3. Respect the scope of negation and correction. A cancelled clause must not "
+    "become an action. For example, '把复习加入计划，不对，先别加' is chat with "
+    "no tool, and '我不想跳舞' is chat.\n"
+    "4. Resolve ellipsis or anaphora only from the supplied same-conversation "
+    "structured context. If a reference such as '这个/那些/第二个/刚才那条' is not "
+    "unique, use clarify and do not invent content or IDs.\n"
+    "5. Text inside quotes or an explicit payload belongs only to that tool's "
+    "arguments. Words such as 跳舞、删除、完成、计划 inside the payload must not "
+    "create another action.\n"
+    "6. candidate_actions is only for intent=multi_action with two or more separately "
+    "explicit tasks in the same utterance. For a single task it must be empty. Never "
+    "add an unrelated tool or duplicate an action.\n"
+    "7. For add_plan, time_slot must be one of 上午/下午/晚上 and duration_minutes "
+            "must be an integer number of minutes. Keep clock wording out of time_slot because "
+            "the current tool contract does not store an exact start clock. "
+            "For add_plan, entities.title must contain only the concise actionable task, "
+            "not a greeting, acknowledgement, thanks, explanation, assistant wording, "
+            "or the entire conversational sentence.\n"
+    "8. When recent structured context contains suggestion_snapshot and the user "
+    "explicitly asks to add an ordinal item such as '第二个也加入', choose write/add_plan "
+    "and copy that item's exact title into entities.title. Do not put task_ref, an "
+    "ordinal, snapshot ID or any other unsupported field into add_plan arguments.\n"
+    "9. Questions about the user's stored name, preferences, habits, goals, projects, "
+    "current information or another explicitly named stable fact use read/show_memory "
+    "with proposed_tool=list_memories. "
+    "Select query_mode=attribute and the matching registered attribute; add topic "
+    "only to narrow the domain (food, learning, work, location or a concrete topic). "
+    "For a named property outside the registered profile categories, select attribute=fact "
+    "and copy the property name into topic instead of forcing it into current_state. "
+    "Use existence to check whether a specific fact is stored and provenance to "
+    "ask its source, with query grounded in the current question. Use overview only "
+    "for a broad request to inspect the user's memory. Questions about the assistant "
+    "herself and refusals to disclose memory remain chat. Use only legal parameter "
+    "types and enum values from the tool contracts.\n"
+    "Minimal contrasts:\n"
+    "- '跳舞' => write/dance; '我喜欢看你跳舞' => chat/chat (pet compliment).\n"
+    "- '今天还有什么计划' => read/show_plan; '我在做一个陪伴计划桌宠' => chat/chat.\n"
+    "- '列出我的今日计划' => read/show_plan with request_mode=query; "
+    "'帮我列几条今日计划建议' => chat/chat with request_mode=advice and no tool.\n"
+    "- '把复习随机森林加入今天计划' => write/add_plan; "
+    "'怎么安排复习更合理' => chat/chat.\n"
+    "- '我想学 cosplay' => write/add_plan with entities.title='cosplay', "
+    "subject=self, polarity=positive, modality=desire. This is a plan candidate "
+    "even when time is missing; the application will ask whether to start, hear "
+    "advice, or add it, so do not downgrade it to chat.\n"
+    "- '我想把 cosplay 加入今天计划' => write/add_plan with "
+    "entities.title='cosplay' and modality=desire. The explicit 加入计划 action "
+    "must not be treated as a generic wish.\n"
+    "- '我今天晚上一定要早睡' => write/add_plan (self+positive+commitment, "
+    "title=早睡 time_slot=晚上); "
+    "'我今天晚上想早睡' => write/add_plan (self+positive+desire, "
+    "title=早睡 time_slot=晚上).\n"
+    "- '你记得刚才说什么' => read/show_recent_conversation; "
+    "'你记得以前聊过什么' => read/show_conversation_history.\n"
+    "- '请记住：我喜欢早上学习' => write/add_memory_request.\n"
+    "- A concrete statement about an action the user has actually completed, such "
+    "as '我今天看了一会儿小说', may use write/add_action_log only as a proposed "
+    "action-log offer with entities.content grounded in the user's words, "
+    "request_mode=possible_action, explicit_command=false and needs_confirmation=true. "
+    "The application will create a typed confirmation state; never treat a later "
+    "generic '好' as authorization unless that state exists. Feelings or vague states "
+    "such as '我好累' remain chat.\n"
+    "- A stable non-sensitive first-person preference such as '我喜欢羊肉串' "
+    "may use write/add_memory_request only as a proposed memory offer with "
+    "explicit_command=false. The application will ask the user and must not "
+    "save anything before confirmation. An ordinary sensitive statement is "
+    "chat and must not trigger an unsolicited memory offer.\n"
+    "- Broad aspirations such as '我要努力学习' or '我要成为百万富翁' are "
+    "chat/chat when they do not name a concrete executable action. The normal "
+    "reply may help the user unpack the aspiration, but must not create a plan.\n"
+    "- A request to summarize the conversation and save it is chat/chat. The "
+    "normal reply should summarize only user-confirmed facts and provide one to "
+    "three explicit '请记住：...' statements for the user to send separately; "
+    "never save the assistant's summary or the whole conversation directly.\n"
+    "- '你记得我什么' => read/show_memory; '记忆是怎么形成的' => chat/chat.\n"
+)
 
 _FIXED_EXACT_COMMANDS = {
-    "查看计划", "查看记录", "今日复盘", "复盘一下", "今天完成了什么",
+    "查看计划", "今日计划", "明日计划", "我的计划", "今天的计划", "列出今日计划",
+    "今天要做什么", "我的行动记录", "查看记录", "今日复盘", "复盘一下", "今天完成了什么",
     "保存今日复盘", "查看成长日志", "我的记忆", "查看长期记忆",
     "查看待确认记忆", "清空待确认记忆", "查看记忆冲突", "整理记忆",
     "把待确认的都确认", "确认全部待审核记忆", "查看已归档记忆",
+    "先别提醒我", "暂停提醒", "恢复提醒", "继续提醒我", "重新开启提醒",
 }
 _FIXED_PREFIXES = (
     "今日计划：", "今日计划:", "添加计划：", "添加计划:", "记录：", "记录:",
     "行动记录：", "行动记录:", "记住：", "记住:", "忘记：", "忘记:", "我完成了",
     "搜索记忆：", "搜索记忆:",
     "仍然添加：", "仍然添加:",
+)
+_FIXED_REVIEW_SAVE = re.compile(
+    r"^(?:请)?(?:帮我|给我)?(?:"
+    r"(?:生成(?:并|并且|后|然后)?保存|生成|保存)(?:今天|今日)(?:的)?(?:复盘|成长复盘)"
+    r"|生成(?:今天|今日)(?:的)?(?:复盘|成长复盘)(?:并|并且|后|然后|顺便)?保存"
+    r")$"
 )
 
 _FIXED_NUMBERED_COMMAND = re.compile(
@@ -53,24 +157,77 @@ class LLMIntentParser:
 
     def __init__(self, chat_callable: Optional[Callable[[List[Dict[str, str]]], str]] = None):
         self.chat_callable = chat_callable
+        self.last_diagnostic = ""
+        self.parameter_docs: str = ""
+
+    def _reject(self, reason: str) -> None:
+        self.last_diagnostic = self._append_diagnostic(reason)
+        print(f"[SemanticDecision] rejected reason={self.last_diagnostic}", flush=True)
+        return None
+
+    def _note(self, reason: str) -> None:
+        self.last_diagnostic = self._append_diagnostic(reason)
+        print(f"[SemanticDecision] normalized reason={reason}", flush=True)
+
+    def _append_diagnostic(self, reason: str) -> str:
+        value = str(reason).strip()
+        if not value:
+            return self.last_diagnostic
+        existing = [item for item in self.last_diagnostic.split(";") if item]
+        if value not in existing:
+            existing.append(value)
+        return ";".join(existing)
 
     def parse(
         self,
         text: str,
         context: Optional[Dict[str, object]] = None,
     ) -> Optional[Dict[str, object]]:
+        self.last_diagnostic = ""
         if self.chat_callable is None:
-            return None
+            return self._reject("semantic_provider_unavailable")
         prompt = (
             "You classify one Chinese user message for a local desktop assistant. "
-            "Return JSON only with intent, confidence, entities, needs_confirmation, "
-            "warnings, clarification_question and candidate_actions. "
-            "Allowed intents: " + ", ".join(sorted(SUPPORTED_INTENTS)) + ". "
-            "Use chat when uncertain. Deletions, clears, overwrites and conflict resolution "
-            "must set needs_confirmation true. A wish is not an instruction: ask a "
-            "clarifying question or request confirmation before writing. Never invent an "
-            "entity that is not in the message or supplied context. Do not answer the user."
-            "\nRecent structured context: "
+            "Return JSON only with mode, intent, entities, proposed_tool, confidence, "
+            "follow_up_target, needs_confirmation, warnings, clarification_question, "
+            "candidate_actions, subject, polarity, modality, request_mode and "
+            "explicit_command. "
+            "mode must be one of chat/read/write/clarify. "
+            "Allowed intents: " + ", ".join(sorted(MAIN_CHAT_INTENTS)) + ". "
+            "subject is 'self' when the user speaks about their own action/state, "
+            "'other' when quoting or describing someone else, '' otherwise. "
+            "polarity is 'positive' for affirmative/desired, 'negative' for "
+            "negated/refused, '' otherwise. "
+            "modality is 'commitment' for definite/certain intent, 'desire' for "
+            "wish/want/preference, 'hypothetical' for if/would/imagined, "
+            "'question' for interrogative, '' otherwise. "
+            "request_mode must be query for reads, execute only for an explicit "
+            "application command, possible_action for a concrete wish that still "
+            "needs a user choice, and discuss for chat. explicit_command is true "
+            "only when the current message explicitly asks the application to "
+            "perform the proposed write. "
+            "For first-person future plan statements that name a concrete action "
+            "and time (e.g. '我今天晚上一定要早睡', '我明天想学数学'), set "
+            "intent=add_plan with proposed_tool=add_plan, populate entities.title "
+            "from the action and entities.time_slot from the time word.  Always "
+            "include subject/polarity/modality so the downstream authorization "
+            "policy can decide direct-execute, create-pending, or no-action. "
+            "Use chat for greetings, emotions, knowledge questions and ordinary "
+            "statements that do not contain a concrete future action. "
+            "Only select a read or write intent when the current message actually asks to "
+            "read or change application data; domain words alone are not a tool request. "
+            "The current message is authoritative; use recent context only for an explicit "
+            "follow-up reference. If the user explicitly asks to remember or save your "
+            "previous reply/answer, choose add_memory_request with mode=write, "
+            "proposed_tool=save_formal_memory and entities.content exactly "
+            "'previous_assistant_message'. If the user explicitly refers to their own "
+            "previous message, use entities.content='previous_user_message'. Never copy "
+            "the referenced message text into entities. Deletions, clears, overwrites and conflict resolution "
+            "must set needs_confirmation true. Never invent an "
+            "entity that is not in the message or supplied context. Do not answer the user.\n"
+            + SEMANTIC_DECISION_POLICY
+            + ("\n" + self.parameter_docs + "\n" if self.parameter_docs else "")
+            + "\nRecent structured context: "
             + json.dumps(_safe_llm_context(context), ensure_ascii=False)
             + "\nUser message: "
             + text
@@ -80,18 +237,38 @@ class LLMIntentParser:
             if raw.startswith("```"):
                 raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
             data = json.loads(raw)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return None
-        if not isinstance(data, dict) or str(data.get("intent", "")) not in SUPPORTED_INTENTS:
-            return None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+            return self._reject(f"json_parse_error:{type(error).__name__}")
+        if not isinstance(data, dict):
+            return self._reject("schema_root_not_object")
+        if str(data.get("intent", "")) in DISABLED_MAIN_CHAT_CANDIDATE_INTENTS:
+            return self._reject("candidate_intent_disabled_in_main_chat")
+        if str(data.get("intent", "")) not in MAIN_CHAT_INTENTS:
+            return self._reject("schema_unsupported_intent")
         try:
             confidence = float(data.get("confidence", 0.0))
         except (TypeError, ValueError):
-            return None
+            return self._reject("schema_invalid_confidence")
         intent = str(data["intent"])
+        mode = str(data.get("mode", "")).strip().lower()
+        clarification_value = data.get("clarification_question")
+        if clarification_value is not None and not isinstance(clarification_value, str):
+            return self._reject("schema_invalid_clarification_question")
+        clarification_question = str(clarification_value or "").strip()[:240] or None
+        if mode not in {"chat", "read", "write", "clarify"}:
+            return self._reject("schema_missing_or_invalid_mode")
+        if intent != "chat" and clarification_question and mode != "clarify":
+            self._note("clarification_question_forced_clarify")
+            mode = "clarify"
+        if mode == "clarify" and not clarification_question:
+            return self._reject("clarify_without_question")
         entities = data.get("entities") if isinstance(data.get("entities"), dict) else {}
-        if not _validate_llm_entities(intent, entities):
-            return None
+        if not _validate_llm_entities(
+            intent,
+            entities,
+            allow_incomplete=(mode == "clarify" and bool(clarification_question)),
+        ):
+            return self._reject("schema_invalid_entities")
         candidate_actions = data.get("candidate_actions", [])
         if not isinstance(candidate_actions, list):
             candidate_actions = []
@@ -102,7 +279,8 @@ class LLMIntentParser:
             action_intent = str(item.get("intent", ""))
             action_entities = item.get("entities", {})
             if (
-                action_intent not in SUPPORTED_INTENTS
+                action_intent not in MAIN_CHAT_INTENTS
+                or action_intent in {"chat", "multi_action"}
                 or not isinstance(action_entities, dict)
                 or not _validate_llm_entities(action_intent, action_entities)
             ):
@@ -111,9 +289,61 @@ class LLMIntentParser:
                 {"intent": action_intent, "entities": dict(action_entities)}
             )
         candidate_actions = safe_actions
+        if intent == "multi_action":
+            if len(candidate_actions) < 2:
+                return self._reject("multi_action_requires_two_actions")
+        elif candidate_actions:
+            self._note("candidate_actions_removed_for_single_intent")
+            candidate_actions = []
+        proposed_tool_value = data.get("proposed_tool")
+        if proposed_tool_value is not None and not isinstance(proposed_tool_value, str):
+            return self._reject("schema_invalid_proposed_tool")
+        proposed_tool = str(proposed_tool_value or "").strip()
+        # ── Tool resolution ──────────────────────────────────────────
+        # Reject semantic contradictions before they become executable
+        # candidates. The downstream pipeline validates the selected tool's
+        # registered schema; it cannot recover intent that was contradictory.
+        canonical_tool = _proposed_tool_for_intent(intent)
+        if proposed_tool and canonical_tool and proposed_tool != canonical_tool:
+            return self._reject("proposed_tool_intent_mismatch")
+        if not proposed_tool:
+            proposed_tool = canonical_tool
+        follow_up_target = data.get("follow_up_target")
+        if follow_up_target is not None and not isinstance(follow_up_target, str):
+            return self._reject("schema_invalid_follow_up_target")
+        # Bare affirmatives must only consume structured pending operations.
+        # They must never create new write intents with raw
+        # previous_assistant_message content — that would save the assistant's
+        # entire reply as a memory.
+        bare_affirmative = bool(
+            re.fullmatch(
+                r"(?:对|对的|嗯|好|好的|行|可以|就这样|是的|没错|确认)[。！？!?]?",
+                str(text).strip(),
+            )
+        )
+        if (
+            bare_affirmative
+            and mode == "write"
+            and entities.get("content") == "previous_assistant_message"
+        ):
+            return self._reject(
+                "affirmative_cannot_use_previous_assistant_message_as_content"
+            )
+
+        if intent == "chat":
+            if mode != "chat" or clarification_question or proposed_tool or candidate_actions:
+                self._note("chat_decision_stripped_action_fields")
+            mode = "chat"
+            clarification_question = None
+            proposed_tool = ""
+            candidate_actions = []
+        elif mode != "clarify":
+            canonical_mode = _mode_for_intent(intent)
+            if mode != canonical_mode:
+                return self._reject("mode_intent_mismatch")
         needs_confirmation = bool(data.get("needs_confirmation", False))
         if intent in {
-            "delete_plan", "delete_memory", "archive_memory", "restore_memory",
+            "delete_plan", "merge_plan", "delete_memory", "archive_memory", "restore_memory",
             "resolve_memory_conflict",
         }:
             needs_confirmation = True
@@ -123,6 +353,40 @@ class LLMIntentParser:
             and not re.search(r"(?:帮我|请|加入|添加|记录|标记|改成|改到|执行)", text)
         ):
             needs_confirmation = True
+        # ── Structured semantic annotation ─────────────────────────
+        _subject = str(data.get("subject", "") or "").strip().lower()
+        subject = _subject if _subject in {"self", "other"} else ""
+        _polarity = str(data.get("polarity", "") or "").strip().lower()
+        polarity = _polarity if _polarity in {"positive", "negative"} else ""
+        _modality = str(data.get("modality", "") or "").strip().lower()
+        modality = _modality if _modality in {"commitment", "desire", "hypothetical", "question"} else ""
+        request_mode_value = str(data.get("request_mode", "") or "").strip().lower()
+        request_mode = request_mode_value if request_mode_value in {
+            "query", "execute", "possible_action", "advice", "discuss"
+        } else (
+            "query" if mode == "read" else "discuss" if mode == "chat" else "possible_action"
+        )
+        explicit_value = data.get("explicit_command", False)
+        if not isinstance(explicit_value, bool):
+            return self._reject("schema_invalid_explicit_command")
+        explicit_command = bool(explicit_value)
+        if mode != "write":
+            explicit_command = False
+        if explicit_command and request_mode != "execute":
+            if (
+                subject == "self"
+                and polarity == "positive"
+                and modality == "commitment"
+            ):
+                # Repair one internally contradictory model annotation without
+                # reading keywords from the user text.  A positive commitment
+                # plus an explicit command is executable by definition; desire,
+                # hypothetical and question modalities remain non-writing.
+                request_mode = "execute"
+                self._note("explicit_commitment_request_mode_repaired")
+            else:
+                return self._reject("explicit_command_requires_execute_mode")
+
         return {
             "intent": intent,
             "confidence": max(0.0, min(confidence, 1.0)),
@@ -132,8 +396,17 @@ class LLMIntentParser:
             "warnings": [str(item)[:120] for item in data.get("warnings", [])[:5]]
             if isinstance(data.get("warnings", []), list)
             else [],
-            "clarification_question": str(data.get("clarification_question", "")).strip()[:240] or None,
+            "clarification_question": clarification_question,
             "candidate_actions": candidate_actions,
+            "mode": mode,
+            "proposed_tool": proposed_tool or None,
+            "follow_up_target": str(follow_up_target or "").strip() or None,
+            "semantic_diagnostic": self.last_diagnostic,
+            "subject": subject,
+            "polarity": polarity,
+            "modality": modality,
+            "request_mode": request_mode,
+            "explicit_command": explicit_command,
         }
 
 
@@ -159,17 +432,268 @@ class IntentRouter:
         self.llm_parser = parser
         self.enable_llm = bool(enabled)
 
+    def route_exact_command(
+        self,
+        user_text: str,
+        context: Optional[Dict[str, object]] = None,
+        *,
+        payload_text: Optional[str] = None,
+    ) -> Optional[Dict[str, object]]:
+        """Recognize only non-conversational commands owned by the program.
+
+        Natural-language business requests deliberately do not enter this gate.
+        They are handled by ``route_semantic_decision`` so a keyword cannot
+        become an accidental plan, memory, or pet action.
+        """
+        literal = str(user_text or "").strip()
+        if literal.startswith(("忘记：", "忘记:")):
+            return self._result(
+                "delete_memory", 1.0,
+                entities={"forget_content": literal[3:].strip()},
+                needs_confirmation=True, source="fixed_command",
+                request_mode="execute",
+            )
+        original_text = _clean_text(user_text)
+        text = _normalize_utterance_shell(original_text)
+        if not text:
+            return None
+        if self.memory_query_guard.is_retired_candidate_request(text):
+            return self._result(
+                "chat",
+                1.0,
+                source="retired_memory_candidate",
+            )
+        protected_payload = str(payload_text or "").strip()
+        if protected_payload:
+            envelope = self._route_payload_command(text, protected_payload)
+            if envelope is not None:
+                return self._enrich_entities(text, envelope, context or {})
+        if text == "跳舞":
+            return self._result("dance", 1.0, source="exact_command")
+        reminder_action = reminder_control_action(original_text)
+        if reminder_action == "pause":
+            return self._result(
+                "reminder_control",
+                1.0,
+                entities={"action": "pause"},
+                source="fixed_command",
+                request_mode="execute",
+            )
+        if reminder_action == "resume":
+            return self._result(
+                "reminder_control",
+                1.0,
+                entities={"action": "resume"},
+                source="fixed_command",
+                request_mode="execute",
+            )
+        if is_explicit_pet_sleep_request(original_text):
+            return self._result(
+                "sleep_pet",
+                1.0,
+                source="fixed_command",
+                request_mode="execute",
+            )
+        if _FIXED_REVIEW_SAVE.fullmatch(text):
+            result = self._matched("save_review")
+            return self._enrich_entities(text, result, context or {})
+        if re.fullmatch(r"重新生成(?:昨天|昨日)(?:的)?(?:复盘|成长复盘)", text):
+            result = self._matched("save_review")
+            return self._enrich_entities(text, result, context or {})
+        return None
+
+    def route_semantic_decision(
+        self,
+        user_text: str,
+        context: Optional[Dict[str, object]] = None,
+        *,
+        allow_llm: bool = True,
+        payload_text: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """The main route: exact program commands or one model decision.
+
+        A model-unavailable turn intentionally becomes chat rather than falling
+        through to broad keyword rules.  The old ``route`` method remains as a
+        compatibility API until the later cleanup commit, but ConversationService
+        no longer uses it for the normal natural-language path.
+        """
+        if str(user_text or "").strip().startswith(("忘记：", "忘记:")):
+            # Preserve punctuation and empty literal payloads before utterance
+            # normalization. Exact maintenance never needs model fallback.
+            exact_forget = self.route_exact_command(user_text, context)
+            if exact_forget is not None:
+                return exact_forget
+        original_text = _clean_text(user_text)
+        text = _normalize_utterance_shell(original_text)
+        if not original_text:
+            return self._fallback("empty")
+        # Addressed pet actions carry meaning in the addressee itself.  Check
+        # them before the generic utterance shell removes “洛琪希/你”.
+        if is_explicit_pet_sleep_request(original_text):
+            return self._result(
+                "sleep_pet",
+                1.0,
+                source="fixed_command",
+                request_mode="execute",
+            )
+        if self.memory_query_guard.is_retired_candidate_request(text):
+            return self._result(
+                "chat",
+                1.0,
+                source="retired_memory_candidate",
+            )
+        exact = self.route_exact_command(
+            text, context, payload_text=payload_text
+        )
+        if exact is not None:
+            print(f"[ExactCommand] matched: {exact['intent']}", flush=True)
+            return exact
+        review_query = self._route_daily_review_query(text)
+        if review_query:
+            print(
+                "[SemanticDecision] source=business_read_guard "
+                "intent=daily_review",
+                flush=True,
+            )
+            return self._result(
+                "daily_review",
+                0.99,
+                source="business_read_guard",
+            )
+        fixed_read = self._route_fixed(text)
+        if fixed_read is not None and _mode_for_intent(
+            str(fixed_read.get("intent", "chat"))
+        ) == "read":
+            return {**fixed_read, "source": "business_read_guard"}
+        stable_read = self._route_stable_business_query(text)
+        if stable_read is not None:
+            print(
+                "[SemanticDecision] source=business_read_guard "
+                f"intent={stable_read}",
+                flush=True,
+            )
+            return self._result(
+                stable_read,
+                0.98,
+                source="business_read_guard",
+            )
+        history_query = self._route_history_query(text)
+        if history_query is not None:
+            intent = str(history_query["intent"])
+            print(
+                "[SemanticDecision] source=history_query_guard "
+                f"intent={intent}",
+                flush=True,
+            )
+            return self._result(
+                intent,
+                0.98,
+                entities=dict(history_query.get("entities", {})),
+                source="history_query_guard",
+            )
+        formal_memory_query = self.memory_query_guard.route(text)
+        if (
+            formal_memory_query is not None
+            and str(formal_memory_query.get("intent", "")) == "show_memory"
+        ):
+            confidence = float(formal_memory_query.get("confidence", 0.96))
+            print(
+                "[SemanticDecision] source=memory_query_guard "
+                "intent=show_memory",
+                flush=True,
+            )
+            return self._result(
+                "show_memory",
+                confidence,
+                entities=dict(formal_memory_query.get("entities", {})),
+                needs_confirmation=False,
+                source="memory_query_guard",
+                clarification_question=formal_memory_query.get(
+                    "clarification_question"
+                ),
+            )
+        if allow_llm and self.enable_llm and self.llm_parser is not None:
+            parsed = self.llm_parser.parse(text, context or {})
+            if parsed is not None:
+                parsed = self._validate_preference_memory_decision(text, parsed)
+                print(f"[SemanticDecision] source=llm intent={parsed['intent']}", flush=True)
+                return self._enrich_entities(
+                    text, self._with_legacy_slots(parsed), context or {}
+                )
+        print("[SemanticDecision] source=unavailable intent=chat", flush=True)
+        fallback = self._fallback("semantic_unavailable")
+        if self.llm_parser is not None:
+            fallback["semantic_diagnostic"] = str(
+                self.llm_parser.last_diagnostic or "semantic_unavailable"
+            )
+        return fallback
+
+    def _validate_preference_memory_decision(
+        self,
+        text: str,
+        decision: Dict[str, object],
+    ) -> Dict[str, object]:
+        """Validate model-selected implicit preference writes without creating one."""
+        if str(decision.get("intent", "")) != "add_memory_request":
+            return decision
+        if bool(decision.get("explicit_command", False)):
+            return decision
+        category = self._route_memory_candidate(text)
+        if not category:
+            return {
+                **decision,
+                "intent": "chat",
+                "mode": "chat",
+                "entities": {},
+                "proposed_tool": None,
+                "needs_confirmation": False,
+                "request_mode": "discuss",
+                "explicit_command": False,
+            }
+        # The current user message is the only trusted source for an implicit
+        # memory suggestion.  A model-provided paraphrase must never become the
+        # value written after confirmation.
+        entities = decision.get("entities", {})
+        entities = dict(entities) if isinstance(entities, dict) else {}
+        entities["category"] = category
+        entities["content"] = self._preference_content(text, category)
+        return {
+            **decision,
+            "entities": entities,
+            "implicit_memory_policy": (
+                "suppress_sensitive"
+                if category in {"health_lifestyle"}
+                else "confirm_before_save"
+            ),
+        }
+
     def route(
         self,
         user_text: str,
         context: Optional[Dict[str, object]] = None,
         *,
         allow_llm: bool = True,
+        payload_text: Optional[str] = None,
     ) -> Dict[str, object]:
-        text = _clean_text(user_text)
-        print(f"[Intent] input_chars={len(text)}", flush=True)
-        if not text:
+        original_text = _clean_text(user_text)
+        text = _normalize_utterance_shell(original_text)
+        print(f"[Intent] input_chars={len(original_text)}", flush=True)
+        if not original_text:
             return self._fallback("empty")
+        if self.memory_query_guard.is_retired_candidate_request(text):
+            return self._result(
+                "chat",
+                1.0,
+                source="retired_memory_candidate",
+            )
+        protected_payload = str(payload_text or "").strip()
+        if protected_payload:
+            envelope_result = self._route_payload_command(text, protected_payload)
+            if envelope_result is not None:
+                return self._enrich_entities(text, envelope_result, context or {})
+        exact = self.route_exact_command(text, context or {})
+        if exact is not None:
+            return exact
         if is_fixed_command(text):
             fixed = self._route_fixed(text)
             return self._enrich_entities(
@@ -177,10 +701,6 @@ class IntentRouter:
                 fixed or self._result("chat", 1.0, source="fixed_command"),
                 context or {},
             )
-
-        result = self._route_rules(text, context or {})
-        if result is not None:
-            return self._enrich_entities(text, result, context or {})
 
         if allow_llm and self.enable_llm and self.llm_parser is not None:
             parsed = self.llm_parser.parse(text, context or {})
@@ -190,7 +710,50 @@ class IntentRouter:
                 return self._enrich_entities(
                     text, self._with_legacy_slots(parsed), context or {}
                 )
+        result = self._route_rules(text, context or {})
+        if result is not None:
+            return self._enrich_entities(text, result, context or {})
         return self._fallback("no_rule")
+
+    def _route_payload_command(
+        self,
+        command_text: str,
+        payload_text: str,
+    ) -> Optional[Dict[str, object]]:
+        """Route an explicit envelope without inspecting user-provided payload words."""
+        command = _normalize_match_text(command_text)
+        payload = str(payload_text).strip()
+        if not command or not payload:
+            return None
+        if command == "忘记":
+            return self._result(
+                "delete_memory", 1.0,
+                entities={"forget_content": payload},
+                needs_confirmation=True, source="fixed_command",
+                request_mode="execute",
+            )
+        if command in {"记住", "帮我记住", "请记住", "记得", "保存记忆", "保存长期记忆"}:
+            return self._result(
+                "add_memory_request",
+                1.0,
+                entities={"content": payload, "source_text": payload},
+                source="command_envelope",
+            )
+        if re.fullmatch(r"(?:把)?(?:加到|加入|加进|添加到|放进)(?:我)?(?:今天)?(?:的)?(?:计划|任务|要做的事)(?:里)?", command_text):
+            return self._result(
+                "add_plan",
+                1.0,
+                entities={"tasks": [payload]},
+                source="command_envelope",
+            )
+        if re.fullmatch(r"(?:记录(?:一下)?|记(?:一下|一笔)|记到(?:今天的)?行动(?:记录)?里)", command_text):
+            return self._result(
+                "add_action_log",
+                1.0,
+                entities={"content": payload},
+                source="command_envelope",
+            )
+        return None
 
     def _route_rules(
         self,
@@ -202,12 +765,28 @@ class IntentRouter:
         if re.search(r"(?:怎么|如何|怎样).{0,8}(?:删除|归档|恢复)", text):
             return None
 
+        # A status question can contain 完成 but never asks to complete a plan.
+        # This is a safe deterministic fallback only when the semantic model is
+        # unavailable; normal natural-language routing reaches the LLM first.
+        if _is_plan_status_query(text):
+            return self._matched("show_plan", status_filter=(
+                "completed" if re.search(r"已经.*(?:做完|完成)|哪些.*(?:做完|完成)", text)
+                else "pending"
+            ))
+
+        if self._route_daily_review_query(text):
+            return self._matched("daily_review")
+
         history_query = self._route_history_query(text)
         if history_query is not None:
             return self._matched(
                 str(history_query["intent"]),
                 **dict(history_query.get("entities", {})),
             )
+
+        stable_query = self._route_stable_business_query(text)
+        if stable_query is not None:
+            return self._matched(stable_query)
 
         memory_query = self.memory_query_guard.route(text)
         if memory_query is not None:
@@ -259,13 +838,14 @@ class IntentRouter:
             return self._matched("multi_action", operation="review_and_save")
         if self._route_dance(text, context):
             return self._matched("dance")
-        if _matches_any(text, ("进入睡眠", "睡一会儿", "去睡吧")):
+        if is_explicit_pet_sleep_request(text):
             return self._matched("sleep_pet")
         if _matches_any(text, ("唤醒", "醒一醒", "起来吧")):
             return self._matched("wake_pet")
-        if _matches_any(text, ("恢复提醒", "继续提醒我", "重新开启提醒")):
-            return self._matched("reminder_control", action="resume")
-        if _matches_any(text, ("先别提醒我", "暂停提醒", "等会儿再说", "晚点提醒我", "今天不想学了")):
+        reminder_action = reminder_control_action(text)
+        if reminder_action:
+            return self._matched("reminder_control", action=reminder_action)
+        if _matches_any(text, ("等会儿再说", "晚点提醒我", "今天不想学了")):
             return self._matched("reminder_control", action="pause")
 
         memory_view = self._route_memory_view(text)
@@ -274,20 +854,32 @@ class IntentRouter:
         contextual_memory = self._route_contextual_memory_request(text, context)
         if contextual_memory is not None:
             return contextual_memory
+        memory_target = _first_capture(
+            text,
+            (
+                r"^(?:把)?(.+?)(?:放进|加入|加进|保存到|存入)(?:我的)?(?:长期)?记忆(?:里)?$",
+            ),
+        )
+        if memory_target:
+            return self._matched("add_memory_request", content=memory_target)
         memory_request = self._route_memory(text)
         if memory_request:
             return self._matched("add_memory_request", content=memory_request)
-        candidate = self._route_memory_candidate(text)
-        if candidate:
-            return self._matched("memory_candidate", content=text, category=candidate, source_text=text)
+        # Ordinary statements stay in chat.  Automatic discovery keeps using the
+        # candidate service from its dedicated state/governance paths instead of
+        # making every preference-like sentence a chat interruption.
 
         if _matches_any(text, ("保存今天的复盘", "把这个复盘存下来", "记入成长日志")):
             return self._matched("save_review")
-        if _matches_any(text, ("查看成长日志", "看看成长日志", "最近的成长日志")):
+        if _matches_any(text, ("查看成长日志", "看看成长日志", "最近的成长日志", "查看本月成长日志", "看看本月成长日志")):
             return self._matched("show_growth_log")
         if _matches_any(text, ("查看记录", "看看行动记录", "今天记录了什么")):
             return self._matched("show_action_log")
-        if _matches_any(text, ("我今天还有什么没做", "今天还有什么没做", "看看今天任务", "看看今天的任务", "我今天要做什么", "看看我的计划", "看看计划")):
+        if _matches_any(text, (
+            "我今天还有什么没做", "今天还有什么没做", "看看今天任务", "看看今天的任务",
+            "我今天要做什么", "今天要做什么", "看看我的计划", "看看计划",
+            "看看今天安排了什么", "我今天还有哪些任务",
+        )):
             return self._matched("show_plan")
 
         action = self._route_explicit_action(text, context)
@@ -332,18 +924,33 @@ class IntentRouter:
         return None
 
     def _route_fixed(self, text: str) -> Optional[Dict[str, object]]:
+        if re.fullmatch(r"重新生成(?:昨天|昨日)(?:的)?(?:复盘|成长复盘)", text):
+            return self._enrich_entities(
+                text,
+                self._matched("save_review"),
+                {},
+            )
         exact = {
             "查看计划": ("show_plan", {}),
+            "今日计划": ("show_plan", {}),
+            "明日计划": ("show_plan", {}),
+            "我的计划": ("show_plan", {}),
+            "今天的计划": ("show_plan", {}),
+            "列出今日计划": ("show_plan", {}),
+            "今天要做什么": ("show_plan", {}),
+            "我的行动记录": ("show_action_log", {}),
             "查看记录": ("show_action_log", {}),
             "今日复盘": ("daily_review", {}),
             "复盘一下": ("daily_review", {}),
             "今天完成了什么": ("daily_review", {}),
             "保存今日复盘": ("save_review", {}),
             "查看成长日志": ("show_growth_log", {}),
+            "查看本月成长日志": ("show_growth_log", {}),
+            "看看本月成长日志": ("show_growth_log", {}),
             "我的记忆": ("show_memory", {}),
             "查看长期记忆": ("show_memory", {}),
-            "查看待确认记忆": ("show_memory_candidates", {}),
-            "查看待审核记忆": ("show_memory_candidates", {}),
+            "查看待确认记忆": ("show_memory", {"query_mode": "overview"}),
+            "查看待审核记忆": ("show_memory", {"query_mode": "overview"}),
             "把待确认的都确认": ("accept_all_memory_candidates", {}),
             "确认全部待审核记忆": ("accept_all_memory_candidates", {}),
             "查看记忆冲突": ("show_memory_conflicts", {}),
@@ -352,6 +959,13 @@ class IntentRouter:
         if text in exact:
             intent, entities = exact[text]
             return self._result(intent, 1.0, entities=entities, source="fixed_command")
+        if text.startswith("我完成了") and text[len("我完成了"):].strip():
+            return self._result(
+                "complete_plan",
+                1.0,
+                entities={"query": text[len("我完成了"):].strip()},
+                source="fixed_command",
+            )
         prefix_map = {
             "今日计划：": "add_plan", "今日计划:": "add_plan",
             "添加计划：": "add_plan", "添加计划:": "add_plan",
@@ -469,6 +1083,21 @@ class IntentRouter:
                 source_text=str(memory_state.get("pending_source_text", "")) or pending_content,
             )
 
+        # A generic word such as “确认” inside an unrelated question must not
+        # open the retired candidate-memory flow.  Short confirmations remain
+        # valid only when a real typed memory interaction is already pending;
+        # otherwise the user must explicitly name memory/candidate management.
+        has_candidate_context = bool(
+            memory_state.get("candidate_ids")
+            or memory_state.get("last_candidate_ids")
+            or str(memory_state.get("state", "")).startswith("awaiting_candidate")
+        )
+        explicit_memory_review = bool(
+            re.search(r"(?:候选|记忆|待审核|待确认)", text)
+        )
+        if not has_candidate_context and not explicit_memory_review:
+            return None
+
         accept_action = bool(
             re.search(
                 r"(?:确认|接受|归入(?:长期)?记忆|加入(?:长期)?记忆|保存为(?:长期)?记忆)",
@@ -538,6 +1167,11 @@ class IntentRouter:
     @staticmethod
     def _route_memory_view(text: str) -> Optional[Dict[str, object]]:
         normalized = _normalize_match_text(text)
+        if re.search(
+            r"(?:记得|知道|了解).{0,6}我.{0,6}(?:什么|哪些|多少)",
+            text,
+        ):
+            return {"intent": "show_memory", "entities": {}}
         if re.fullmatch(
             r"你(?:都|还)?(?:记得|记住|知道|了解)(?:了)?(?:关于)?我(?:的)?"
             r"(?:什么|哪些)(?:信息|事情|事)?",
@@ -587,7 +1221,10 @@ class IntentRouter:
                 "看看记忆候选",
             ),
         ):
-            return {"intent": "show_memory_candidates", "entities": {}}
+            return {
+                "intent": "show_memory",
+                "entities": {"query_mode": "overview", "query": text},
+            }
         if _matches_any(
             text,
             ("把待确认的都确认", "确认全部待审核记忆", "全部确认这些记忆"),
@@ -617,6 +1254,7 @@ class IntentRouter:
             (
                 r"^帮我记住[：:，,\s]*(.+)$",
                 r"^以后你要记得[：:，,\s]*(.+)$",
+                r"^(?:以后)?记得[：:，,\s]*(.+)$",
                 r"^(?:这点|这件事)?请记住[：:，,\s]*(.+)$",
                 r"^记住[：:，,\s]*(.+)$",
                 r"^把[：:\s]*(.+?)\s*记住$",
@@ -651,6 +1289,10 @@ class IntentRouter:
 
     @staticmethod
     def _route_memory_candidate(text: str) -> str:
+        # A compliment about the pet performing an action is not a stable user
+        # preference and must remain ordinary chat.
+        if re.fullmatch(r"^我(?:更)?喜欢你(?:跳舞|表演|展示)(?:.+)?$", text):
+            return ""
         if re.fullmatch(r"^(?:以后\s*)?codex\s*提示词不要.+$|^roxyplan\s*不要.+$|^不要自动生图$", text, flags=re.IGNORECASE):
             return "project_preference"
         if re.fullmatch(r"^我以后想(?:做|成为|把).+$|^我想成为.+$|^我想把.+(?:长期|一直).*(?:做下去|坚持下去)$", text, flags=re.IGNORECASE):
@@ -659,10 +1301,82 @@ class IntentRouter:
             return "health_lifestyle"
         if re.fullmatch(r"^我一般.+(?:效率|习惯|适合|会).*$|^我周末适合.+$", text):
             return "stable_habit"
-        match = re.fullmatch(r"^我(?:更)?喜欢\s*(.+)$|^我不喜欢\s*(.+)$|^我更适合(?:用|在)?\s*(.+)$", text, flags=re.IGNORECASE)
+        match = re.fullmatch(
+            r"^我(?:平时)?(?:更)?喜欢\s*(.+)$|^我不喜欢\s*(.+)$|^我更适合(?:用|在)?\s*(.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
         if match and len(_clean_slot(next(item for item in match.groups() if item is not None))) >= 2:
             return "user_preference"
         return ""
+
+    def _route_preference_to_memory(
+        self, text: str
+    ) -> Optional[Dict[str, object]]:
+        """Route clear self-preference statements to formal memory save.
+
+        Reuses :meth:`_route_memory_candidate` for category detection,
+        then converts affirmative categories into an add_memory_request
+        intent result.  Negations and pet compliments are excluded.
+        """
+        # Pet compliments about the assistant — ordinary chat, never a
+        # user preference.  Covers: 我喜欢看你跳舞, 我喜欢你跳舞, etc.
+        if re.fullmatch(
+            r"^我(?:更)?喜欢(?:看|听)?你(?:跳舞|表演|展示|唱歌|说话)(?:.+)?$", text
+        ):
+            return None
+        # Negated preferences — chat
+        if re.fullmatch(
+            r"^我不喜欢\s*.+$|^我不太喜欢\s*.+$|^我不适合\s*.+$",
+            text,
+            re.IGNORECASE,
+        ):
+            return None
+        # Hypotheticals and quotes of others — chat
+        if re.search(
+            r"^(?:如果|要是|假如|假设|听说|据说|他说|她说|有人说)", text
+        ):
+            return None
+
+        category = self._route_memory_candidate(text)
+        if not category:
+            return None
+
+        # Derive content from the matched pattern
+        content = self._preference_content(text, category)
+        if not content or len(_clean_slot(content)) < 2:
+            return None
+
+        return self._result(
+            "add_memory_request",
+            1.0,
+            entities={
+                "content": content,
+                "category": category,
+                "source_text": text,
+            },
+            source="preference_guard",
+        )
+
+    @staticmethod
+    def _preference_content(text: str, category: str) -> str:
+        """Extract the content body from a preference statement."""
+        # For goal/health/habit categories the full text is the content
+        if category in {"goal", "health_lifestyle", "stable_habit",
+                         "project_preference"}:
+            return str(text).strip()
+        # For user_preference, extract the object of 喜欢/更适合
+        match = re.fullmatch(
+            r"^我(?:平时)?(?:更)?喜欢\s*(.+)$|^我更适合(?:用|在)?\s*(.+)$",
+            str(text),
+            re.IGNORECASE,
+        )
+        if match:
+            content = next(
+                item for item in match.groups() if item is not None
+            )
+            return str(content).strip()
+        return str(text).strip()
 
     @staticmethod
     def _route_explicit_action(text: str, context: Dict[str, object]) -> str:
@@ -686,6 +1400,7 @@ class IntentRouter:
             text,
             (
                 r"^记录(?:一下)?[：:\s]*(.+)$",
+                r"^记(?:一下|一笔)[：:\s]*(.+)$",
                 r"^把[：:\s]*(.+?)\s*记到行动记录里$",
                 r"^(.+?)\s*记到行动记录里$",
             ),
@@ -693,9 +1408,17 @@ class IntentRouter:
 
     @staticmethod
     def _route_add_plan(text: str) -> List[str]:
+        direct_target = re.fullmatch(
+            r"(?:把)?(.+?)(?:加到|加入|加进|添加到|放进)(?:我)?(?:今天)?(?:的)?"
+            r"(?:计划|任务|要做的事)(?:里)?",
+            text,
+        )
+        if direct_target:
+            item = _clean_slot(direct_target.group(1))
+            return [item] if item else []
         explicit_target = re.fullmatch(
             r"(.+?)[，,。；;\s]*(?:把)?(?:这个|这件事|它)?"
-            r"(?:放进|加入|添加到)(?:我)?(?:今天)?(?:的)?"
+            r"(?:放进|加入|加进|添加到)(?:我)?(?:今天)?(?:的)?"
             r"(?:计划|任务|要做的事)(?:里)?",
             text,
         )
@@ -714,7 +1437,7 @@ class IntentRouter:
             if subject:
                 return [" ".join(item for item in (slot, subject, duration) if item)]
 
-        listed = _first_capture(text, (r"^帮我安排一下今天[：:]\s*(.+)$", r"^今天要做(?:[一二三四五六七八九十\d]+件事)?[：:]\s*(.+)$"))
+        listed = _first_capture(text, (r"^(?:帮我)?安排一下今天[：:]\s*(.+)$", r"^今天要做(?:[一二三四五六七八九十\d]+件事)?[：:]\s*(.+)$"))
         if listed:
             return _split_plan_items(listed)
         arranged = re.fullmatch(
@@ -749,11 +1472,161 @@ class IntentRouter:
         if re.search(current_terms, text) and re.search(conversation_terms, text):
             return {"intent": "show_recent_conversation", "entities": {}}
         if re.search(past_terms, text) and re.search(conversation_terms, text):
+            topic = _history_topic_query(text)
             return {
                 "intent": "show_conversation_history",
-                "entities": {"exclude_today": "不是今天" in text},
+                "entities": {
+                    **({"query": topic} if topic else {}),
+                    "exclude_today": "不是今天" in text,
+                },
             }
         return None
+
+    @staticmethod
+    def _route_stable_business_query(text: str) -> Optional[str]:
+        """Recognize read-only business queries before ambiguous write wording.
+
+        These predicates combine a view operation and a domain object. They are
+        intentionally capability-level rules, not full-sentence paraphrase lists.
+        """
+        view_operation = r"查看|看看|列出|展示|给我.{0,6}(?:看|瞅)"
+
+        # A rejected display clause is a safety boundary, especially when the
+        # user is correcting a previous misunderstanding ("不是让你查看计划")
+        # or the actual purpose is advice.  Let the semantic model answer that
+        # purpose instead of forcing a local read.
+        if re.search(
+            rf"(?:不要|别|不用|无需|不想|不需要).{{0,10}}(?:{view_operation})|"
+            rf"(?:{view_operation}).{{0,10}}(?:不要|别|不用|无需|不需要)|"
+            rf"(?<!是)(?:不是|并非)(?:想|要|让你|叫你|请你)?.{{0,8}}(?:{view_operation})|"
+            rf"(?:我)?(?:没|没有)(?:想|要|让你|叫你|请你).{{0,8}}(?:{view_operation})",
+            text,
+        ):
+            return None
+
+        # Planning/advice requests can contain both a plan noun and an unrelated
+        # interrogative, for example "安排今日计划，上午没什么时间".  They are
+        # not reads.  This check is purpose-based so a literal read such as
+        # "查看今天安排了什么" remains supported.
+        planning_or_advice_request = bool(
+            re.search(
+                r"(?:帮我|替我|给我).{0,5}(?:安排|规划|制定|拆分|拆解)|"
+                r"(?:安排|规划|制定)(?:一下)?(?:今天|今日|明天)(?:的)?(?:计划|任务)|"
+                r"(?:怎么|如何|怎样).{0,8}(?:安排|规划|制定|开始|先做)|"
+                r"我该.{0,8}(?:做|开始|安排)|(?:建议|推荐).{0,8}(?:计划|任务|先做)",
+                text,
+            )
+        )
+        if planning_or_advice_request:
+            return None
+
+        explicit_view_request = bool(re.search(view_operation, text))
+        write_request = bool(
+            re.search(
+                r"加入|添加|加进|加到|放进|放到|塞进|写进|写入|纳入|安排到|"
+                r"记到|记住|保存|标记|改成|修改|更新|删除|清空|归档|恢复",
+                text,
+            )
+        )
+        if write_request:
+            return None
+
+        plan_domain = bool(
+            re.search(
+                r"计划|任务|要做的事|(?:今天|今日|明天|昨天|昨日).{0,8}安排",
+                text,
+            )
+        )
+        action_domain = bool(
+            re.search(
+                r"行动记录|行动日志|进展记录|(?:今天|今日)(?:的)?行动",
+                text,
+            )
+        )
+
+        question_word = r"(?:什么|啥|哪些|哪几个|多少(?:个|项|条)?|几(?:个|项|条))"
+        plan_object = r"(?:计划|任务|要做的事|安排)"
+        plan_read_question = bool(
+            re.search(
+                rf"{plan_object}(?:里|中|内)?(?:都|一共)?"
+                rf"(?:是|有|包括|包含|还剩)?{question_word}",
+                text,
+            )
+            or re.search(
+                rf"(?:今天|今日|明天|昨天|昨日)(?:的)?(?:都|还)?(?:有|还有)"
+                rf"{question_word}(?:个|项|条)?{plan_object}",
+                text,
+            )
+            or re.search(
+                rf"(?:今天|今日|明天|昨天|昨日)(?:的)?安排了{question_word}",
+                text,
+            )
+        )
+        action_read_question = bool(
+            re.search(
+                rf"(?:行动记录|行动日志|进展记录)(?:里|中|内)?(?:都|一共)?"
+                rf"(?:是|有|包括|包含|还剩)?{question_word}",
+                text,
+            )
+        )
+
+        if (
+            re.search(r"重复|相同|相近|一样|雷同", text)
+            and plan_domain
+            and (
+                explicit_view_request
+                or re.search(r"有没有|是否|哪些|什么|多少|吗", text)
+            )
+        ):
+            return "inspect_plan_duplicates"
+        if plan_domain and (explicit_view_request or plan_read_question):
+            return "show_plan"
+        if action_domain and (explicit_view_request or action_read_question):
+            return "show_action_log"
+        return None
+
+    @staticmethod
+    def _route_daily_review_query(text: str) -> bool:
+        """Recognize reflective reads that need plans and action facts together."""
+        normalized = _normalize_match_text(text)
+        if not normalized:
+            return False
+        if re.search(
+            r"加入|添加|放进|记到|标记|改成|修改|更新|删除|清空|归档|保存",
+            normalized,
+        ):
+            return False
+        # A plan title may legitimately contain words such as "复盘"、"总结"
+        # or "回顾".  When the same sentence also carries a plan-write cue,
+        # this read-only guard must step aside and let the semantic action
+        # pipeline validate the requested plan operation.
+        if (
+            re.search(r"(?:计划|任务|待办)", normalized)
+            and re.search(r"(?:加|添|放进|记到|安排)", normalized)
+        ):
+            return False
+        if re.search(r"(?:今日|今天).{0,6}(?:复盘|总结|回顾)", normalized):
+            return True
+        if re.search(r"(?:复盘|总结|回顾).{0,6}(?:今日|今天)", normalized):
+            return True
+        if re.search(
+            r"(?:今日|今天).{0,8}(?:状态|进展|成果|收获).{0,5}(?:怎么样|如何|什么|哪些)",
+            normalized,
+        ):
+            return True
+        accomplishment = r"(?:完成(?:了)?|做(?:到|完|成|了)|推进(?:了)?|实现(?:了)?|达成(?:了)?)"
+        question = r"(?:什么|哪些|多少|怎么样|如何)"
+        if re.search(
+            rf"(?:我)?(?:今日|今天).{{0,6}}{accomplishment}.{{0,5}}{question}",
+            normalized,
+        ):
+            return True
+        return bool(
+            re.search(
+                rf"^我(?:都|已经)?{accomplishment}.{{0,4}}{question}(?:了)?$",
+                normalized,
+            )
+        )
 
     @staticmethod
     def _route_dance(text: str, context: Dict[str, object]) -> bool:
@@ -767,26 +1640,42 @@ class IntentRouter:
             return False
         if re.fullmatch(r"你(?:会|能)(?:不会|不能)?跳舞吗", lowered):
             return False
-        if re.search(
-            r"(?:给我|帮我|请|现在)?(?:跳|表演|展示)(?:个|一支|一段|一下)?(?:舞|舞蹈)?(?:给我)?(?:看看|一下)?"
-            r"|(?:给我|现在)?来(?:个|一支|一段)舞"
+        last_tool_result = context.get("last_tool_result")
+        previous_dance = (
+            isinstance(last_tool_result, dict)
+            and str(last_tool_result.get("tool", "")) == "play_dance"
+        )
+        previous = " ".join(
+            str(context.get(key, ""))
+            for key in ("last_user_message", "last_assistant_message")
+        ).lower()
+        previous_dance = previous_dance or any(
+            term in previous for term in ("跳舞", "舞蹈", "跳一小段", "dance")
+        )
+        if re.fullmatch(
+            r"再(?:跳(?:一次|一遍|一个舞|一支舞|一段舞)?|来(?:一个|一段|一次))",
+            lowered,
+        ):
+            return previous_dance or "舞" in lowered
+        if re.fullmatch(
+            r"(?:能(?:给我)?|可以(?:给我)?|给我|帮我|请|现在)?(?:开始)?(?:跳|表演|展示)"
+            r"(?:一?个|一支|一段|一下)?(?:你的)?(?:舞|舞蹈)?(?:给我)?(?:看看|一下)?(?:吗|么)?"
+            r"|(?:给我|现在)?来(?:一?个|一支|一段|段)舞"
             r"|dance\s+for\s+me",
             lowered,
         ):
-            return bool(
-                re.search(r"舞|舞蹈|dance|给我跳一个|跳一段.*看看", lowered)
-            )
+            return True
         if re.fullmatch(r"能(?:给我)?来一段(?:吗|么)?", lowered):
-            previous = " ".join(
-                str(context.get(key, ""))
-                for key in ("last_user_message", "last_assistant_message")
-            ).lower()
-            return any(term in previous for term in ("跳舞", "舞蹈", "dance"))
+            return previous_dance
         return False
 
     @staticmethod
     def _route_delete_plan(text: str) -> str:
-        return _first_capture(text, (r"^(?:帮我)?把\s*(.+?)(?:这个)?(?:计划|任务)\s*(?:删掉|删除|取消)(?:了)?$", r"^(?:帮我)?(?:删除|取消)\s*(?:今天的)?(.+?)(?:计划|任务)?$"))
+        return _first_capture(text, (
+            r"^(?:帮我)?(?:把)?(?:计划|任务)\s*(\d+)\s*(?:删掉|删除)(?:了)?$",
+            r"^(?:帮我)?把\s*(.+?)(?:这个)?(?:计划|任务)\s*(?:删掉|删除|取消)(?:了)?$",
+            r"^(?:帮我)?(?:删除|取消)\s*(?:今天的)?(.+?)(?:计划|任务)?$",
+        ))
 
     @staticmethod
     def _route_complete_plan(text: str) -> str:
@@ -813,13 +1702,17 @@ class IntentRouter:
             context,
             conversation_id=str(context.get("conversation_id", "")),
         )
-        task_ref = str(
-            resolution.resolved_id
-            or last_task.get("uid")
-            or last_task.get("id")
-            or last_task.get("title")
-            or ""
-        ).strip()
+        has_reference = any(
+            term in text for term in self.reference_resolver.REFERENCE_TERMS
+        )
+        task_ref = str(resolution.resolved_id or "").strip()
+        if not task_ref and not has_reference:
+            task_ref = str(
+                last_task.get("uid")
+                or last_task.get("id")
+                or last_task.get("title")
+                or ""
+            ).strip()
 
         if re.fullmatch(
             r"(?:完成|做完|学完)?(?:前一个|上一个|前面的)(?:计划|任务)?(?:了)?",
@@ -871,6 +1764,7 @@ class IntentRouter:
                 prefix = f"{slot}" if slot else "这段时间"
                 return self._matched(
                     "add_plan",
+                    request_mode="execute",
                     clarification_question=(
                         f"{prefix}想安排哪类学习内容？告诉我主题和大概时长，"
                         "我再帮你加入计划。"
@@ -888,6 +1782,7 @@ class IntentRouter:
             subject = _clean_slot(learning_wish.group(1))
             return self._matched(
                 "add_plan",
+                request_mode="possible_action",
                 clarification_question=(
                     f"你是想现在开始学“{subject}”，还是把它加入今天计划？"
                     "如果现在开始，可以再说说想先练哪一部分。"
@@ -930,6 +1825,30 @@ class IntentRouter:
                 candidate_actions=[
                     {"intent": "add_plan", "entities": {"tasks": [suggestion]}}
                 ],
+            )
+
+        explicit_duration_target = bool(
+            re.fullmatch(
+                r"(?:把)?(.+?)(?:计划|任务)?(?:的?时长)?(?:改成|调整为)\s*"
+                r"\d+(?:\.\d+)?\s*(?:个)?\s*(?:分钟|小时)",
+                text,
+            )
+        )
+        if (
+            temporal.get("duration_minutes") is not None
+            and re.search(r"(?:改成|调整为|设为).*(?:分钟|小时)", text)
+            and not explicit_duration_target
+            and not re.search(r"[，,；;].*(?:再|然后|同时|顺便|并)", text)
+        ):
+            if not task_ref:
+                return self._matched(
+                    "update_plan",
+                    clarification_question="你想修改哪一条计划？请说计划编号或标题。",
+                )
+            return self._matched(
+                "update_plan",
+                query=task_ref,
+                changes={"duration_minutes": temporal["duration_minutes"]},
             )
 
         duration = re.fullmatch(
@@ -1096,11 +2015,41 @@ class IntentRouter:
                 ]
             elif isinstance(entities.get("title"), str):
                 entities["title"] = str(entities["title"]).strip()
-        if intent == "update_plan" and parsed.get("duration_minutes") is not None:
-            changes = entities.get("changes")
-            changes = dict(changes) if isinstance(changes, dict) else {}
-            changes.setdefault("duration_minutes", parsed["duration_minutes"])
-            entities["changes"] = changes
+        if intent == "update_plan":
+            raw_changes = entities.get("changes")
+            changes = dict(raw_changes) if isinstance(raw_changes, dict) else {}
+            if parsed.get("duration_minutes") is not None:
+                changes.setdefault("duration_minutes", parsed["duration_minutes"])
+            parsed_slot = str(parsed.get("time_period", "") or "").strip()
+            if parsed_slot:
+                changes.setdefault(
+                    "time_slot",
+                    "晚上" if parsed_slot == "今晚" else parsed_slot,
+                )
+            if changes:
+                entities["changes"] = changes
+                if raw_changes is not None and not isinstance(raw_changes, dict):
+                    warnings = result.get("warnings", [])
+                    warnings = list(warnings) if isinstance(warnings, list) else []
+                    if "invalid_changes_recovered_from_user_text" not in warnings:
+                        warnings.append("invalid_changes_recovered_from_user_text")
+                    result["warnings"] = warnings
+            elif raw_changes is not None and not isinstance(raw_changes, dict):
+                # The model selected the right operation but did not provide a
+                # usable change object, and the user's text contains no stable
+                # local value to recover. Preserve the intent as a bounded
+                # clarification instead of executing an empty or invented edit.
+                entities.pop("changes", None)
+                result["mode"] = "clarify"
+                result["needs_confirmation"] = False
+                result["clarification_question"] = (
+                    "这条计划具体要修改标题、时间还是时长？"
+                )
+                warnings = result.get("warnings", [])
+                warnings = list(warnings) if isinstance(warnings, list) else []
+                if "invalid_changes_requires_clarification" not in warnings:
+                    warnings.append("invalid_changes_requires_clarification")
+                result["warnings"] = warnings
 
         if bool(parsed.get("ambiguous")) and intent in {
             "add_plan",
@@ -1124,6 +2073,7 @@ class IntentRouter:
         candidate_actions = entities.pop("candidate_actions", [])
         warnings = entities.pop("warnings", [])
         confidence = float(entities.pop("confidence", 0.9))
+        request_mode = str(entities.pop("request_mode", "") or "").strip()
         print("[Intent] source: rule", flush=True)
         print(f"[Intent] matched: {intent} confidence={confidence:.2f}", flush=True)
         return self._result(
@@ -1137,6 +2087,7 @@ class IntentRouter:
             candidate_actions=(
                 candidate_actions if isinstance(candidate_actions, list) else []
             ),
+            request_mode=request_mode,
         )
 
     @staticmethod
@@ -1150,6 +2101,10 @@ class IntentRouter:
         warnings: Optional[List[str]] = None,
         clarification_question: Optional[str] = None,
         candidate_actions: Optional[List[Dict[str, object]]] = None,
+        subject: str = "",
+        polarity: str = "",
+        modality: str = "",
+        request_mode: str = "",
     ) -> Dict[str, object]:
         values = entities or {}
         result = IntentResult(
@@ -1163,10 +2118,23 @@ class IntentRouter:
             candidate_actions=candidate_actions or [],
         ).to_dict()
         result.update({"slots": dict(values), "reason": source})
+        result.update(
+            {
+                "mode": _mode_for_intent(
+                    intent, clarification=bool(clarification_question)
+                ),
+                "proposed_tool": _proposed_tool_for_intent(intent) or None,
+                "follow_up_target": None,
+                "subject": str(subject or "").strip(),
+                "polarity": str(polarity or "").strip(),
+                "modality": str(modality or "").strip(),
+                "request_mode": str(request_mode or "").strip(),
+            }
+        )
         return result
 
     def _with_legacy_slots(self, parsed: Dict[str, object]) -> Dict[str, object]:
-        return self._result(
+        result = self._result(
             str(parsed["intent"]),
             float(parsed["confidence"]),
             entities=dict(parsed["entities"]),
@@ -1175,7 +2143,28 @@ class IntentRouter:
             warnings=list(parsed.get("warnings", [])),
             clarification_question=parsed.get("clarification_question"),
             candidate_actions=list(parsed.get("candidate_actions", [])),
+            subject=str(parsed.get("subject", "") or ""),
+            polarity=str(parsed.get("polarity", "") or ""),
+            modality=str(parsed.get("modality", "") or ""),
         )
+        result["mode"] = str(parsed.get("mode", result["mode"]))
+        result["proposed_tool"] = parsed.get("proposed_tool") or result["proposed_tool"]
+        result["follow_up_target"] = parsed.get("follow_up_target")
+        result["semantic_diagnostic"] = str(
+            parsed.get("semantic_diagnostic", "") or ""
+        )
+        result["request_mode"] = str(
+            parsed.get("request_mode", result.get("request_mode", "")) or ""
+        )
+        result["explicit_command"] = bool(
+            parsed.get("explicit_command", False)
+        )
+        implicit_memory_policy = str(
+            parsed.get("implicit_memory_policy", "") or ""
+        ).strip()
+        if implicit_memory_policy:
+            result["implicit_memory_policy"] = implicit_memory_policy
+        return result
 
     def _fallback(self, reason: str) -> Dict[str, object]:
         print("[Intent] fallback: chat", flush=True)
@@ -1189,6 +2178,10 @@ def is_fixed_command(user_text: str) -> bool:
     return bool(
         _FIXED_NUMBERED_COMMAND.fullmatch(text)
         or _FIXED_PLAN_UPDATE.fullmatch(text)
+        or _FIXED_REVIEW_SAVE.fullmatch(text)
+        or re.fullmatch(
+            r"重新生成(?:昨天|昨日)(?:的)?(?:复盘|成长复盘)", text
+        )
     )
 
 
@@ -1250,6 +2243,46 @@ def _clean_text(text: str) -> str:
     return str(text).strip().strip("。.!！?？")
 
 
+def _normalize_utterance_shell(text: str) -> str:
+    """Remove generic conversational wrapping without deciding semantics.
+
+    This deliberately handles reusable discourse markers only. It must not grow
+    into a catalog of complete user sentences or choose a capability/tool.
+    """
+    value = _clean_text(text)
+    if not value:
+        return value
+    preserve_addressee = bool(
+        re.match(
+            r"^麻烦你(?:记得|知道|了解)我.*(?:什么|哪些|多少|吗)"
+            r"(?:可以吗|吧|谢谢|哈|一下)?$",
+            value,
+        )
+    )
+    if preserve_addressee:
+        value = value[len("麻烦"):].lstrip("，,：: ")
+    previous = None
+    while value and value != previous:
+        previous = value
+        value = re.sub(
+            r"^(?:(?:查询|命令)[：:]\s*|洛琪希[，,：:\s]*|麻烦(?:你)?[，,：:\s]*|"
+            r"能不能[，,：:\s]*|可不可以[，,：:\s]*|请[，,：:\s]*|"
+            r"帮我[，,：:\s]*|现在[，,：:\s]*)",
+            "",
+            value,
+            count=1,
+        ).strip()
+    value = re.sub(
+        r"(?:[，,：:\s]*(?:可以吗|行吗|好吗|谢谢|哈|吧))+$",
+        "",
+        value,
+    ).strip()
+    preserve_yixia = bool(re.search(r"(?:复盘|帮我记)一下$", value))
+    if not preserve_yixia:
+        value = re.sub(r"[，,：:\s]*一下$", "", value).strip()
+    return _clean_text(value) or _clean_text(text)
+
+
 def _first_capture(text: str, patterns: Sequence[str]) -> str:
     for pattern in patterns:
         match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
@@ -1260,6 +2293,47 @@ def _first_capture(text: str, patterns: Sequence[str]) -> str:
 
 def _clean_slot(text: str) -> str:
     return str(text).strip(" \t\r\n，,。.!！?？：:；;")
+
+
+def _history_topic_query(text: str) -> str:
+    """Extract an optional topic from an already-classified history query."""
+    value = _clean_text(text)
+    value = re.sub(r"(?:不是今天(?:的)?|不包括今天(?:的)?)", " ", value)
+    about = re.search(
+        r"(?:关于|有关)\s*(.+?)(?:的)?(?:事|内容|话题|对话|会话)?$",
+        value,
+    )
+    if about:
+        value = about.group(1)
+    else:
+        value = re.sub(r"^.*?(?:以前|之前|过去|更早|历史)", "", value)
+        value = re.sub(
+            r"^(?:(?:我|我们|咱们)?(?:跟你|和你)?(?:的)?|"
+            r"(?:聊天|对话|会话)(?:里|中)?)",
+            "",
+            value,
+        )
+        value = re.sub(
+            r"^(?:曾经|曾)?(?:聊过|聊到|聊的|说过|说的|提到|提过|"
+            r"谈过|谈的|讨论过|讨论的|记得|找找|查找)\s*",
+            "",
+            value,
+        )
+    value = re.sub(
+        r"^(?:哪些|什么|有没有|是否|都)?\s*(?:关于|有关)?\s*",
+        "",
+        value,
+    )
+    value = _clean_slot(value)
+    value = re.sub(
+        r"(?:的)?(?:事|内容|话题|聊天|对话|会话)?(?:吗|呢|啊|呀)?$",
+        "",
+        value,
+    )
+    topic = _clean_slot(value)
+    if topic in {"", "什么", "哪些", "多少", "有没有", "跟你", "和你"}:
+        return ""
+    return topic[:200]
 
 
 def _split_plan_items(text: str) -> List[str]:
@@ -1274,6 +2348,41 @@ def _split_plan_items(text: str) -> List[str]:
 
 def _matches_any(text: str, phrases: Sequence[str]) -> bool:
     return any(phrase in text for phrase in phrases)
+
+
+def _compact_command_text(text: str) -> str:
+    return re.sub(r"[\s，,。.!！?？；;：:]", "", str(text or ""))
+
+
+def reminder_control_action(text: str) -> str:
+    """Return a reminder state change only for a complete explicit request."""
+    value = _compact_command_text(text)
+    prefix = r"(?:(?:接下来|从现在开始|现在开始|现在|今天|暂时|这段时间)(?:先)?)?"
+    if re.fullmatch(
+        rf"{prefix}(?:请)?(?:先)?(?:(?:别|不要|不用)(?:再)?提醒我(?:了)?|暂停(?:主动)?提醒)",
+        value,
+    ):
+        return "pause"
+    if re.fullmatch(
+        rf"{prefix}(?:请)?(?:恢复提醒|继续提醒我|重新开启提醒|恢复主动提醒)",
+        value,
+    ):
+        return "resume"
+    return ""
+
+
+def is_explicit_pet_sleep_request(text: str) -> bool:
+    """Keep user-rest chat separate from commands addressed to the pet."""
+    value = _compact_command_text(text)
+    if value in {"进入睡眠", "睡一会儿", "去睡吧"}:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:洛琪希(?:你)?|roxy(?:你)?|你)(?:先|去)?(?:休息一下|休息一会儿|睡一会儿|睡觉吧|进入睡眠)",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _suggestion_title(text: str) -> str:
@@ -1303,6 +2412,23 @@ def _safe_llm_context(context: Optional[Dict[str, object]]) -> Dict[str, object]
             for key in ("id", "title", "done", "status")
             if key in last_task
         }
+    suggestion_snapshot = context.get("suggestion_snapshot", {})
+    suggestion_snapshot = (
+        suggestion_snapshot if isinstance(suggestion_snapshot, dict) else {}
+    )
+    raw_objects = suggestion_snapshot.get("objects", [])
+    suggestion_objects = []
+    if isinstance(raw_objects, list):
+        for item in raw_objects[:5]:
+            if not isinstance(item, dict):
+                continue
+            suggestion_objects.append(
+                {
+                    key: item.get(key)
+                    for key in ("stable_id", "display_order", "title", "consumed")
+                    if key in item
+                }
+            )
     return {
         "last_task": task or None,
         "last_user_message": str(context.get("last_user_message", ""))[-180:],
@@ -1312,62 +2438,89 @@ def _safe_llm_context(context: Optional[Dict[str, object]]) -> Dict[str, object]
             if isinstance(context.get("current_facts", {}), dict)
             else {}
         ),
+        "suggestion_snapshot": (
+            {
+                "snapshot_id": str(suggestion_snapshot.get("snapshot_id", "")),
+                "source_kind": str(suggestion_snapshot.get("source_kind", "")),
+                "objects": suggestion_objects,
+            }
+            if suggestion_objects
+            else None
+        ),
     }
 
 
-def _validate_llm_entities(intent: str, entities: Dict[str, object]) -> bool:
+def _mode_for_intent(intent: str, *, clarification: bool = False) -> str:
+    if clarification:
+        return "clarify"
+    if intent == "chat":
+        return "chat"
+    if intent in {
+        "show_plan", "inspect_plan_duplicates", "show_action_log", "show_growth_log", "daily_review",
+        "show_memory", "search_memory", "show_memory_candidates",
+        "show_memory_conflicts", "show_memory_audit", "show_archived_memories",
+        "show_recent_conversation", "show_conversation_history",
+    }:
+        return "read"
+    return "write"
+
+
+def _proposed_tool_for_intent(intent: str) -> str:
+    # This is an explanatory, untrusted proposal. AgentPlanner still owns the
+    # canonical intent-to-tool mapping and ToolExecutor still validates execution.
+    return {
+        "show_plan": "show_plan",
+        "inspect_plan_duplicates": "inspect_plan_duplicates",
+        "show_action_log": "show_action_log",
+        "show_growth_log": "show_growth_log",
+        "show_memory": "list_memories",
+        "search_memory": "search_memories",
+        "add_plan": "add_plan",
+        "complete_plan": "complete_plan",
+        "add_action_log": "add_action_log",
+        "add_memory_request": "save_formal_memory",
+    }.get(intent, "")
+
+
+def _is_plan_status_query(text: str) -> bool:
+    return bool(
+        re.fullmatch(r"(?:我)?今天(?:还有)?什么没完成", text)
+        or re.fullmatch(r"(?:哪些|什么)已经(?:做完|完成)(?:了)?", text)
+        or re.fullmatch(r"(?:我)?今天是不是已经学完.+", text)
+    )
+
+
+def _validate_llm_entities(
+    intent: str,
+    entities: Dict[str, object],
+    *,
+    allow_incomplete: bool = False,
+) -> bool:
+    """Basic structural guard only.  Field-level validation is now owned by
+    the SemanticPipeline (normalize → validate → repair).
+
+    This function MUST NOT reject a decision based on missing or unexpected
+    field names — the pipeline's SchemaValidator, informed by the
+    ToolRegistry, is the single source of truth for per-tool contracts.
+    """
     if not isinstance(entities, dict):
         return False
-    allowed_change_fields = {
-        "title", "date", "time_slot", "duration_minutes", "priority", "note"
-    }
-    changes = entities.get("changes")
-    if changes is not None and (
-        not isinstance(changes, dict)
-        or not set(changes).issubset(allowed_change_fields)
-    ):
-        return False
-    if intent == "add_plan":
-        tasks = entities.get("tasks")
-        return (
-            isinstance(tasks, list)
-            and all(isinstance(item, str) and item.strip() for item in tasks)
-        ) or isinstance(entities.get("title"), str)
-    if intent in {"complete_plan", "delete_plan", "reopen_plan", "cancel_plan"}:
-        return any(key in entities for key in ("query", "task_id"))
-    if intent in {"update_plan", "reschedule_plan"}:
-        return any(key in entities for key in ("query", "task_id")) and (
-            isinstance(changes, dict)
-            or isinstance(entities.get("schedule_text"), str)
-        )
-    if intent == "add_action_log":
-        return isinstance(entities.get("content"), str)
-    if intent in {"search_memory", "add_memory_request", "memory_candidate"}:
-        return isinstance(
-            entities.get("query" if intent == "search_memory" else "content"), str
-        )
-    if intent in {"archive_memory", "restore_memory"}:
-        return isinstance(entities.get("memory_id"), int)
-    if intent == "delete_memory":
-        return isinstance(entities.get("memory_id"), int) or entities.get("scope") == "all"
-    if intent in {"accept_memory_candidate", "reject_memory_candidate"}:
-        return isinstance(entities.get("candidate_id"), int)
-    if intent in {"accept_memory_candidates", "reject_memory_candidates"}:
-        values = entities.get("candidate_ids")
-        return (
-            isinstance(values, list)
-            and bool(values)
-            and all(isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in values)
-        )
-    if intent == "resolve_memory_conflict":
-        return isinstance(entities.get("conflict_id"), int) and isinstance(
-            entities.get("resolution"), str
-        )
+    # Field-level shape validation is deferred to the semantic pipeline. A
+    # malformed nested field must not erase an otherwise usable intent before
+    # locally parsed user-text facts have had a chance to repair or clarify it.
     return True
 
 
 def _parse_plan_changes(text: str) -> Dict[str, object]:
     value = _clean_slot(text)
+    if re.fullmatch(
+        r"(?:半小时|(?:\d+(?:\.\d+)?|[一二两三四五六七八九十]+)(?:个)?小时半?|"
+        r"(?:\d+|[一二两三四五六七八九十]+)分钟)",
+        value,
+    ):
+        # ChineseEntityParser adds the normalized duration later. Returning no
+        # title here prevents a duration-only update from renaming the task.
+        return {}
     duration = re.search(r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(分钟|小时)", value)
     if duration and re.search(r"时长|改成|调整为|^\d", value):
         number = float(duration.group(1))

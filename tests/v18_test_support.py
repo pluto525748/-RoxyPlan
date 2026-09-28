@@ -25,6 +25,10 @@ class NoCallLLM(RecordingLLM):
 def build_service(root: Path, llm=None):
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "pet_config.json").write_text(
+        json.dumps({"interaction_diagnostics_enabled": True}),
+        encoding="utf-8",
+    )
     (data_dir / "roxy_personality.json").write_text(
         json.dumps(
             {

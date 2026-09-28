@@ -60,7 +60,30 @@ def test_same_batch_is_idempotent_but_new_batch_can_run_again():
     assert [item[0] for item in executor.calls] == ["write", "write"]
 
 
+def test_same_request_id_replay_does_not_repeat_write():
+    executor = FakeExecutor()
+    plan = ToolExecutionPlan(executor)
+    first_batch = ActionBatch.from_steps(
+        "c",
+        [AgentStep("write", {"content": "once"})],
+        request_id="req-stable-1",
+    )
+    replay_batch = ActionBatch.from_steps(
+        "c",
+        [AgentStep("write", {"content": "once"})],
+        request_id="req-stable-1",
+    )
+
+    first = plan.execute(first_batch, confidence=1.0)
+    replay = plan.execute(replay_batch, confidence=1.0)
+
+    assert first.status == "completed"
+    assert replay.skipped_action_ids
+    assert len(executor.calls) == 1
+
+
 if __name__ == "__main__":
     test_batch_is_bounded_ordered_and_dependency_failure_skips()
     test_same_batch_is_idempotent_but_new_batch_can_run_again()
+    test_same_request_id_replay_does_not_repeat_write()
     print("action batch tests passed")

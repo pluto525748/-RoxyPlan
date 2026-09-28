@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
@@ -49,6 +50,23 @@ class BusinessResolver:
         "list_archived_memories",
         "show_memory_audit",
     }
+    AMBIGUOUS_REFERENCE_TERMS = (
+        "这些",
+        "那些",
+        "这个",
+        "那个",
+        "你说的",
+        "上面说的",
+        "刚才的",
+        "刚才那些",
+        "上述内容",
+        "前面提到的",
+        "刚才提到的",
+        "这几条",
+        "前者",
+        "后者",
+        "那件事情",
+    )
 
     def __init__(
         self,
@@ -88,6 +106,33 @@ class BusinessResolver:
                 reason_code="tool_not_registered",
                 safe_prompt="这个操作不在允许的工具列表中。",
             )
+        tool_definition = (
+            self.tool_registry.get(candidate.tool_name)
+            if self.tool_registry is not None
+            else None
+        )
+        if (
+            candidate.request_mode in {"advice", "discuss"}
+            and tool_definition is not None
+            and tool_definition.side_effect
+        ):
+            return BusinessResolution(
+                "forbidden",
+                candidate,
+                reason_code="non_executable_request_mode",
+                safe_prompt="这次是在讨论或征求建议，我没有修改任何数据。",
+            )
+        if (
+            candidate.request_mode == "query"
+            and tool_definition is not None
+            and tool_definition.side_effect
+        ):
+            return BusinessResolution(
+                "forbidden",
+                candidate,
+                reason_code="query_cannot_write",
+                safe_prompt="查询请求不会修改数据。",
+            )
         if candidate.domain == "memory":
             return self._resolve_memory(candidate, conversation_id, features)
         if candidate.domain == "plan":
@@ -123,8 +168,47 @@ class BusinessResolver:
             "create_memory_candidate",
             "request_add_memory",
             "queue_memory_candidate",
+            "save_formal_memory",
         }:
-            return BusinessResolution("resolved", candidate, candidate)
+            content = str(candidate.arguments.get("content", "") or "").strip()
+            reference_reason = str(
+                candidate.raw_entities.get("reference_resolution_reason", "") or ""
+            )
+            if tool == "save_formal_memory" and not content:
+                return BusinessResolution(
+                    "clarification_required",
+                    candidate,
+                    missing_fields=["memory_content_reference"],
+                    reason_code=reference_reason or "memory_content_missing",
+                    safe_prompt=(
+                        "当前对话里没有可引用的上一条回复，所以这次没有保存。"
+                        "你可以直接说：‘请记住：……’"
+                        if "assistant_message_unavailable" in reference_reason
+                        else "我还不能确定要保存什么，所以这次没有保存。"
+                        "你可以直接说：‘请记住：……’"
+                    ),
+                )
+            if self._has_unresolved_memory_content_reference(content):
+                return BusinessResolution(
+                    "clarification_required",
+                    candidate,
+                    missing_fields=["memory_content_reference"],
+                    reason_code="unresolved_memory_content_reference",
+                    safe_prompt=(
+                        "我还不能确定这条记忆具体是什么，所以没有保存。"
+                        "可以这样说：‘请记住：我的长期目标是成为AI经理和Agent全栈开发者。’"
+                    ),
+                )
+            return BusinessResolution(
+                "resolved",
+                candidate,
+                candidate,
+                reason_code=(
+                    reference_reason
+                    if reference_reason.endswith("_resolved")
+                    else ""
+                ),
+            )
 
         args = dict(candidate.arguments)
         explicit_candidate_ids = (
@@ -253,30 +337,46 @@ class BusinessResolver:
     ) -> BusinessResolution:
         tool = candidate.tool_name
         args = dict(candidate.arguments)
-        if tool == "show_plan":
+        if tool in {"show_plan", "inspect_plan_duplicates", "merge_plan"}:
             return BusinessResolution("resolved", candidate, candidate)
         if tool == "add_plan":
             title = str(args.get("title", "") or "").strip()
+            if self._has_unresolved_content_reference(title, features):
+                return BusinessResolution(
+                    "clarification_required",
+                    candidate,
+                    missing_fields=["plan_content_reference"],
+                    reason_code="unresolved_plan_content_reference",
+                    safe_prompt=(
+                        "我还不能确定“这些”具体指哪些内容，所以没有修改计划。"
+                        "可以这样说：‘把复习随机森林加入今天计划。’"
+                    ),
+                )
             if args.get("duration_minutes") in {None, ""} and title:
                 parsed_title = self.entity_parser.parse(title)
                 if parsed_title.get("duration_minutes") is not None:
                     args["duration_minutes"] = parsed_title.get("duration_minutes")
                     candidate = self._clone(candidate)
                     candidate.arguments = dict(args)
-            missing = []
+            # Only require title for add_plan.  time_slot and duration_minutes
+            # are optional — the plan still executes with just a clear title.
             if not title or title in {"学一会儿", "学习一会儿", "做一会儿", "安排一下"}:
-                missing.append("title")
-            if not candidate.explicit_command and args.get("duration_minutes") in {None, ""}:
-                missing.append("duration_minutes")
-            if missing:
                 return BusinessResolution(
                     "missing",
                     candidate,
-                    missing_fields=missing,
-                    reason_code="plan_fields_missing",
-                    safe_prompt="想学什么、准备学多久？告诉我这两点后，我再帮你放进计划。",
+                    missing_fields=["title"],
+                    reason_code="plan_title_missing",
+                    safe_prompt="想加入什么计划？告诉我一个具体的计划名，我马上帮你安排。",
                 )
-            similar = self.plan_service.find_similar_plans(title, threshold=0.82)
+            # Duplicate protection uses a canonical task title plus explicit
+            # schedule compatibility.  Fuzzy reference matching is kept out
+            # of this write gate so similar-but-distinct plans remain valid.
+            similar = self.plan_service.find_semantic_duplicates(
+                title,
+                duration_minutes=args.get("duration_minutes"),
+                time_slot=str(args.get("time_slot", "") or ""),
+                date=str(args.get("date", "") or "") or None,
+            )
             if similar and not args.get("allow_duplicate"):
                 return BusinessResolution(
                     "ambiguous",
@@ -285,21 +385,40 @@ class BusinessResolver:
                     reason_code="similar_plan_exists",
                     safe_prompt=(
                         f"今天已有相近计划“{similar[0].get('title', '')}”。"
-                        f"你可以更新原计划，或回复“仍然添加：{title}”保留两条。"
+                        f"你可以更新原计划、合并计划，或回复“仍然添加：{title}”保留两条。"
                     ),
                 )
             return BusinessResolution("resolved", candidate, candidate)
 
         explicit_ids = features.explicit_ids.get("plan", []) if features else []
         reference = str(args.get("task_ref") or args.get("match_text") or "").strip()
-        if explicit_ids:
+        snapshot_bound = candidate.source_intent in {
+            "read_snapshot_binding", "current_sentence_binding",
+        }
+        if explicit_ids and not snapshot_bound:
             reference = str(explicit_ids[0])
-        if candidate.reference_text:
+        plans = self.plan_service.list_plans()
+        ordinal_resolution = self.reference_resolver.resolve_plan_ordinal(
+            "" if snapshot_bound else candidate.clause_text or candidate.command_text,
+            plans,
+        )
+        if ordinal_resolution.needs_clarification:
+            return BusinessResolution(
+                "ambiguous",
+                candidate,
+                candidate_objects=plans[:5],
+                reason_code=ordinal_resolution.reason,
+                safe_prompt="这个计划序号不在当前列表中，请重新说一个现有编号或计划标题。",
+            )
+        resolved_from_display_ordinal = bool(ordinal_resolution.resolved_id)
+        if resolved_from_display_ordinal:
+            reference = ordinal_resolution.resolved_id
+        elif candidate.reference_text and not snapshot_bound:
             resolution = self.reference_resolver.resolve(
                 candidate.reference_text,
                 references,
                 conversation_id=conversation_id,
-                candidates=self.plan_service.list_plans(),
+                candidates=plans,
             )
             if resolution.needs_clarification:
                 return BusinessResolution(
@@ -323,6 +442,27 @@ class BusinessResolver:
             reference,
             pending_only=(tool == "complete_plan"),
         )
+        if lookup.status == "already_completed":
+            return BusinessResolution(
+                "forbidden",
+                candidate,
+                candidate_objects=[lookup.task] if lookup.task is not None else [],
+                reason_code="plan_already_completed",
+                safe_prompt=(
+                    f"“{lookup.task.get('title', '')}”这项已经完成，"
+                    "不需要再次标记，我没有重复记录。"
+                    if lookup.task is not None
+                    else "这项已经完成，不需要再次标记，我没有重复记录。"
+                ),
+            )
+        if lookup.status == "unavailable":
+            return BusinessResolution(
+                "forbidden",
+                candidate,
+                candidate_objects=[lookup.task] if lookup.task is not None else [],
+                reason_code="target_deleted",
+                safe_prompt="这项计划目前不可完成，这次没有修改其他计划，也没有重复记录。",
+            )
         if lookup.status == "ambiguous":
             ids = [str(item.get("uid") or item.get("id")) for item in lookup.candidates]
             self.interaction_coordinator.record_candidates(
@@ -340,6 +480,17 @@ class BusinessResolver:
                 safe_prompt=self._format_plan_choices(lookup.candidates),
             )
         if lookup.task is None:
+            if snapshot_bound:
+                return BusinessResolution(
+                    "forbidden",
+                    candidate,
+                    reason_code="target_deleted",
+                    safe_prompt=(
+                        "刚才展示的这项计划已被删除或不再可用，"
+                        "这次没有修改其他计划，也没有重复记录。"
+                        "你可以重新查看今日计划。"
+                    ),
+                )
             prompt = (
                 "没有找到对应的未完成计划。要不要改为记录一条行动？"
                 if tool == "complete_plan"
@@ -351,14 +502,37 @@ class BusinessResolver:
                 reason_code=lookup.reason_code,
                 safe_prompt=prompt,
             )
+        if (
+            tool in {"update_plan", "reschedule_plan"}
+            and (
+                bool(lookup.task.get("done"))
+                or str(lookup.task.get("status", "")) == "completed"
+            )
+        ):
+            return BusinessResolution(
+                "missing",
+                candidate,
+                candidate_objects=[lookup.task],
+                missing_fields=["reopen_plan"],
+                reason_code="completed_plan_requires_reopen",
+                safe_prompt="这条计划已经完成。请先说“重新打开这个”，再修改标题、时长或时间。",
+            )
         resolved = self._clone(candidate)
         task_ref = (
-            str(explicit_ids[0])
+            ordinal_resolution.resolved_id
+            if resolved_from_display_ordinal
+            else str(explicit_ids[0])
             if explicit_ids
             else str(lookup.task.get("uid") or lookup.task.get("id"))
         )
         if tool == "complete_plan":
-            resolved.arguments = {"match_text": str(lookup.task.get("title", ""))}
+            resolved.arguments = {
+                "match_text": (
+                    str(lookup.task.get("uid") or lookup.task.get("id"))
+                    if snapshot_bound
+                    else str(lookup.task.get("id") or lookup.task.get("uid"))
+                )
+            }
         else:
             resolved.arguments["task_ref"] = task_ref
         return BusinessResolution(
@@ -386,6 +560,7 @@ class BusinessResolver:
             "这件事",
         }:
             content = str(references.get("previous_user_message", "") or "").strip()
+        content = self._clean_action_log_content(content)
         if not content:
             return BusinessResolution(
                 "missing",
@@ -470,6 +645,7 @@ class BusinessResolver:
             domain=candidate.domain,
             tool_name=candidate.tool_name,
             arguments=dict(candidate.arguments),
+            request_mode=candidate.request_mode,
             raw_entities=dict(candidate.raw_entities),
             reference_text=candidate.reference_text,
             confidence=candidate.confidence,
@@ -479,7 +655,48 @@ class BusinessResolver:
             depends_on=list(candidate.depends_on),
             sequence_index=candidate.sequence_index,
             source_intent=candidate.source_intent,
+            clause_text=candidate.clause_text,
+            command_text=candidate.command_text,
+            payload_text=candidate.payload_text,
+            command_span=list(candidate.command_span),
+            protected_payload_span=candidate.protected_payload_span,
+            polarity=candidate.polarity,
+            clause_parse_status=candidate.clause_parse_status,
+            missing_fields=list(candidate.missing_fields),
+            ambiguous_reference=list(candidate.ambiguous_reference),
+            risk_level=candidate.risk_level,
             action_id=candidate.action_id,
+        )
+
+    @classmethod
+    def _has_unresolved_content_reference(
+        cls,
+        title: str,
+        features: Optional[LocalFeatures],
+    ) -> bool:
+        value = str(title or "")
+        if any(term in value for term in cls.AMBIGUOUS_REFERENCE_TERMS):
+            return True
+        # A current pending interaction may carry a concrete title while the
+        # continuation sentence still contains “刚才这个”. In that case the
+        # reference has already been resolved by the coordinator and must not
+        # be rejected again. Feature-level references are only unresolved
+        # when the title itself is still empty or generic.
+        references = list(features.reference_expressions) if features else []
+        return not value.strip() and any(
+            term in cls.AMBIGUOUS_REFERENCE_TERMS for term in references
+        )
+
+    @staticmethod
+    def _has_unresolved_memory_content_reference(value: object) -> bool:
+        text = str(value or "").strip()
+        return bool(
+            re.fullmatch(
+                r"(?:我说的)?长期目标|"
+                r"(?:你说的|上面说的|刚才的|上述内容|前面提到的|刚才提到的|"
+                r"这些|那些|这个|那个|这几条|前者|后者|那件事情).{0,12}",
+                text,
+            )
         )
 
     @staticmethod
@@ -504,3 +721,23 @@ class BusinessResolver:
     @staticmethod
     def _normalize(value: object) -> str:
         return "".join(str(value or "").lower().split()).strip("。.!！?？")
+
+    @staticmethod
+    def _clean_action_log_content(value: object) -> str:
+        """Remove command punctuation and a trailing plan-scope instruction.
+
+        The scope note tells Roxy how to classify the event; it is not part of
+        the event itself and must not leak into the persisted action content.
+        Keep this cleanup at the business boundary as model-supplied candidates
+        do not necessarily pass through the local command-envelope parser.
+        """
+        content = str(value or "").strip().lstrip(" ：:,，;；")
+        content = re.sub(
+            r"(?:[，,。；;]\s*)?(?:但|不过)?\s*"
+            r"(?:这件事|这件事情|这个|它)\s*"
+            r"(?:不在|不属于)\s*(?:今天(?:的)?)?\s*"
+            r"(?:计划|任务)(?:里|中)?\s*[。.!！]*$",
+            "",
+            content,
+        )
+        return content.rstrip(" ：:,，;；。.!！")
