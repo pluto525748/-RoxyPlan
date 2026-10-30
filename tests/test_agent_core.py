@@ -1,6 +1,9 @@
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -13,6 +16,8 @@ from modules.memory_manager import MemoryManager
 from modules.safety_policy import SafetyPolicy
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import create_roxy_tool_registry
+from modules.contracts import ToolResult
+from modules.request_boundary import RequestBoundary, bind_request_boundary
 
 
 def make_core(root):
@@ -79,6 +84,23 @@ def test_chat_falls_through():
     with tempfile.TemporaryDirectory() as temp:
         _growth, _memory, core = make_core(Path(temp))
         assert core.process("你好", {"intent": "chat", "confidence": 0.0, "entities": {}}).status == "chat"
+
+
+@pytest.mark.parametrize("date_fields, expected", [
+    ({}, "好，我帮你把“兼容任务”加入计划了。"),
+    ({"date": ""}, "好，我帮你把“兼容任务”加入计划了。"),
+    ({"date": None}, "好，我帮你把“兼容任务”加入计划了。"),
+    ({"date": "2026-10-22"}, "好，我帮你把“兼容任务”加入今天计划了。"),
+    ({"date": "2026-10-21"}, "已把“兼容任务”加入2026-10-21的计划。"),
+])
+def test_added_plan_reply_uses_only_the_returned_date(date_fields, expected):
+    task = {"id": 1, "title": "兼容任务", **date_fields}
+    result = ToolResult(True, "add_plan", "added", {"task": task})
+    boundary = RequestBoundary("legacy", "2026-10-22", "添加计划：兼容任务",
+                               lambda: datetime(2026, 10, 22, 12))
+    with bind_request_boundary(boundary):
+        assert AgentCore._success_message([result]) == expected
+    assert result.data["task"] == task
 
 
 if __name__ == "__main__":

@@ -1,0 +1,121 @@
+{
+  "source": "Engineering synthetic real DeepSeek first results, 2026-10-25. Local replacements must not consume obsolete provider captures.",
+  "cases": [
+    {
+      "id": "bt_conf_05",
+      "turns": [
+        {
+          "id": "bt_conf_05-pre01",
+          "user": "忘记：我喜欢吃梨",
+          "responses": [],
+          "source_sha256": "680c358510a7f65815af94c550812632c0164f97082e47b90c3b62e1aaa57eb8"
+        },
+        {
+          "id": "bt_conf_05-t01",
+          "user": "确定。",
+          "responses": [
+            {
+              "model": "deepseek-flash",
+              "choices": [
+                {
+                  "finish_reason": "stop",
+                  "message": {
+                    "content": "{\"mode\":\"write\",\"intent\":\"delete_memory\",\"entities\":{\"content\":\"我喜欢吃梨\"},\"proposed_tool\":\"delete_memory\",\"confidence\":0.9,\"follow_up_target\":\"previous_confirmation\",\"needs_confirmation\":true,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                    "tool_calls": []
+                  }
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 2656,
+                "completion_tokens": 95,
+                "total_tokens": 2751,
+                "prompt_cache_hit_tokens": 2432,
+                "prompt_cache_miss_tokens": 224
+              }
+            }
+          ],
+          "source_sha256": "f3047af2b13e7d8c3e9711b25fe0d3a8d5b8032eda40ed9471156e9ed639fc46"
+        }
+      ]
+    },
+    {
+      "id": "btm_02",
+      "turns": [
+        {
+          "id": "btm_02-t01",
+          "user": "给我一个今天的学习计划。",
+          "responses": [
+            {
+              "model": "deepseek-flash",
+              "choices": [
+                {
+                  "finish_reason": "stop",
+                  "message": {
+                    "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"advice\",\"explicit_command\":false}",
+                    "tool_calls": []
+                  }
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 2615,
+                "completion_tokens": 84,
+                "total_tokens": 2699,
+                "prompt_cache_hit_tokens": 2432,
+                "prompt_cache_miss_tokens": 183
+              }
+            },
+            {
+              "model": "deepseek-flash",
+              "choices": [
+                {
+                  "finish_reason": "stop",
+                  "message": {
+                    "content": "（轻轻点头）我先说明依据：今天的计划记录还是空的，昨天和近几周也没有可参考的完成记录，所以这份计划会从比较轻的量开始，不假设你之前学过什么。\n\n1. 选定一个学习主题，10分钟。先确定今天最想推进的那一科或那一章。\n2. 精读或听课一个知识点，30分钟。只挑一个点，不铺开。\n3. 合上材料做几道对应练习，25分钟。做完立刻对答案。\n4. 用五分钟写下今天卡住的地方，5分钟。留给下次接着处理。\n\n如果你告诉我具体要学哪一科、大概有多少时间，我可以把上面换成更贴合你的版本。",
+                    "tool_calls": []
+                  }
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 2202,
+                "completion_tokens": 150,
+                "total_tokens": 2352,
+                "prompt_cache_hit_tokens": 2048,
+                "prompt_cache_miss_tokens": 154
+              }
+            }
+          ],
+          "source_sha256": "72ccb0e7445f1674e3d19acfc0844ee41ddc5f80d3a81d5da74a37adbffea9b6"
+        },
+        {
+          "id": "btm_02-t03",
+          "user": "查看今天计划",
+          "responses": [
+            {
+              "model": "deepseek-flash",
+              "choices": [
+                {
+                  "finish_reason": "stop",
+                  "message": {
+                    "content": "今天计划记录是空的，昨天和近30天也没有可核对的学习执行记录，所以按轻量起步来安排。\n\n1. 确定今天要学的一个主题，10分钟。\n2. 精读或听讲一个知识点，30分钟。\n3. 合上材料做对应练习，25分钟。\n4. 记录今天卡住的地方，5分钟。",
+                    "tool_calls": []
+                  }
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 1991,
+                "completion_tokens": 78,
+                "total_tokens": 2069,
+                "prompt_cache_hit_tokens": 1152,
+                "prompt_cache_miss_tokens": 839
+              }
+            }
+          ],
+          "source_sha256": "f9475de46fcd2f64b3ecef685bf5d8e1f16a7642e7179a3bbc4bb058b3e072e4"
+        }
+      ],
+      "unexecuted_source_rounds": [
+        "btm_02-t02: original gate blocked; not sent or fabricated in this replay"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "origin": "Captured DeepSeek responses from synthetic engineering week v4; not new API calls or private user records",
+  "source_run": "learning-week-six-online-20261025-v4",
+  "cases": [
+    {
+      "id": "g1-d3-t15",
+      "user": "请把今天的计划与行动整理成复盘并保存。",
+      "business_date": "2026-11-04",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"daily_review\",\"entities\":{},\"proposed_tool\":\"generate_daily_review\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2741,
+            "completion_tokens": 89,
+            "total_tokens": 2830,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 309
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "我先说明一个前提：复盘保存需要由真实记忆操作完成，而这一轮没有执行任何写入。另外，今天没有记录到计划或行动，之前那两条异常处理建议也已经作废，不属于今天的计划或行动。\n\n所以能整理的内容其实很少：今天没有计划外行动，也没有完成记录；今天没有正式保存的复盘。\n\n如果你希望保存，可以先看下面这几条由你明确表达的内容，发给我之后我才会保存：\n\n请记住：我今天没有做计划外的事情。\n请记住：我取消了异常处理的额外练习建议，按自己的安排学习。\n请记住：我目前更适合早上还是晚上学习，还没有确定。\n\n第三条是待确认项，等你告诉我答案后再改。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2520,
+            "completion_tokens": 146,
+            "total_tokens": 2666,
+            "prompt_cache_hit_tokens": 768,
+            "prompt_cache_miss_tokens": 1752
+          }
+        }
+      ],
+      "source_result_sha256": "26146808126176f91fe569a9fa5ad21938a8a699b340bda9e497fef1f67fc80b"
+    },
+    {
+      "id": "g1-d7-t15",
+      "user": "把今天实际完成和未完成情况生成复盘并保存。",
+      "business_date": "2026-11-08",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"daily_review\",\"entities\":{},\"proposed_tool\":\"generate_daily_review\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2816,
+            "completion_tokens": 89,
+            "total_tokens": 2905,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 384
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "我不能直接生成并保存复盘：复盘内容需要基于今天实际完成的情况，而今天两项计划都还是待完成，你也没有报告过其他实际进展。若只凭“今天先到这里”写成复盘，会变成我替你编内容。\n\n你可以先告诉我今天实际做到哪一步，比如有没有打开材料、跑过哪个例子、卡在哪里。我再按你确认的事实整理成复盘，并说明哪些保存操作确实完成了。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2583,
+            "completion_tokens": 90,
+            "total_tokens": 2673,
+            "prompt_cache_hit_tokens": 768,
+            "prompt_cache_miss_tokens": 1815
+          }
+        }
+      ],
+      "source_result_sha256": "8db622adfb421ba4e72a3511411848630ea8e1f113eab156cd16963ad53a76a4"
+    }
+  ]
+}

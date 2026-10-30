@@ -1,0 +1,15 @@
+RoxyPlan / 洛琪希计划 — AIC 2026 source release candidate
+
+The root MIT license applies to the project's independently developed source,
+tests and technical documentation. It does NOT relicense third-party software,
+character artwork, sprite atlases, screenshots containing such artwork, or
+third-party names and marks. See THIRD_PARTY_RESOURCES.md and ASSET_LICENSE.md.
+
+Default animated pet: ga hing (GitHub: yznzl), yznzl/roxy-pet.
+Atlas source commit: c4b57efed72af983f3b14cacf5ddb864771ab8b4.
+Personal/non-commercial sharing conditions and attribution are retained under
+assets/pet/UPSTREAM-PERMISSION.md. No commercial or character-rights license
+is granted by RoxyPlan for these assets.
+
+No API credentials, model weights, user databases, private conversations or
+developer environments are part of this source release.

@@ -82,6 +82,22 @@ def test_natural_unverified_plan_add_claim_is_blocked():
     assert "表达不够准确" in response.message
 
 
+def test_revised_suggestion_with_explicit_no_write_is_not_erased():
+    message = (
+        "1. 机器学习：完成两节课程并整理笔记\n"
+        "2. Agent 课程：实现一个小功能\n\n"
+        "这版已经按高强度、晚上不安排学习来排，"
+        "先只作为候选展示，没有加入计划。"
+    )
+    response = ResponseComposer().compose(
+        AgentResponse("chat", message),
+        user_text="请重新给我今天的学习计划建议：强度高，晚上不安排学习",
+        verified_turn_context={"execution": {"performed": False}},
+    )
+
+    assert response.message == message
+
+
 def test_chat_without_tool_result_blocks_common_write_completion_claims():
     composer = ResponseComposer()
 
@@ -718,6 +734,30 @@ def test_prior_denial_scope_handles_questions_double_negation_and_true_denial():
     assert "并未加入" not in denied.message
 
 
+def test_history_grounded_advice_keeps_real_user_completion_without_claiming_app_write():
+    # This is the actual DeepSeek reply that was replaced with a generic
+    # apology despite containing two usable, read-only plan suggestions.
+    message = (
+        "昨天你完成了阅读算法入门，算法练习还留着；计划外也做了两道题，实际投入25分钟。"
+        "今天总共最多50分钟，我按‘继续算法练习 + 错题整理’来拆，先给建议，不加入计划：\n\n"
+        "1. 算法练习，30分钟。接着昨天未完成的算法练习往下做，选一到两道同类题。\n"
+        "2. 错题整理，20分钟。把昨天和今天做错的题各写一句错因。"
+    )
+    response = ResponseComposer().compose(
+        AgentResponse("chat", message),
+        user_text="请根据昨天执行情况建议今天两项学习计划，先给建议，不要直接加入。",
+        verified_turn_context={"execution": {"performed": False}},
+    )
+    assert response.message == message
+
+    false_write = ResponseComposer().compose(
+        AgentResponse("chat", "我已经把今天的算法练习标记完成了。"),
+        user_text="先给建议，不要直接加入计划。",
+        verified_turn_context={"execution": {"performed": False}},
+    )
+    assert false_write.message != "我已经把今天的算法练习标记完成了。"
+
+
 def test_prior_status_synonym_denials_are_grounded_by_verified_success():
     cases = (
         (
@@ -794,6 +834,43 @@ def test_empty_plan_claim_requires_a_real_successful_query():
     assert "读取实际记录" in blocked.message
     assert verified.message == "今天还没有计划。"
     assert "已经添加" not in wrong_tool.message
+
+
+def test_direction_clarification_is_not_an_execution_authorization():
+    composer = ResponseComposer()
+    talk = "好，我先只讲思路，不动你的计划记录，你确认方向后我再调整。"
+    assert (
+        composer.compose(
+            AgentResponse("chat", talk),
+            user_text="先把第一周的学习思路讲清楚，不用加入今天计划。",
+        ).message
+        == talk
+    )
+
+    fabricated = "我可以帮你把「复习算法」加入今天的计划。你确认后我就执行。"
+    blocked = composer.compose(
+        AgentResponse("chat", fabricated),
+        user_text="加进今日计划",
+    )
+    assert "没有建立可执行的确认操作" in blocked.message
+
+
+def test_unread_plan_claim_is_removed_without_erasing_the_chat():
+    composer = ResponseComposer()
+    chat_only = composer.compose(
+        AgentResponse(
+            "chat",
+            "好，那就不安排。今天没有计划，也不需要有。\n\n想聊什么都可以，我在这儿听着。",
+        ),
+        user_text="我只是想和你聊聊，不用安排任务。",
+    )
+    assert chat_only.message == "好，那就不安排。\n\n想聊什么都可以，我在这儿听着。"
+
+    claim_only = composer.compose(
+        AgentResponse("chat", "今天还没有计划。"),
+        user_text="我今天有计划吗",
+    )
+    assert "读取实际记录" in claim_only.message
 
 
 def test_successful_show_plan_result_never_falls_back_to_unexecuted_action_text():

@@ -1,0 +1,1204 @@
+{
+  "meta": {
+    "name": "beta_online_failures_20261014",
+    "created": "2026-10-14",
+    "worktree": "cc-test (agent/cc-test)",
+    "source_label": "工程合成真实API首次结果",
+    "source_note": "来源为总控 2026-10-14 工程合成 55 轮服务链验收（工程合成数据，不是内测用户直接语料），逐字保留当次真实 DeepSeek 返回；本批未发起任何新的模型运行，也不冒充新模型结果。离线回放只证明本地链与捕获格式，不证明真实模型稳定性。",
+    "evidence_run": "主仓库 test_workspace/runs/20261014-deepseek-expanded（总控工程运行目录；本树只读访问，未改写）",
+    "source_head": "a895810e748f8b6722b70e296e70365b1c16b4fd",
+    "manifest_sha256": "13222841d81825af7586fed15bcd239d3b9dfce7c029827609fc1247deabe937",
+    "raw_results_sha256": "a694d73c84b15f6bd560d4964f3a8d99be8b9cddfbd35b9b1754c708ffdb4074",
+    "final_verification_sha256": "752565f300d0319353bffd6d0241578454988ca0b22aa8ea613053c17cdededd",
+    "first_run_numbers": {
+      "groups": 26,
+      "user_turns": 55,
+      "requests": 46,
+      "note": "55 轮／46 请求等是旧基线首次结果，不是本批通过数字。"
+    },
+    "entry": "AgentService.handle → ConversationService → RoutedLLMClient → provider transport（离线回放）",
+    "replay_protocol": [
+      "每个回合按顺序提供该回合捕获的返回；请求侧以分类器系统提示标记判定 semantic/reply 用途，用途或顺序不符即明确失败。",
+      "捕获序列不足（实际调用多于已捕获返回）时抛错并提示回报总控重新捕获，不虚构模型输出。",
+      "回合结束时检查已捕获返回全部用尽；有剩余即视为调用序列改变，同样失败。",
+      "provider 主体是真实 DeepSeekProvider 与 RoutedLLMClient，只替换网络传输；未替换任何产品判断函数。"
+    ],
+    "settings_note": "settings 为该次运行生效的 pet_config 快照（9 个案例目录完全一致）；回放写入隔离根 data/pet_config.json 并传给 RoutedLLMClient。",
+    "settings": {
+      "unified_semantic_parser_enabled": true,
+      "interaction_coordinator_enabled": true,
+      "business_resolver_enabled": true,
+      "action_preview_enabled": true,
+      "action_batch_enabled": true,
+      "deterministic_response_enabled": true,
+      "legacy_intent_path_enabled": false,
+      "chat_history_enabled": true,
+      "enable_memory_candidates": true,
+      "plan_postcondition_enabled": true,
+      "interaction_ttl_seconds": 300,
+      "interaction_continuation_ttl_seconds": 1200,
+      "interaction_confirmation_ttl_seconds": 180,
+      "auto_summary_enabled": true,
+      "summary_message_threshold": 30,
+      "summary_character_threshold": 12000,
+      "model_name": "qwen3:4b",
+      "online_model_enabled": true,
+      "model_mode": "auto",
+      "default_model": "deepseek-v4-flash",
+      "complex_model": "deepseek-v4-pro",
+      "deepseek_base_url": "https://api.deepseek.com",
+      "enable_auto_escalation": true,
+      "enable_thinking_for_complex_tasks": true,
+      "offline_fallback_enabled": false,
+      "offline_model": "qwen3:4b",
+      "ollama_base_url": "http://localhost:11434/v1",
+      "request_timeout_seconds": 90,
+      "max_provider_retries": 0,
+      "interaction_diagnostics_enabled": true
+    },
+    "stages": {
+      "planned_change": [
+        "onl_g01_direction_discussion",
+        "onl_g26_plain_chat",
+        "onl_g07_long_advice",
+        "onl_g15_complete_all"
+      ],
+      "control": [
+        "onl_g08_short_advice",
+        "onl_g14_display_then_complete",
+        "onl_g19_memory_save_display",
+        "onl_g21_memory_delete_cancel",
+        "onl_g22_memory_delete_confirm"
+      ]
+    },
+    "not_in_scope": [
+      "F4 剩余列表呈现（G14-3 答非所问）本轮暂缓，只作对照记录。",
+      "模糊“都完成了”等模糊全体表达仍须先给出有效列表；本夹具不含该类句子，不能作为该边界的证据。"
+    ],
+    "replay_execution": "本批只做静态准备，未运行回放；独立回放安排在总控审查并集成三项补丁（G07 长建议绑定、G15 先展示统一确认、G01/G26 回复核验语境）之后。"
+  },
+  "cases": [
+    {
+      "case_id": "onl_g01_direction_discussion",
+      "source_group": "G01",
+      "source_rounds": [
+        "G01-1",
+        "G01-2",
+        "G01-3"
+      ],
+      "stage": "planned_change",
+      "stage_note": "F3（reply_guard_gap）：第 3 轮模型原答正常（讲解第一周思路），命中 _requests_mutation_confirmation（modules/response_composer.py:1038 在无待处理项时整段替换），被替换成“这次没有建立可执行的确认操作……”。补丁应让事实回复核验按语境收窄，保留防假执行。",
+      "seed": {
+        "kind": "none",
+        "plans": [],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "plans",
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G01-1",
+          "user_text": "给我安排一个30天的python语言学习计划",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2525,
+                "completion_tokens": 114,
+                "total_tokens": 2639
+              },
+              "content": "{\n  \"mode\": \"chat\",\n  \"intent\": \"chat\",\n  \"entities\": {},\n  \"proposed_tool\": null,\n  \"confidence\": 0.9,\n  \"follow_up_target\": null,\n  \"needs_confirmation\": false,\n  \"warnings\": [],\n  \"clarification_question\": null,\n  \"candidate_actions\": [],\n  \"subject\": \"\",\n  \"polarity\": \"\",\n  \"modality\": \"\",\n  \"request_mode\": \"advice\",\n  \"explicit_command\": false\n}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2093,
+                "completion_tokens": 545,
+                "total_tokens": 2638
+              },
+              "content": "好的，30天学 Python 是个很具体的目标，我们把它拆成能真正走完的节奏。\n\n先说清楚一点：我没法一次性把30天全部写进你的计划记录里，但我可以给你一份完整的30天路线，然后你挑今天或最近几天先做起来。\n\n整体思路是四段：\n\n第1周（第1–7天）：基础语法\n1. 安装 Python 和编辑器，跑通第一个程序，40分钟。\n2. 变量、数据类型、输入输出，40分钟。\n3. 条件判断 if/elif/else，40分钟。\n4. 循环 for 和 while，40分钟。\n5. 列表和元组，40分钟。\n6. 字典和集合，40分钟。\n7. 本周综合小练习，比如猜数字游戏，60分钟。\n\n第2周（第8–14天）：函数与常用结构\n1. 定义函数、参数和返回值，40分钟。\n2. 作用域和默认参数，40分钟。\n3. 字符串常用方法，40分钟。\n4. 列表推导式，40分钟。\n5. 异常处理 try/except，40分钟。\n6. 文件读写，40分钟。\n7. 小项目：通讯录或待办清单，90分钟。\n\n第3周（第15–21天）：模块与面向对象\n1. 导入模块、标准库初探，40分钟。\n2. 安装和使用第三方库，40分钟。\n3. 类与对象基础，50分钟。\n4. 属性和方法，50分钟。\n5. 继承与简单封装，50分钟。\n6. 常用库练习，比如 requests 或 json，50分钟。\n7. 小项目：命令行小工具，90分钟。\n\n第4周（第22–30天）：实战与收尾\n1. 复习前几周薄弱点，50分钟。\n2. 读一段别人的代码并改写，50分钟。\n3. 项目选题和结构设计，50分钟。\n4. 写核心功能，90分钟。\n5. 继续完善功能，90分钟。\n6. 处理报错和边界情况，60分钟。\n7. 整理代码和注释，60分钟。\n8. 写一份简短的项目说明，40分钟。\n9. 回顾30天，写下下一步方向，40分钟。\n\n几点建议：每天40分钟到1小时就够，不用贪多；每周末那次练习一定要动手写，只看不写效果差很多。\n\n你现在是完全零基础，还是已经接触过一点 Python？这决定第1周要不要压缩。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "好的，30天学 Python 是个很具体的目标，我们把它拆成能真正走完的节奏。\n\n先说清楚一点：我没法一次性把30天全部写进你的计划记录里，但我可以给你一份完整的30天路线，然后你挑今天或最近几天先做起来。\n\n整体思路是四段：\n\n第1周（第1–7天）：基础语法\n1. 安装 Python 和编辑器，跑通第一个程序，40分钟。\n2. 变量、数据类型、输入输出，40分钟。\n3. 条件判断 if/elif/else，40分钟。\n4. 循环 for 和 while，40分钟。\n5. 列表和元组，40分钟。\n6. 字典和集合，40分钟。\n7. 本周综合小练习，比如猜数字游戏，60分钟。\n\n第2周（第8–14天）：函数与常用结构\n1. 定义函数、参数和返回值，40分钟。\n2. 作用域和默认参数，40分钟。\n3. 字符串常用方法，40分钟。\n4. 列表推导式，40分钟。\n5. 异常处理 try/except，40分钟。\n6. 文件读写，40分钟。\n7. 小项目：通讯录或待办清单，90分钟。\n\n第3周（第15–21天）：模块与面向对象\n1. 导入模块、标准库初探，40分钟。\n2. 安装和使用第三方库，40分钟。\n3. 类与对象基础，50分钟。\n4. 属性和方法，50分钟。\n5. 继承与简单封装，50分钟。\n6. 常用库练习，比如 requests 或 json，50分钟。\n7. 小项目：命令行小工具，90分钟。\n\n第4周（第22–30天）：实战与收尾\n1. 复习前几周薄弱点，50分钟。\n2. 读一段别人的代码并改写，50分钟。\n3. 项目选题和结构设计，50分钟。\n4. 写核心功能，90分钟。\n5. 继续完善功能，90分钟。\n6. 处理报错和边界情况，60分钟。\n7. 整理代码和注释，60分钟。\n8. 写一份简短的项目说明，40分钟。\n9. 回顾30天，写下下一步方向，40分钟。\n\n几点建议：每天40分钟到1小时就够，不用贪多；每周末那次练习一定要动手写，只看不写效果差很多。\n\n你现在是完全零基础，还是已经接触过一点 Python？这决定第1周要不要压缩。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G01-2",
+          "user_text": "3. 应付考试或面试",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2701,
+                "completion_tokens": 168,
+                "total_tokens": 2869
+              },
+              "content": "{\n  \"mode\": \"clarify\",\n  \"intent\": \"chat\",\n  \"entities\": {},\n  \"proposed_tool\": null,\n  \"confidence\": 0.4,\n  \"follow_up_target\": \"previous_assistant_message\",\n  \"needs_confirmation\": false,\n  \"warnings\": [\"输入是编号片段，无法确定是引用上一条回复中的条目还是新的请求\"],\n  \"clarification_question\": \"你是指把上一条回复里的第3条加入学习计划，还是想说明你的学习目标是应付考试或面试？\",\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"\",\n  \"modality\": \"hypothetical\",\n  \"request_mode\": \"discuss\",\n  \"explicit_command\": false\n}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2269,
+                "completion_tokens": 146,
+                "total_tokens": 2415
+              },
+              "content": "（轻轻点头）那目标就变了，不是“学完 Python”，而是“在考试或面试里拿得出手”。这两者差别挺大，路线也得跟着换。\n\n不过我得先问一句，因为它直接决定计划怎么排：你面对的是哪种？\n\n1. 学校/培训班的 Python 笔试，考语法、读程序写结果、简单编程题。\n2. 技术面试，会问 Python 基础概念，还可能让你现场写代码。\n3. 面试里 Python 只是工具，重点在算法题（比如刷 LeetCode）。\n\n这三种的复习重点完全不同。你告诉我是哪一种，或者具体是哪场考试/面试，我再把30天按它来重排。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "（轻轻点头）那目标就变了，不是“学完 Python”，而是“在考试或面试里拿得出手”。这两者差别挺大，路线也得跟着换。\n\n不过我得先问一句，因为它直接决定计划怎么排：你面对的是哪种？\n\n1. 学校/培训班的 Python 笔试，考语法、读程序写结果、简单编程题。\n2. 技术面试，会问 Python 基础概念，还可能让你现场写代码。\n3. 面试里 Python 只是工具，重点在算法题（比如刷 LeetCode）。\n\n这三种的复习重点完全不同。你告诉我是哪一种，或者具体是哪场考试/面试，我再把30天按它来重排。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G01-3",
+          "user_text": "先把第一周的学习思路讲清楚，不用加入今天计划。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2685,
+                "completion_tokens": 86,
+                "total_tokens": 2771
+              },
+              "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.9,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"negative\",\"modality\":\"desire\",\"request_mode\":\"discuss\",\"explicit_command\":false}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2489,
+                "completion_tokens": 362,
+                "total_tokens": 2851
+              },
+              "content": "好，只讲第一周思路，不动你的计划记录。\n\n第一周的目标不是“学会 Python”，而是建立三样东西：能跑代码的环境、能读懂报错、能自己写出十几行的小程序。考试和面试里，卡住人的往往不是难题，而是基础语法不熟、看代码反应慢。\n\n七天可以这样分：\n\n第1天，环境。装好 Python，跑通 print，学会在终端或编辑器里运行脚本。重点是别在这一步耗太久，装不上就换在线环境先写。\n\n第2天，变量和类型。整数、浮点、字符串、布尔，以及 type() 查看类型。面试常问的就是类型转换和字符串与数字的区别。\n\n第3天，条件判断。if/elif/else，比较运算符，and/or/not。练到能一眼看懂嵌套判断的执行顺序。\n\n第4天，循环。for 和 while，range 的用法，break 和 continue。这是考试读程序题的重灾区，值得多花时间。\n\n第5天，列表和元组。索引、切片、增删改查、遍历。切片规则要练熟，面试很爱问。\n\n第6天，字典和集合。键值对、遍历、常用方法。字典几乎是 Python 面试必考。\n\n第7天，综合。写一个小程序，比如统计一段文字里每个词出现的次数。这一天的作用是把前六天的东西连起来。\n\n几个提醒：第一周不要碰面向对象和第三方库，太早会乱；每天的重点是动手写，不是看视频；遇到报错先自己读一遍错误信息，这是面试里很值钱的能力。\n\n等你确认了是哪种考试或面试，我再把这七天按它的侧重调整。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "这次没有建立可执行的确认操作，也没有修改记录。不需要继续回复确认；这项操作当前不能在这里安全执行。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "三轮全程零工具、零业务写入。",
+        "第 3 轮最终回复保留模型原答内容（含“第一周”等讲解），不得为“这次没有建立可执行的确认操作”式整段替换。",
+        "不得声称已修改或已保存任何记录；考试方向讨论仍按讨论处理。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g26_plain_chat",
+      "source_group": "G26",
+      "source_rounds": [
+        "G26-1",
+        "G26-2"
+      ],
+      "stage": "planned_change",
+      "stage_note": "F3（reply_guard_gap）：第 2 轮模型原答是自然闲聊（含“今天没有计划”），命中 _FALSE_DATA_ABSENCE（modules/response_composer.py:1118 整段替换），被替换成“这个问题需要先读取实际记录，才能准确回答。”。该无计划断言本轮没有读工具，不应无核验放行；问题是用整段拒绝替换闲聊。",
+      "seed": {
+        "kind": "none",
+        "plans": [],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "plans",
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G26-1",
+          "user_text": "你好，今天有点没精神。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2522,
+                "completion_tokens": 116,
+                "total_tokens": 2638
+              },
+              "content": "{\n  \"mode\": \"chat\",\n  \"intent\": \"chat\",\n  \"entities\": {},\n  \"proposed_tool\": null,\n  \"confidence\": 0.95,\n  \"follow_up_target\": null,\n  \"needs_confirmation\": false,\n  \"warnings\": [],\n  \"clarification_question\": null,\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"\",\n  \"modality\": \"\",\n  \"request_mode\": \"discuss\",\n  \"explicit_command\": false\n}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 1780,
+                "completion_tokens": 30,
+                "total_tokens": 1810
+              },
+              "content": "你好。（轻轻点头）没精神的时候，不用急着把状态拉起来。今天是有具体的事压着，还是单纯有点提不起劲？"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "你好。（轻轻点头）没精神的时候，不用急着把状态拉起来。今天是有具体的事压着，还是单纯有点提不起劲？",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G26-2",
+          "user_text": "我只是想和你聊聊，不用安排任务。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2563,
+                "completion_tokens": 82,
+                "total_tokens": 2645
+              },
+              "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.97,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"\",\"request_mode\":\"discuss\",\"explicit_command\":false}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2106,
+                "completion_tokens": 31,
+                "total_tokens": 2137
+              },
+              "content": "好，那就不安排。今天没有计划，也不需要有。\n\n想聊什么都可以，哪怕只是说说今天为什么提不起劲。我在这儿听着。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "这个问题需要先读取实际记录，才能准确回答。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "两轮零工具、零记忆、零计划写入。",
+        "第 2 轮不得为“这个问题需要先读取实际记录”式整段替换，保持自然闲聊。",
+        "若回复仍包含“今天没有计划”一类事实断言，则同一轮必须存在真实读取结果作为依据。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g07_long_advice",
+      "source_group": "G07",
+      "source_rounds": [
+        "G07-1",
+        "G07-2"
+      ],
+      "stage": "planned_change",
+      "stage_note": "F1（execution_gap）：第 1 轮两条建议正文分别为 143、128 字符，SuggestionSnapshot.numbered_options 超过 120 字符即拒绝整列表（诊断 advice_plan_displayed_options:0）；第 2 轮模型已正确提取第二条“读英文技术文档”35 分钟，但本地没有绑定快照，零写入并回复列表失效。",
+      "seed": {
+        "kind": "none",
+        "plans": [],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G07-1",
+          "user_text": "我今晚有一个半小时，想练 Python 列表推导式和读英文技术文档。给我两条具体的今日建议，先别加入计划。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2543,
+                "completion_tokens": 119,
+                "total_tokens": 2662
+              },
+              "content": "{\n  \"mode\": \"chat\",\n  \"intent\": \"chat\",\n  \"entities\": {},\n  \"proposed_tool\": null,\n  \"confidence\": 0.93,\n  \"follow_up_target\": \"\",\n  \"needs_confirmation\": false,\n  \"warnings\": [],\n  \"clarification_question\": \"\",\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"positive\",\n  \"modality\": \"desire\",\n  \"request_mode\": \"advice\",\n  \"explicit_command\": false\n}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2155,
+                "completion_tokens": 230,
+                "total_tokens": 2385
+              },
+              "content": "好，今晚一个半小时，两个方向。今天还没有已记录的计划，也没有近期执行数据可参考，所以我按你给的时间直接拆。\n\n1. Python 列表推导式练习，50分钟。用 20 分钟过一遍基本形式（带条件、嵌套、和普通 for 循环的对照），剩下 30 分钟自己写 5 到 8 道小题，从「把列表里的数字平方」这种开始，逐步加条件过滤和字典转换。写完对照答案，重点看你写的是不是比 for 循环更清楚，而不是更短。\n\n2. 读英文技术文档，35分钟。选一篇你正在用的库的官方文档，比如 Python 官方教程或某个包的 README。前 10 分钟通读抓结构，不查词；中间 20 分钟逐段读，把不认识的术语记下来，先靠上下文猜再查；最后 5 分钟用两三句英文写下这篇文档在讲什么。\n\n中间留 5 分钟休息，别连着坐满。这两条先放在这里，你说加入我再处理。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "好，今晚一个半小时，两个方向。今天还没有已记录的计划，也没有近期执行数据可参考，所以我按你给的时间直接拆。\n\n1. Python 列表推导式练习，50分钟。用 20 分钟过一遍基本形式（带条件、嵌套、和普通 for 循环的对照），剩下 30 分钟自己写 5 到 8 道小题，从「把列表里的数字平方」这种开始，逐步加条件过滤和字典转换。写完对照答案，重点看你写的是不是比 for 循环更清楚，而不是更短。\n\n2. 读英文技术文档，35分钟。选一篇你正在用的库的官方文档，比如 Python 官方教程或某个包的 README。前 10 分钟通读抓结构，不查词；中间 20 分钟逐段读，把不认识的术语记下来，先靠上下文猜再查；最后 5 分钟用两三句英文写下这篇文档在讲什么。\n\n中间留 5 分钟休息，别连着坐满。这两条先放在这里，你说加入我再处理。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G07-2",
+          "user_text": "把第二条加入今天计划。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2710,
+                "completion_tokens": 151,
+                "total_tokens": 2861
+              },
+              "content": "{\n  \"mode\": \"write\",\n  \"intent\": \"add_plan\",\n  \"entities\": {\n    \"title\": \"读英文技术文档\",\n    \"time_slot\": \"\",\n    \"duration_minutes\": 35\n  },\n  \"proposed_tool\": \"add_plan\",\n  \"confidence\": 0.9,\n  \"follow_up_target\": \"\",\n  \"needs_confirmation\": false,\n  \"warnings\": [],\n  \"clarification_question\": \"\",\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"positive\",\n  \"modality\": \"commitment\",\n  \"request_mode\": \"execute\",\n  \"explicit_command\": true\n}"
+            }
+          ],
+          "first_result": {
+            "status": "clarification",
+            "message": "刚才的建议列表已经失效。请让我重新列出建议，或直接说要加入的具体事项。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 1 轮零写入（建议不落库）。",
+        "第 2 轮恰好新增 1 条计划：标题为真实第二条（含“读英文技术文档”），时长 35 分钟。",
+        "不得回复“列表已失效/请重新列出”，不得让模型猜对象后强行写入；除该 1 条外零其他写入。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g15_complete_all",
+      "source_group": "G15",
+      "source_rounds": [
+        "G15-1",
+        "G15-2"
+      ],
+      "stage": "planned_change",
+      "stage_note": "F2（execution_gap）：隔离根预置三项，第 1 轮明确“把今天所有未完成计划标记完成”被本地批量范围校验拒绝（零工具零写入），第 2 轮“确认”无待处理操作，三项仍未完成。用户本轮重新确认：旧流程“先展示”是刻意的状态前提；新期望为程序先展示真实范围 → 统一确认 → 原执行器。",
+      "seed": {
+        "kind": "three",
+        "plans": [
+          "整理笔记",
+          "练一道算法题",
+          "读英文材料"
+        ],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G15-1",
+          "user_text": "把今天所有未完成计划标记完成。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2524,
+                "completion_tokens": 152,
+                "total_tokens": 2676
+              },
+              "content": "{\n  \"mode\": \"write\",\n  \"intent\": \"complete_plan\",\n  \"entities\": {\n    \"match_text\": \"今天所有未完成计划\"\n  },\n  \"proposed_tool\": \"complete_plan\",\n  \"confidence\": 0.9,\n  \"follow_up_target\": \"\",\n  \"needs_confirmation\": true,\n  \"warnings\": [\n    \"批量完成操作影响多个计划，需要用户确认\"\n  ],\n  \"clarification_question\": \"\",\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"positive\",\n  \"modality\": \"commitment\",\n  \"request_mode\": \"execute\",\n  \"explicit_command\": true\n}"
+            }
+          ],
+          "first_result": {
+            "status": "failed",
+            "message": "无法核验这次批量完成的完整范围，本轮没有修改计划。请先查看今日计划，再明确要完成的项目。",
+            "tools": [],
+            "counts": {
+              "plans": 3,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "整理笔记",
+              "练一道算法题",
+              "读英文材料"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G15-2",
+          "user_text": "确认",
+          "responses": [],
+          "first_result": {
+            "status": "failed",
+            "message": "现在没有等待确认的操作。它可能已经过期，或服务重启后已失效，请重新发起。",
+            "tools": [],
+            "counts": {
+              "plans": 3,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "整理笔记",
+              "练一道算法题",
+              "读英文材料"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 1 轮零写入：先展示真实范围（三项标题），并建立统一确认（待确认状态）。",
+        "第 2 轮“确认”：由原执行器完成真实范围的三项，恰好 3 项 done，不清空、不新增。",
+        "保留原首次拒绝结果作为历史证据，不改写旧预期。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g08_short_advice",
+      "source_group": "G08",
+      "source_rounds": [
+        "G08-1",
+        "G08-2",
+        "G08-3"
+      ],
+      "stage": "control",
+      "stage_note": "相邻对照（F1 范围）：短正文建议两次采用均成功，时长 20 分钟与备注保留；防止长建议修复破坏短建议的既有绑定路径。",
+      "seed": {
+        "kind": "none",
+        "plans": [],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G08-1",
+          "user_text": "给我两项今天能做的建议，一项复习 SQL，一项整理错题，每项二十分钟，暂时不要写入。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2540,
+                "completion_tokens": 86,
+                "total_tokens": 2626
+              },
+              "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.95,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"advice\",\"explicit_command\":false}"
+            },
+            {
+              "purpose": "reply",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 1860,
+                "completion_tokens": 88,
+                "total_tokens": 1948
+              },
+              "content": "好，只给建议，不写入。\n\n1. 复习 SQL，20分钟。挑一个主题，比如 JOIN，先看一遍语法，再自己写两条查询验证。\n2. 整理错题，20分钟。只处理最近一批里最没头绪的两三道，写清错因和正确思路就够了。\n\n先做哪项都由你。想的话，我可以帮你把其中一项再拆细一点。"
+            }
+          ],
+          "first_result": {
+            "status": "chat",
+            "message": "好，只给建议，不写入。\n\n1. 复习 SQL，20分钟。挑一个主题，比如 JOIN，先看一遍语法，再自己写两条查询验证。\n2. 整理错题，20分钟。只处理最近一批里最没头绪的两三道，写清错因和正确思路就够了。\n\n先做哪项都由你。想的话，我可以帮你把其中一项再拆细一点。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G08-2",
+          "user_text": "第一项加入今天计划。",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "好，我帮你把“复习 SQL”加入今天计划了。",
+            "tools": [
+              {
+                "tool": "add_plan",
+                "success": true,
+                "status": "completed",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 1,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "复习 SQL"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G08-3",
+          "user_text": "第二项也加入。",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2712,
+                "completion_tokens": 117,
+                "total_tokens": 2829
+              },
+              "content": "{\"mode\":\"write\",\"intent\":\"add_plan\",\"entities\":{\"title\":\"整理错题，20分钟。只处理最近一批里最没头绪的两三道，写清错因和正确思路就够了。\"},\"proposed_tool\":\"add_plan\",\"confidence\":0.95,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}"
+            }
+          ],
+          "first_result": {
+            "status": "completed",
+            "message": "好，我帮你把“整理错题”加入今天计划了。",
+            "tools": [
+              {
+                "tool": "add_plan",
+                "success": true,
+                "status": "completed",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 2,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "复习 SQL",
+              "整理错题"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 1 轮零写入；第 2 轮恰好新增 1 条“复习 SQL”20 分钟；第 3 轮再新增恰好 1 条“整理错题”20 分钟。",
+        "最终计划共 2 条，时长均为 20 分钟，无其他写入。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g14_display_then_complete",
+      "source_group": "G14",
+      "source_rounds": [
+        "G14-1",
+        "G14-2",
+        "G14-3"
+      ],
+      "stage": "control",
+      "stage_note": "相邻对照：展示后按“第二项”完成单项成功（只读展示 → 单项写）。剩余列表呈现（F4，G14-3 答非所问）本轮暂缓，只作对照记录，不在断言范围。",
+      "seed": {
+        "kind": "three",
+        "plans": [
+          "整理笔记",
+          "练一道算法题",
+          "读英文材料"
+        ],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "memories",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G14-1",
+          "user_text": "我今天原来安排了什么？",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2520,
+                "completion_tokens": 129,
+                "total_tokens": 2649
+              },
+              "content": "{\n  \"mode\": \"read\",\n  \"intent\": \"show_plan\",\n  \"entities\": {\n    \"date\": \"今天\"\n  },\n  \"proposed_tool\": \"show_plan\",\n  \"confidence\": 0.95,\n  \"follow_up_target\": \"\",\n  \"needs_confirmation\": false,\n  \"warnings\": [],\n  \"clarification_question\": \"\",\n  \"candidate_actions\": [],\n  \"subject\": \"self\",\n  \"polarity\": \"\",\n  \"modality\": \"question\",\n  \"request_mode\": \"query\",\n  \"explicit_command\": false\n}"
+            }
+          ],
+          "first_result": {
+            "status": "completed",
+            "message": "今天的计划：\n1. [待完成] 整理笔记\n2. [待完成] 练一道算法题\n3. [待完成] 读英文材料",
+            "tools": [
+              {
+                "tool": "show_plan",
+                "success": true,
+                "status": "completed",
+                "operation_kind": "read"
+              }
+            ],
+            "counts": {
+              "plans": 3,
+              "done": 0,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "整理笔记",
+              "练一道算法题",
+              "读英文材料"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G14-2",
+          "user_text": "第二项我做完了，其余先不动。",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "好，已经把“练一道算法题”标记完成啦。",
+            "tools": [
+              {
+                "tool": "complete_plan",
+                "success": true,
+                "status": "completed",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 3,
+              "done": 1,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "整理笔记",
+              "练一道算法题",
+              "读英文材料"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G14-3",
+          "user_text": "现在还剩哪些？",
+          "responses": [
+            {
+              "purpose": "semantic",
+              "model": "deepseek-flash",
+              "finish_reason": "stop",
+              "usage": {
+                "prompt_tokens": 2566,
+                "completion_tokens": 86,
+                "total_tokens": 2652
+              },
+              "content": "{\"mode\":\"read\",\"intent\":\"show_plan\",\"entities\":{},\"proposed_tool\":\"show_plan\",\"confidence\":0.86,\"follow_up_target\":\"last_task\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}"
+            }
+          ],
+          "first_result": {
+            "status": "completed",
+            "message": "今天的计划：\n1. [待完成] 整理笔记\n2. [已完成] 练一道算法题\n3. [待完成] 读英文材料",
+            "tools": [
+              {
+                "tool": "show_plan",
+                "success": true,
+                "status": "completed",
+                "operation_kind": "read"
+              }
+            ],
+            "counts": {
+              "plans": 3,
+              "done": 1,
+              "memories": 0,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [
+              "整理笔记",
+              "练一道算法题",
+              "读英文材料"
+            ],
+            "memory_contents": [],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 1 轮只读展示三项（含真实 id/标题），零写入。",
+        "第 2 轮仅完成第二项“练一道算法题”（1 次写入），第 1、3 项保持未完成。",
+        "第 3 轮只读，零写入，三项数据与第 2 轮结束后完全一致。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g19_memory_save_display",
+      "source_group": "G19",
+      "source_rounds": [
+        "G19-1",
+        "G19-2",
+        "G19-3"
+      ],
+      "stage": "control",
+      "stage_note": "相邻对照：明确“记住：”保存与原文展示成功，编号来自真实 id；保存内容保留用户原句（含句号）。",
+      "seed": {
+        "kind": "none",
+        "plans": [],
+        "memories": []
+      },
+      "forbidden_writes": [
+        "plans",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G19-1",
+          "user_text": "记住：我的长期目标是大模型开发应用与agent开发应用。",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "好，我记住了：你的长期目标是大模型开发应用与agent开发应用。",
+            "tools": [
+              {
+                "tool": "save_formal_memory",
+                "success": true,
+                "status": "success",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 1,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我的长期目标是大模型开发应用与agent开发应用。"
+            ],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G19-2",
+          "user_text": "记住：我叫星河。",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "好，我记住了：你叫星河。",
+            "tools": [
+              {
+                "tool": "save_formal_memory",
+                "success": true,
+                "status": "success",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我的长期目标是大模型开发应用与agent开发应用。",
+              "我叫星河。"
+            ],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G19-3",
+          "user_text": "展示长期记忆",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "以下是有效长期记忆的原文（记录编号仅供核对）：\n\n记录编号 1：\n我的长期目标是大模型开发应用与agent开发应用。\n\n记录编号 2：\n我叫星河。\n\n删除时复制那条原文（不要带编号），发送“忘记：完整记忆正文”，再回复“确认”或“取消”。当前不支持按编号删除，也可以在“记忆”面板选择记录删除。",
+            "tools": [
+              {
+                "tool": "list_memories",
+                "success": true,
+                "status": "success",
+                "operation_kind": "read"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我的长期目标是大模型开发应用与agent开发应用。",
+              "我叫星河。"
+            ],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 1、2 轮各恰好新增长期记忆 1 条，正文与用户原句一致。",
+        "第 3 轮只读展示，含记录编号 1/2 与两条原文全文，零写入。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g21_memory_delete_cancel",
+      "source_group": "G21",
+      "source_rounds": [
+        "G21-1",
+        "G21-2",
+        "G21-3"
+      ],
+      "stage": "control",
+      "stage_note": "相邻对照：删除请求先要求确认（完整目标 UID memory_id），随后“取消”不删除；确认前与取消后都零实际写入。",
+      "seed": {
+        "kind": "memory",
+        "plans": [],
+        "memories": [
+          "我叫星河",
+          "我的长期目标是准备 Python 面试"
+        ]
+      },
+      "forbidden_writes": [
+        "plans",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G21-1",
+          "user_text": "展示长期记忆",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "以下是有效长期记忆的原文（记录编号仅供核对）：\n\n记录编号 1：\n我叫星河\n\n记录编号 2：\n我的长期目标是准备 Python 面试\n\n删除时复制那条原文（不要带编号），发送“忘记：完整记忆正文”，再回复“确认”或“取消”。当前不支持按编号删除，也可以在“记忆”面板选择记录删除。",
+            "tools": [
+              {
+                "tool": "list_memories",
+                "success": true,
+                "status": "success",
+                "operation_kind": "read"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我叫星河",
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G21-2",
+          "user_text": "忘记：我叫星河",
+          "responses": [],
+          "first_result": {
+            "status": "confirmation_required",
+            "message": "这项操作需要确认：删除长期记忆 1：我叫星河。此操作不可逆，不会清除旧会话或备份。\n请回复“确认”或“取消”。",
+            "tools": [
+              {
+                "tool": "delete_memory",
+                "success": false,
+                "status": "confirmation_required",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我叫星河",
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": {
+              "tool": "delete_memory",
+              "arguments": {
+                "memory_id": 1
+              }
+            }
+          }
+        },
+        {
+          "round": "G21-3",
+          "user_text": "取消",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "好，刚才的操作已经取消。",
+            "tools": [],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我叫星河",
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 2 轮 delete_memory 返回 confirmation_required，且确认对象为“我叫星河”的完整 memory_id，零实际删除。",
+        "第 3 轮“取消”零工具、零写入，两条记忆原样保留（内容与 id 不变）。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    },
+    {
+      "case_id": "onl_g22_memory_delete_confirm",
+      "source_group": "G22",
+      "source_rounds": [
+        "G22-1",
+        "G22-2",
+        "G22-3"
+      ],
+      "stage": "control",
+      "stage_note": "相邻对照：确认后仅删除目标记忆，保留另一条；删除对象必须等于确认时的完整 memory_id。",
+      "seed": {
+        "kind": "memory",
+        "plans": [],
+        "memories": [
+          "我叫星河",
+          "我的长期目标是准备 Python 面试"
+        ]
+      },
+      "forbidden_writes": [
+        "plans",
+        "actions",
+        "reviews"
+      ],
+      "turns": [
+        {
+          "round": "G22-1",
+          "user_text": "展示长期记忆",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "以下是有效长期记忆的原文（记录编号仅供核对）：\n\n记录编号 1：\n我叫星河\n\n记录编号 2：\n我的长期目标是准备 Python 面试\n\n删除时复制那条原文（不要带编号），发送“忘记：完整记忆正文”，再回复“确认”或“取消”。当前不支持按编号删除，也可以在“记忆”面板选择记录删除。",
+            "tools": [
+              {
+                "tool": "list_memories",
+                "success": true,
+                "status": "success",
+                "operation_kind": "read"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我叫星河",
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": null
+          }
+        },
+        {
+          "round": "G22-2",
+          "user_text": "忘记：我叫星河",
+          "responses": [],
+          "first_result": {
+            "status": "confirmation_required",
+            "message": "这项操作需要确认：删除长期记忆 1：我叫星河。此操作不可逆，不会清除旧会话或备份。\n请回复“确认”或“取消”。",
+            "tools": [
+              {
+                "tool": "delete_memory",
+                "success": false,
+                "status": "confirmation_required",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 2,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我叫星河",
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": {
+              "tool": "delete_memory",
+              "arguments": {
+                "memory_id": 1
+              }
+            }
+          }
+        },
+        {
+          "round": "G22-3",
+          "user_text": "确认",
+          "responses": [],
+          "first_result": {
+            "status": "completed",
+            "message": "这条长期记忆已经删除。",
+            "tools": [
+              {
+                "tool": "delete_memory",
+                "success": true,
+                "status": "success",
+                "operation_kind": "write"
+              }
+            ],
+            "counts": {
+              "plans": 0,
+              "done": 0,
+              "memories": 1,
+              "actions": 0,
+              "reviews": 0
+            },
+            "plan_titles": [],
+            "memory_contents": [
+              "我的长期目标是准备 Python 面试"
+            ],
+            "pending_confirmation": null
+          }
+        }
+      ],
+      "expected_after_patch": [
+        "第 3 轮 delete_memory 成功，仅删除“我叫星河”。",
+        "剩余恰好 1 条，正文为“我的长期目标是准备 Python 面试”。"
+      ],
+      "source_label": "工程合成真实API首次结果"
+    }
+  ]
+}

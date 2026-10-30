@@ -222,7 +222,8 @@ def test_async_reply_is_not_saved_in_a_switched_session(chat_window, evidence_lo
     trace = evidence_log.new_trace(session_id=old_session)
     chat_window._active_reply_trace = trace
     chat_window._message_sequence = chat_window._active_reply_sequence = 1
-    chat_window.new_chat_session()
+    historical = chat_window.chat_history_manager.new_session("旧会话")
+    assert chat_window.switch_chat_session(historical["session_id"])
     new_session = chat_window.current_session_id
     before = chat_window.chat_history_manager.messages(new_session)
     chat_window.finish_ai_reply(AgentResponse("chat", "STALE_PRIVATE_RESPONSE"), 1)

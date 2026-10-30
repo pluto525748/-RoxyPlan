@@ -5,6 +5,7 @@ import random
 import re
 import time
 from pathlib import Path
+from string import Template
 from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import Property, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
@@ -15,13 +16,19 @@ from frontend.pet_action_manager import PetActionManager
 from frontend.client_action_dispatcher import DesktopClientActionDispatcher
 from frontend.pet_actions import PetActionController
 from frontend.pet_bubble import PetBubble
+from frontend.pet_sprite_player import PetSpritePlayer, CELL_WIDTH, CELL_HEIGHT, FRAME_COUNTS
+from frontend.pet_thinking_bubble import PetThinkingBubble
 from frontend.growth_dialog import GrowthDialog
-from frontend.settings_dialog import SettingsDialog
+from frontend.today_growth_dialog import TodayGrowthDialog
+from frontend.settings_dialog import SETTINGS_COLORS, SettingsDialog
+from frontend.usage_dialog import UsageDialog
 from modules.contracts import ClientAction
 from modules.growth_manager import GrowthManager
+from modules.learning_loop import LearningLoopService
 from modules.chat_history_manager import ChatHistoryManager
 from modules.proactive_manager import ProactiveManager
 from modules.review_backfill import ReviewBackfillRunner
+from modules.runtime_paths import RuntimePaths, read_json_strict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +37,39 @@ PET_TIPS_FILE = PROJECT_ROOT / "data" / "pet_tips.json"
 DANCE_FRAMES_DIR = PROJECT_ROOT / "assets" / "pet" / "dance"
 DANCE_FRAME_DURATIONS_MS = (120, 110, 100, 110, 90, 140, 90, 140)
 DANCE_LOOP_COUNT = 3
+
+# 桌宠右键菜单与已验收的窗口界面共用同一套配色：白色卡片、浅蓝分隔、
+# 雾紫选中态，选中项用圆角底色标出，而不是只靠系统默认边框。
+# 垂直留白按“够用即止”收紧：项内边距 7px→4px、项外边距 1px→0、分隔线上下
+# 留白 5px→2px、容器内边距 6px→3px，菜单更集中；字号仍为 13px 未变。
+PET_MENU_QSS = Template(
+    """
+QMenu {
+    background: $card;
+    color: $text;
+    border: 1px solid $card_border;
+    border-radius: 10px;
+    padding: 3px;
+    font-family: 'Microsoft YaHei';
+    font-size: 13px;
+}
+QMenu::item {
+    padding: 4px 16px;
+    margin: 0px 3px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background: $accent_soft;
+    color: $accent_text;
+}
+QMenu::item:disabled { color: $disabled_text; }
+QMenu::separator {
+    height: 1px;
+    background: $card_border;
+    margin: 2px 10px;
+}
+    """
+).substitute(SETTINGS_COLORS)
 
 DEFAULT_CONFIG: Dict[str, object] = {
     "pet_enabled": True,
@@ -107,16 +147,31 @@ class DesktopPet(QWidget):
         chat_history_manager: Optional[ChatHistoryManager] = None,
         config_file: Path = PET_CONFIG_FILE,
         tips_file: Path = PET_TIPS_FILE,
+        secret_store=None,
+        usage_store=None,
+        knowledge_dir=None,
+        runtime: Optional[RuntimePaths] = None,
     ) -> None:
         super().__init__()
+        # The pet is a Tool window; closing the ordinary chat is not an exit.
+        QApplication.instance().setQuitOnLastWindowClosed(False)
         self._plan_completed.connect(self._on_plan_completed)
         print("[PET] DesktopPet init", flush=True)
         self.chat_factory = chat_factory
+        self.runtime = runtime
+        self.resource_root = runtime.resource_root if runtime else PROJECT_ROOT
+        self.dance_frames_dir = (self.resource_root / "assets/pet/dance"
+                                 if runtime else DANCE_FRAMES_DIR)
         self.config_file = Path(config_file)
         self.tips_file = Path(tips_file)
+        self.secret_store = secret_store
+        self.usage_store = usage_store
+        self.knowledge_dir = knowledge_dir
         self.chat_window: Optional[QWidget] = None
         self.settings_dialog: Optional[SettingsDialog] = None
         self.growth_dialog: Optional[GrowthDialog] = None
+        self.today_growth_dialog: Optional[TodayGrowthDialog] = None
+        self.usage_dialog: Optional[UsageDialog] = None
         self.growth_service = growth_service or GrowthManager()
         self.growth_manager = self.growth_service
         # The chat bootstrap owns the shared MemoryService and assigns its
@@ -127,6 +182,8 @@ class DesktopPet(QWidget):
         self.config = self._load_config()
         self.review_backfill_runner = ReviewBackfillRunner(
             self.growth_service,
+            now_provider=self.growth_service.now_provider,
+            timestamp_provider=getattr(self.growth_service, "timestamp_provider", None),
             notification_callback=self._show_review_backfill_warning,
         )
         self.chat_history_manager = chat_history_manager or ChatHistoryManager(
@@ -146,6 +203,7 @@ class DesktopPet(QWidget):
         self._state = "idle"
         self._is_blinking = False
         self._drag_offset: Optional[QPoint] = None
+        self._drag_start_pos: Optional[QPoint] = None
         self._dragging = False
         self._woke_from_sleep_on_press = False
         self._visual_offset = QPoint(0, 0)
@@ -162,8 +220,21 @@ class DesktopPet(QWidget):
         self._dance_frame_index = 0
         self._dance_completed_loops = 0
         self._dance_pixmap: Optional[QPixmap] = None
+        self._thinking_active = False
+        self._thinking_previous = None
+        self._idle_after_thinking = False
+        self._visuals_closed = False
+        self._dance_pauses: set[str] = set()
+        self._dance_remaining_ms = 0
+        self._locomotion_snapshot = None
+        self._locomotion_restore_action = False
+        self._locomotion_direction = "right"
 
         self.bubble = PetBubble()
+        self.sprite_player = PetSpritePlayer(self.resource_root, self)
+        self.sprite_player.frame_changed.connect(self.update)
+        self.thinking_bubble = PetThinkingBubble(self)
+        self.thinking_bubble.placement_requested.connect(self._position_thinking_bubble)
         self.actions = PetActionController(self)
         self.action_manager = PetActionManager(self)
         self.client_action_dispatcher = DesktopClientActionDispatcher(self)
@@ -185,6 +256,7 @@ class DesktopPet(QWidget):
         self.setCursor(Qt.OpenHandCursor)
         self._resize_for_scale()
         self._apply_window_flags()
+        QApplication.instance().aboutToQuit.connect(self.shutdown_visuals)
 
         if self.config.get("pet_position") == "bottom_right":
             QTimer.singleShot(0, self.move_to_bottom_right)
@@ -200,6 +272,11 @@ class DesktopPet(QWidget):
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def is_sleeping(self) -> bool:
+        return (self._is_sleeping or self.state == "sleep"
+                or self.action_manager.current_state == "sleeping")
 
     def get_visual_offset(self) -> QPoint:
         return self._visual_offset
@@ -281,20 +358,170 @@ class DesktopPet(QWidget):
             self.actions.sleep()
 
     def start_thinking(self) -> None:
+        if self._thinking_active or self._visuals_closed:
+            return
         self.record_interaction()
         print("[STATE] thinking start", flush=True)
+        self._thinking_previous = (
+            self.action_manager.current_state, self.action_manager.is_animating, self.state,
+        )
+        self._thinking_active = True
+        self.action_manager.pause_timers("thinking")
+        self._pause_dance("thinking")
         self.action_manager.set_state("thinking")
         self.mark_state("thinking")
         self.actions.start_thinking()
+        self.thinking_bubble.start()
 
     def stop_thinking(self) -> None:
+        if not self._thinking_active:
+            return
         print("[STATE] thinking stop", flush=True)
+        self._thinking_active = False
+        previous, self._thinking_previous = self._thinking_previous, None
+        if previous is not None:
+            manager_state, animating, visual_state = previous
+            self.action_manager.set_state(manager_state)
+            self.action_manager.is_animating = animating
+            self.mark_state(visual_state)
+        self.thinking_bubble.stop()
+        if self._locomotion_snapshot is not None and not self._dragging:
+            self._restore_locomotion_frame()
         self.actions.stop_thinking()
-        self.action_manager.stop_state("thinking")
+        self.action_manager.resume_timers("thinking")
+        self._resume_dance("thinking")
+        if self._idle_after_thinking:
+            self._idle_after_thinking = False
+            self.actions.start_idle_breathing()
+
+    def uses_author_sprites(self) -> bool:
+        if not self.config.get("use_pet_asset", False):
+            return False
+        raw = str(self.config.get("pet_asset_path", "") or "").strip()
+        if not raw:
+            return False
+        path = Path(raw)
+        if not path.is_absolute():
+            path = self.resource_root / path
+        return path.resolve() == (self.resource_root / "assets/pet/roxy_pet_transparent.png").resolve()
+
+    def sprite_action_duration(self, name: str) -> int:
+        return self.sprite_player.duration(name) if self.uses_author_sprites() else 0
+
+    def play_reference_animation(self, name: str, *, repeat: bool = False) -> bool:
+        """Presentation only. Running rows never imply window movement here."""
+        if (self._visuals_closed or self._thinking_active or self._drag_offset is not None
+                or not self.uses_author_sprites()
+                or self.action_manager.current_state in {"dancing", "sleeping"}):
+            return False
+        return self.sprite_player.play(name, repeat=repeat)
+
+    def present_wake_animation(self) -> None:
+        self.actions.wave()
+
+    def present_character_state(self, state: str, *, once: bool = True) -> bool:
+        """Trusted owner presentation only, never a new Agent tool or movement."""
+        if (state not in FRAME_COUNTS or self.action_manager.current_state != "idle"
+                or self.action_manager.is_animating
+                or (self.sprite_player.active and self.sprite_player.animation != "idle")):
+            return False
+        if self.play_reference_animation(state, repeat=not once):
+            self.actions._sprite_completion = None
+            return True
+        return False
+
+    def start_locomotion(self, direction: str) -> bool:
+        """Drag presentation only; window position remains owned by mouseMove."""
+        if (direction not in {"left", "right"} or not self._dragging
+                or self._drag_offset is None or self._thinking_active or self._visuals_closed
+                or not self.uses_author_sprites() or not self.sprite_player.available):
+            return False
+        if self._locomotion_snapshot is None:
+            self._locomotion_snapshot = self.sprite_player.snapshot()
+            self._locomotion_restore_action = (
+                self.action_manager.current_state != "idle" or self.action_manager.is_animating
+            )
+        self._locomotion_direction = direction
+        # Body properties and the original dance stay paused. Only atlas frames
+        # run during dragging; thinking can still pause this same player.
+        self.sprite_player.resume("drag")
+        self.sprite_player.resume("dance")
+        return self.sprite_player.play(f"running-{direction}", repeat=True)
+
+    def stop_locomotion(self) -> None:
+        if self._locomotion_snapshot is None:
+            if self.sprite_player.animation in {"running", "running-left", "running-right"}:
+                self.sprite_player.stop()
+                if self._thinking_active:
+                    self._idle_after_thinking = True
+                else:
+                    self.actions.start_idle_breathing()
+            return
+        self.sprite_player.stop()
+        # A reply may start mid-drag. Keep that exact frame frozen until its
+        # lifecycle ends, then restore the suspended real presentation.
+        if not self._thinking_active:
+            self._restore_locomotion_frame()
+
+    def _restore_locomotion_frame(self) -> None:
+        snapshot, self._locomotion_snapshot = self._locomotion_snapshot, None
+        if snapshot is None:
+            return
+        self.sprite_player.restore(snapshot, pauses=self.actions._motion_pauses)
+        if not self._locomotion_restore_action:
+            self.actions._sprite_completion = None
+            self.sprite_player.play("idle", repeat=True)
+        self._locomotion_restore_action = False
+
+    def _position_thinking_bubble(self) -> None:
+        avoid = self.bubble.frameGeometry() if self.bubble.isVisible() else None
+        self.thinking_bubble.place(self.frameGeometry(), avoid_rect=avoid)
+
+    def _pause_dance(self, reason: str) -> None:
+        if not self._dance_pauses and self.dance_timer.isActive():
+            self._dance_remaining_ms = max(1, self.dance_timer.remainingTime())
+            self.dance_timer.stop()
+        self._dance_pauses.add(reason)
+
+    def _resume_dance(self, reason: str) -> None:
+        self._dance_pauses.discard(reason)
+        if (not self._dance_pauses and self._dance_frames and not self.dance_timer.isActive()
+                and not self._visuals_closed):
+            self.dance_timer.start(max(1, self._dance_remaining_ms))
+
+    def shutdown_visuals(self) -> None:
+        if self._visuals_closed:
+            return
+        self._visuals_closed = True
+        self._thinking_active = False
+        self._locomotion_snapshot = None
+        self.thinking_bubble.stop()
+        self.sprite_player.shutdown()
+        self.actions.shutdown()
+        self.action_manager.shutdown()
+        for timer in self.findChildren(QTimer):
+            timer.stop()
+        for timer in self.bubble.findChildren(QTimer):
+            timer.stop()
+        self.bubble.close()
+
+    def closeEvent(self, event) -> None:
+        self.shutdown_visuals()
+        super().closeEvent(event)
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        if getattr(self, "_thinking_active", False):
+            self._position_thinking_bubble()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if getattr(self, "_thinking_active", False):
+            self._position_thinking_bubble()
 
     def record_interaction(self) -> bool:
         self._last_interaction_at = time.monotonic()
-        if self._is_sleeping:
+        if self.is_sleeping:
             self.wake()
             return True
         return False
@@ -304,7 +531,8 @@ class DesktopPet(QWidget):
             self.action_manager.play_action("wake")
             return
 
-        if not self._is_sleeping and self.state != "sleep":
+        self._last_interaction_at = time.monotonic()
+        if not self.is_sleeping:
             return
 
         print("[STATE] wake", flush=True)
@@ -312,11 +540,14 @@ class DesktopPet(QWidget):
         self.setWindowOpacity(1.0)
         self.visualOffset = QPoint(0, 0)
         self.bodyScale = 1.0
+        if self.actions._transient_group is not None:
+            self.actions._transient_group.stop()
         self.set_state("idle", from_manager=True)
 
     def mark_state(self, state: str) -> None:
         if state in PET_STATES:
             self._state = state
+            self._is_sleeping = state == "sleep"
             self.update()
 
     def set_blinking(self, is_blinking: bool) -> None:
@@ -329,12 +560,17 @@ class DesktopPet(QWidget):
         duration = duration_ms if duration_ms is not None else random.randint(5000, 8000)
         print(f"[TIP] show: {text}", flush=True)
         self.bubble.show_message(text, self.frameGeometry(), duration)
+        if self._thinking_active:
+            self._position_thinking_bubble()
         self.action_manager.play_action("nod")
 
     def _run_startup_review_backfill(self) -> None:
         self.review_backfill_runner.run()
 
     def _show_review_backfill_warning(self, message: str) -> None:
+        if self.is_sleeping:
+            print("[ReviewBackfill] UI notification suppressed: sleeping", flush=True)
+            return
         self.show_bubble(message, duration_ms=9000, record_interaction=False)
 
     def show_random_encouragement(self) -> None:
@@ -362,6 +598,7 @@ class DesktopPet(QWidget):
         chat_window.show()
         chat_window.raise_()
         chat_window.activateWindow()
+        self.actions.wave()
 
     def _ensure_chat_window(self) -> Optional[QWidget]:
         if self.chat_factory is None:
@@ -378,27 +615,67 @@ class DesktopPet(QWidget):
         self.record_interaction()
         chat_window = self._ensure_chat_window()
         if chat_window is None or not hasattr(chat_window, "open_memory_dialog"):
-            self.show_bubble("记忆候选入口还没有准备好。")
+            self.show_bubble("记忆管理入口还没有准备好。")
             return
         chat_window.open_memory_dialog()
 
     def open_settings_dialog(self) -> None:
+        if self.runtime is not None and self.runtime.is_packaged:
+            read_json_strict(self.config_file)
         self.record_interaction()
         if self.settings_dialog is None:
+            from modules.feedback_export import feedback_export_for_runtime
             self.settings_dialog = SettingsDialog(
                 self,
                 config_file=self.config_file,
                 chat_history_manager=self.chat_history_manager,
+                secret_store=self.secret_store,
+                usage_store=self.usage_store,
+                knowledge_dir=self.knowledge_dir,
+                feedback_export=feedback_export_for_runtime(self.runtime),
             )
             self.settings_dialog.settings_saved.connect(self.apply_saved_settings)
+            self.settings_dialog.open_today_growth_requested.connect(
+                self.open_today_growth_dialog
+            )
             self.settings_dialog.history_cleared.connect(
                 self._handle_chat_history_cleared
             )
+            for name, handler in (("usage_help_requested", self.open_usage_dialog),
+                                  ("quit_requested", self.request_quit)):
+                signal = getattr(self.settings_dialog, name, None)
+                if signal is not None:
+                    signal.connect(handler)
             self.settings_dialog.finished.connect(self._clear_settings_dialog)
 
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def open_usage_dialog(self) -> None:
+        self.record_interaction()
+        if self.usage_dialog is None:
+            self.usage_dialog = UsageDialog(self)
+            signal = getattr(self.usage_dialog, "example_selected", None)
+            if signal is not None:
+                signal.connect(self.select_usage_example)
+                ready = getattr(self.usage_dialog, "set_chat_destination_ready", None)
+                if callable(ready):
+                    ready()
+        self.usage_dialog.show()
+        self.usage_dialog.raise_()
+        self.usage_dialog.activateWindow()
+
+    def select_usage_example(self, text: str) -> None:
+        self.open_chat_window()
+        if self.chat_window is not None:
+            self.chat_window.select_usage_example(text)
+
+    def request_quit(self) -> None:
+        if self.chat_window is not None:
+            self.chat_window.request_quit()
+        else:
+            QApplication.quit()
 
     def _clear_settings_dialog(self) -> None:
         self.settings_dialog = None
@@ -423,11 +700,30 @@ class DesktopPet(QWidget):
     def _clear_growth_dialog(self) -> None:
         self.growth_dialog = None
 
+    def open_today_growth_dialog(self) -> None:
+        if self.today_growth_dialog is None:
+            self.today_growth_dialog = TodayGrowthDialog(
+                growth_manager=self.growth_service,
+                learning_loop=LearningLoopService(
+                    self.growth_service, now_provider=self.growth_service.now_provider,
+                ),
+            )
+            self.today_growth_dialog.details_requested.connect(self.open_growth_dialog)
+            self.today_growth_dialog.finished.connect(self._clear_today_growth_dialog)
+
+        self.today_growth_dialog.show()
+        self.today_growth_dialog.raise_()
+
+    def _clear_today_growth_dialog(self) -> None:
+        self.today_growth_dialog = None
+
     def apply_saved_settings(self, config: Dict[str, object]) -> None:
         old_center = self.geometry().center()
         old_scale = float(self.config.get("pet_scale", 1.0))
         old_always_on_top = bool(self.config.get("pet_always_on_top", True))
         self.config.update(config)
+        if self.runtime is not None:
+            self.config = self.runtime.effective_settings(self.config)
         self.chat_history_manager.set_enabled(
             bool(self.config.get("chat_history_enabled", True))
         )
@@ -458,7 +754,7 @@ class DesktopPet(QWidget):
 
     def _on_plan_completed(self) -> None:
         """Main-thread slot: present encouragement after a plan is completed."""
-        if self.action_manager.current_state in {"dancing", "sleeping"}:
+        if self.is_sleeping or self.action_manager.current_state == "dancing":
             return
         reminder = self.proactive_manager.task_completed_reminder()
         if reminder is not None:
@@ -469,6 +765,11 @@ class DesktopPet(QWidget):
             ClientAction("play_dance", {"dance_id": None}, source="desktop_menu")
         )
         return result.accepted
+
+    def encourage(self) -> bool:
+        return self.client_action_dispatcher.dispatch(
+            ClientAction("jump", source="desktop_menu")
+        ).accepted
 
     def agent_sleep(self) -> bool:
         return bool(self.action_manager.play_action("sleep"))
@@ -489,6 +790,8 @@ class DesktopPet(QWidget):
         if self.dance_timer.isActive():
             self._stop_dance_frames()
 
+        self.actions.cancel_body_motion()
+        self.actions.pause_motion("dance")
         print("[ACTION] dance frames start", flush=True)
         self._dance_frames = frames
         self._dance_frame_index = 0
@@ -503,18 +806,6 @@ class DesktopPet(QWidget):
         chosen = menu.exec(event.globalPos())
         if chosen == actions["chat"]:
             self.open_chat_window()
-        elif chosen == actions["growth"]:
-            self.open_growth_dialog()
-        elif chosen == actions["memory"]:
-            self.open_memory_dialog()
-        elif chosen == actions["settings"]:
-            self.open_settings_dialog()
-        elif chosen == actions["dance"]:
-            self.start_dance()
-        elif chosen == actions["encourage"]:
-            self.client_action_dispatcher.dispatch(
-                ClientAction("jump", source="desktop_menu")
-            )
         elif chosen == actions["sleep"]:
             self.client_action_dispatcher.dispatch(
                 ClientAction("sleep", source="desktop_menu")
@@ -523,24 +814,15 @@ class DesktopPet(QWidget):
             self.client_action_dispatcher.dispatch(
                 ClientAction("wake", source="desktop_menu")
             )
-        elif chosen == actions["quit"]:
-            QApplication.quit()
 
     def _create_context_menu(self):
         menu = QMenu(self)
+        menu.setStyleSheet(PET_MENU_QSS)
         actions = {
             "chat": menu.addAction("打开聊天"),
-            "growth": menu.addAction("成长面板"),
-            "memory": menu.addAction("记忆管理"),
-            "settings": menu.addAction("设置"),
-            "dance": menu.addAction("跳舞一下"),
+            "wake": menu.addAction("唤醒"),
+            "sleep": menu.addAction("睡眠"),
         }
-        menu.addSeparator()
-        actions["encourage"] = menu.addAction("立即鼓励我")
-        actions["sleep"] = menu.addAction("进入睡眠")
-        actions["wake"] = menu.addAction("唤醒")
-        menu.addSeparator()
-        actions["quit"] = menu.addAction("退出 Roxy")
         return menu, actions
 
     def toggle_always_on_top(self) -> None:
@@ -560,16 +842,27 @@ class DesktopPet(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
             self._woke_from_sleep_on_press = self.record_interaction()
-            self._drag_offset = self._event_global_pos(event) - self.frameGeometry().topLeft()
+            self.actions.pause_motion("drag")
+            self.action_manager.pause_timers("drag")
+            self._pause_dance("drag")
+            self._drag_start_pos = self._event_global_pos(event)
+            self._drag_offset = self._drag_start_pos - self.frameGeometry().topLeft()
             self._dragging = False
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
-            next_pos = self._event_global_pos(event) - self._drag_offset
-            if (next_pos - self.pos()).manhattanLength() > 3:
+            global_pos = self._event_global_pos(event)
+            next_pos = global_pos - self._drag_offset
+            horizontal_delta = next_pos.x() - self.x()
+            if (self._drag_start_pos is not None
+                    and (global_pos - self._drag_start_pos).manhattanLength() > 3):
                 self._dragging = True
+            if self._dragging:
+                direction = ("right" if horizontal_delta > 0 else "left"
+                             if horizontal_delta < 0 else self._locomotion_direction)
+                self.start_locomotion(direction)
             self.move(next_pos)
             event.accept()
 
@@ -577,8 +870,13 @@ class DesktopPet(QWidget):
         if event.button() == Qt.LeftButton:
             was_dragging = self._dragging
             self._drag_offset = None
+            self._drag_start_pos = None
             self._dragging = False
             self.setCursor(Qt.OpenHandCursor)
+            self.stop_locomotion()
+            self.actions.resume_motion("drag")
+            self.action_manager.resume_timers("drag")
+            self._resume_dance("drag")
             if not was_dragging:
                 woke_from_sleep = self._woke_from_sleep_on_press or self.record_interaction()
                 self._woke_from_sleep_on_press = False
@@ -731,6 +1029,18 @@ class DesktopPet(QWidget):
         if self._dance_pixmap is None and not self.config.get("use_pet_asset", False):
             return False
 
+        player = getattr(self, "sprite_player", None)
+        if (player is not None and player.available and self.uses_author_sprites()
+                and (self._dance_pixmap is None or self._locomotion_snapshot is not None)):
+            self._draw_shadow(painter)
+            # Same 192x208 canvas and target alignment as the static author image.
+            ratio = CELL_WIDTH / CELL_HEIGHT
+            width = min(float(self._base_size.width()), self._base_size.height() * ratio)
+            height = width / ratio
+            target = QRectF((self._base_size.width() - width) / 2,
+                            self._base_size.height() - height, width, height)
+            return player.draw(painter, target)
+
         pixmap = self._dance_pixmap if self._dance_pixmap is not None else self._load_asset_pixmap()
         if pixmap is None or pixmap.isNull():
             return False
@@ -738,11 +1048,6 @@ class DesktopPet(QWidget):
         self._draw_shadow(painter)
         target = self._asset_target_rect(pixmap)
         painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
-        if self._is_blinking or self._state == "sleep":
-            painter.setPen(QPen(QColor("#243055"), 3, Qt.SolidLine, Qt.RoundCap))
-            eye_y = target.top() + target.height() * 0.38
-            painter.drawLine(QPointF(target.left() + target.width() * 0.43, eye_y), QPointF(target.left() + target.width() * 0.49, eye_y))
-            painter.drawLine(QPointF(target.left() + target.width() * 0.58, eye_y), QPointF(target.left() + target.width() * 0.64, eye_y))
         return True
 
     def _asset_target_rect(self, pixmap: QPixmap) -> QRectF:
@@ -767,7 +1072,7 @@ class DesktopPet(QWidget):
 
         path = Path(raw_path)
         if not path.is_absolute():
-            path = PROJECT_ROOT / path
+            path = self.resource_root / path
 
         if self._asset_path == path and self._asset_pixmap is not None:
             return self._asset_pixmap
@@ -778,11 +1083,11 @@ class DesktopPet(QWidget):
         return pixmap
 
     def _load_dance_frames(self) -> List[QPixmap]:
-        if not DANCE_FRAMES_DIR.exists():
+        if not self.dance_frames_dir.exists():
             return []
 
         frames: List[QPixmap] = []
-        for path in sorted(DANCE_FRAMES_DIR.glob("dance_*.png"), key=self._dance_frame_sort_key):
+        for path in sorted(self.dance_frames_dir.glob("dance_*.png"), key=self._dance_frame_sort_key):
             pixmap = QPixmap(str(path))
             if not pixmap.isNull():
                 frames.append(pixmap)
@@ -823,6 +1128,7 @@ class DesktopPet(QWidget):
         self._dance_frame_index = 0
         self._dance_completed_loops = 0
         self._dance_pixmap = None
+        self.actions.resume_motion("dance")
         self.update()
         if had_frames:
             print("[ACTION] dance frames stop", flush=True)
@@ -863,7 +1169,8 @@ class DesktopPet(QWidget):
             self._schedule_next_auto_tip()
 
     def _show_auto_tip(self) -> None:
-        self.show_bubble(random.choice(self.tips or DEFAULT_TIPS), record_interaction=False)
+        if not self.is_sleeping and self.config.get("auto_tips_enabled", True):
+            self.show_bubble(random.choice(self.tips or DEFAULT_TIPS), record_interaction=False)
         self._schedule_next_auto_tip()
 
     def _start_study_reminder_timer(self) -> None:
@@ -871,18 +1178,18 @@ class DesktopPet(QWidget):
         self.study_reminder_timer.start(max(1, interval_seconds) * 1000)
 
     def _trigger_study_reminder(self) -> None:
-        if self.action_manager.current_state == "sleeping":
+        if self.is_sleeping:
             return
 
         print("[REMINDER] study reminder triggered", flush=True)
         self.action_manager.play_action("study_reminder")
 
     def _check_sleep_timeout(self) -> None:
-        if self._is_sleeping or self.action_manager.current_state in {"thinking", "dancing"}:
+        if (self.is_sleeping or self._drag_offset is not None
+                or self.action_manager.current_state in {"thinking", "dancing"}):
             return
 
         if time.monotonic() - self._last_interaction_at >= self._sleep_interval_seconds():
-            self._is_sleeping = True
             print("[STATE] sleep", flush=True)
             self.action_manager.play_action("sleep")
 
@@ -902,6 +1209,8 @@ class DesktopPet(QWidget):
             self.proactive_timer.start(max(1, interval_seconds) * 1000)
 
     def _check_proactive_reminder(self) -> None:
+        if self.is_sleeping:
+            return
         current_state = self.action_manager.current_state
         if current_state == "dancing":
             print("[Proactive] skipped: dancing", flush=True)
@@ -935,17 +1244,13 @@ class DesktopPet(QWidget):
                 return
 
         idle_seconds = time.monotonic() - self._last_interaction_at
-        allowed_types = {"idle_nudge"} if current_state == "sleeping" else None
         reminder = self.proactive_manager.check(
             idle_seconds=idle_seconds,
             seconds_since_interaction=idle_seconds,
-            allowed_types=allowed_types,
         )
         if reminder is None:
             return
 
-        if current_state == "sleeping":
-            self.action_manager.play_action("wake")
         self._present_proactive_reminder(reminder)
 
     def _present_proactive_reminder(
@@ -954,6 +1259,8 @@ class DesktopPet(QWidget):
         *,
         include_chat: bool = True,
     ) -> None:
+        if self.is_sleeping:
+            return
         text = str(reminder.get("text", "")).strip()
         if not text:
             return
@@ -987,6 +1294,10 @@ class DesktopPet(QWidget):
         return 30 * 60
 
     def _load_config(self) -> Dict[str, object]:
+        if self.runtime is not None and self.runtime.is_packaged:
+            config = dict(DEFAULT_CONFIG)
+            config.update(read_json_strict(self.config_file))
+            return self.runtime.effective_settings(config)
         if not self.config_file.exists():
             self._write_json(self.config_file, DEFAULT_CONFIG)
             return dict(DEFAULT_CONFIG)
@@ -1006,6 +1317,9 @@ class DesktopPet(QWidget):
         self._write_json(self.config_file, self.config)
 
     def _load_tips(self) -> List[str]:
+        if self.runtime is not None and self.runtime.is_packaged:
+            loaded = read_json_strict(self.tips_file, list)
+            return [str(item) for item in loaded if str(item).strip()]
         if not self.tips_file.exists():
             print(f"[TIP] load failed: {self.tips_file} does not exist; writing defaults", flush=True)
             self._write_json(self.tips_file, DEFAULT_TIPS)

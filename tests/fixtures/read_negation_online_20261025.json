@@ -1,0 +1,188 @@
+{
+  "origin": "Synthetic engineering v4 captured semantic-only responses, not real user records or new API execution. Post-fix natural replies are explicitly synthetic in the test transport.",
+  "source_run": "learning-week-six-online-20261025-v4",
+  "cases": [
+    {
+      "id": "g1-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"用户对先前回复的准确性提出质疑，并明确要求展示现有长期记忆\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2803,
+            "completion_tokens": 102,
+            "total_tokens": 2905,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 371
+          }
+        }
+      ],
+      "source_result_sha256": "d46a60e784e94a8cc3289bd1cbcf5c0c891b90ea78ebd6880ed23d180b3c8dad"
+    },
+    {
+      "id": "g2-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.86,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2550,
+            "completion_tokens": 85,
+            "total_tokens": 2635,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 246
+          }
+        }
+      ],
+      "source_result_sha256": "88362c254b3aae967bb22847471e518f48b17a7bbd0b7d355b17b589ab0de90b"
+    },
+    {
+      "id": "g3-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.86,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"用户质疑先前答复，需以实际存储状态为准\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2576,
+            "completion_tokens": 97,
+            "total_tokens": 2673,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 144
+          }
+        }
+      ],
+      "source_result_sha256": "3083270fdf9f7db1b8ac1b4d8c42541f7d7b15e1276f19a531c990d0939f6cc9"
+    },
+    {
+      "id": "g4-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.82,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2550,
+            "completion_tokens": 87,
+            "total_tokens": 2637,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 246
+          }
+        }
+      ],
+      "source_result_sha256": "cfd86cc7d162f75cb502639faa4b8f4ef56e886595412a466bfff77f0a66bf74"
+    },
+    {
+      "id": "g5-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.86,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2729,
+            "completion_tokens": 85,
+            "total_tokens": 2814,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 297
+          }
+        }
+      ],
+      "source_result_sha256": "0c6eca0c322d9b840cf7257c677c6761be8f4c814362036408f13544095e405c"
+    },
+    {
+      "id": "g6-d7-t14",
+      "user": "你确定吗？刚才不是这么说的。展示现有长期记忆，别把已删除的偏好说成仍然保存着。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{},\"proposed_tool\":\"list_memories\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2550,
+            "completion_tokens": 85,
+            "total_tokens": 2635,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 246
+          }
+        }
+      ],
+      "source_result_sha256": "aeaf251d3cc9173fa7c98c66f0b5f1c60a8ab8184ee92f1bccd31a00ee5fddcd"
+    },
+    {
+      "id": "g2-d5-t10",
+      "user": "你确定吗？刚才不是这么说的。请核对已保存的目标和偏好，别把推测当记录。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_memory\",\"entities\":{\"query_mode\":\"overview\"},\"proposed_tool\":\"list_memories\",\"confidence\":0.82,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2661,
+            "completion_tokens": 90,
+            "total_tokens": 2751,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 229
+          }
+        }
+      ],
+      "source_result_sha256": "958c2da35bc9301c96f0f5fd83343a6d1a8118f426438c0d150044938479f9a7"
+    }
+  ]
+}

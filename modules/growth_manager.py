@@ -27,9 +27,11 @@ class GrowthManager:
         private_dir: Path = DEFAULT_PRIVATE_DIR,
         now_provider: Callable[[], datetime] = datetime.now,
         repository: Optional[GrowthRepository] = None,
+        timestamp_provider: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self.private_dir = Path(private_dir)
         self.now_provider = now_provider
+        self.timestamp_provider = timestamp_provider
         use_legacy = self.private_dir.resolve() == DEFAULT_PRIVATE_DIR.resolve()
         self.repository = repository or LocalJsonGrowthRepository(
             self.private_dir,
@@ -80,8 +82,9 @@ class GrowthManager:
         date: Optional[str] = None,
         *,
         include_cancelled: bool = False,
+        strict_read: bool = False,
     ) -> List[Dict[str, object]]:
-        self._refresh_plan()
+        self._refresh_plan(strict_read=strict_read)
         day = self._plan_day(date)
         items = [
             self._normalize_task(task, date or self._today())
@@ -91,6 +94,43 @@ class GrowthManager:
         if not include_cancelled:
             items = [item for item in items if item.get("status") != "cancelled"]
         return [dict(task) for task in items]
+
+    def pending_before(self, target_date: str) -> List[Dict[str, object]]:
+        """Read overdue pending plans with one store refresh."""
+        self._validated_date(target_date)
+        self._refresh_plan()
+        days = self.plan_data.get("days", {})
+        if not isinstance(days, dict):
+            return []
+        pending = []
+        for day in sorted(days):
+            if day >= target_date or not isinstance(days[day], dict):
+                continue
+            for task in days[day].get("tasks", []):
+                if not isinstance(task, dict):
+                    continue
+                item = self._normalize_task(task, day)
+                if item.get("status") == "pending":
+                    pending.append(dict(item))
+        return pending
+
+    def persisted_task_uids(self, date: str, *, strict_read: bool = False) -> set[str]:
+        """Read identities actually stored for a date, excluding transient legacy UIDs."""
+        target_date = self._validated_date(date)
+        if strict_read:
+            self._refresh_plan(strict_read=True)
+            data = self.plan_data
+        else:
+            data = self._convert_plan_data(
+                self.repository.load_plan(self._default_plan_data()))
+        days = data.get("days", {})
+        day = days.get(target_date, {}) if isinstance(days, dict) else {}
+        tasks = day.get("tasks", []) if isinstance(day, dict) else []
+        return {
+            str(task["uid"]) for task in tasks
+            if isinstance(task, dict) and isinstance(task.get("uid"), str)
+            and task["uid"].strip()
+        }
 
     def add_task(
         self,
@@ -159,6 +199,41 @@ class GrowthManager:
                 print("[Growth] complete task", flush=True)
                 return dict(task), True
         return None, False
+
+    def complete_today_by_uid(
+        self, task_uid: str, date: str
+    ) -> Tuple[Optional[Dict[str, object]], bool]:
+        """Complete one current-day task by its persisted identity under one lock."""
+        target_date = self._validated_date(date)
+        uid = str(task_uid).strip()
+        if not uid:
+            return None, False
+        with self.repository.transaction("plan"):
+            self._refresh_plan()
+            if target_date != self._today():
+                return None, False
+            matches = [
+                task for task in self._plan_day(target_date)["tasks"]
+                if isinstance(task, dict) and str(task.get("uid") or "") == uid
+                and str(task.get("date") or target_date) == target_date
+            ]
+            if len(matches) != 1:
+                return None, False
+            task = matches[0]
+            self._normalize_task(task, target_date)
+            if task.get("done") or task.get("status") != "pending":
+                return dict(task), False
+            if target_date != self._today():
+                return None, False
+            task["done"] = True
+            task["status"] = "completed"
+            task["done_at"] = self._now().isoformat(timespec="seconds")
+            task["updated_at"] = task["done_at"]
+            if not self.repository.save_plan(self.plan_data):
+                self._refresh_plan()
+                raise OSError("Failed to save completed plan")
+            print("[Growth] complete task", flush=True)
+            return dict(task), True
 
     def complete_by_title(
         self, title: str, date: Optional[str] = None
@@ -425,12 +500,15 @@ class GrowthManager:
         return {"total": len(task_list), "done": done, "pending": len(task_list) - done}
 
     def add_record(
-        self, content: str, source: str = "manual", date: Optional[str] = None
-    ) -> Dict[str, str]:
+        self, content: str, source: str = "manual", date: Optional[str] = None,
+        *, duration_minutes: Optional[int] = None,
+    ) -> Dict[str, object]:
         clean_content = content.strip()
         if not clean_content:
             raise ValueError("Action content cannot be empty")
         target_date = date or self._today()
+        if duration_minutes is not None and self._normalize_duration(duration_minutes) is None:
+            raise ValueError("Action duration must be 1-1440 minutes")
         record = {
             "uid": f"action_{uuid4().hex}",
             "date": target_date,
@@ -438,6 +516,8 @@ class GrowthManager:
             "content": clean_content,
             "source": source.strip() or "manual",
         }
+        if duration_minutes is not None:
+            record["duration_minutes"] = self._normalize_duration(duration_minutes)
         with self.repository.transaction("actions"):
             self._refresh_actions()
             records = self._action_day(target_date)["records"]
@@ -462,8 +542,10 @@ class GrowthManager:
         print("[Growth] add action", flush=True)
         return dict(record)
 
-    def records_for_date(self, date: Optional[str] = None) -> List[Dict[str, str]]:
-        self._refresh_actions()
+    def records_for_date(
+        self, date: Optional[str] = None, *, strict_read: bool = False,
+    ) -> List[Dict[str, object]]:
+        self._refresh_actions(strict_read=strict_read)
         day = self._action_day(date)
         return [dict(record) for record in day["records"] if isinstance(record, dict)]
 
@@ -535,14 +617,48 @@ class GrowthManager:
             "action_records": action_records,
             "encouragement": encouragement,
             "text": text,
+            "panel_summary": self._panel_review_summary(completed, pending, actions),
         }
         print("[Growth] generate review", flush=True)
         return review
 
+    @staticmethod
+    def _panel_review_summary(
+        completed: List[str], pending: List[str], actions: List[str],
+    ) -> str:
+        """Condense only verified facts from this review for the small panel."""
+        def excerpt(value: str) -> str:
+            cleaned = " ".join(value.split())
+            return cleaned[:20] + ("…" if len(cleaned) > 20 else "")
+
+        if completed:
+            progress = f"今天完成了{len(completed)}项计划，包括「{excerpt(completed[0])}」"
+            if actions:
+                progress += f"，并记录了{len(actions)}条行动"
+            progress += "。"
+        elif actions:
+            progress = f"今天记录了{len(actions)}条行动，包括「{excerpt(actions[0])}」。"
+        else:
+            progress = "今天尚无已完成计划或行动记录。"
+        if pending:
+            focus = f"还有{len(pending)}项计划未完成，关键是「{excerpt(pending[0])}」。"
+            next_step = f"下一步可先推进「{excerpt(pending[0])}」，完成后再核对进展。"
+        else:
+            focus = "今天没有未完成计划。" if completed else "今天还没有计划。"
+            next_step = (
+                "下一步可对照已记录的行动安排明天的事项。" if actions
+                else "下一步可先确定一件具体事项，再记录实际行动。"
+            )
+        return progress + focus + next_step
+
     def save_today_review(self, date: Optional[str] = None) -> Dict[str, object]:
         review = self.generate_review(date)
         target_date = str(review["date"])
+        if date is None and target_date != self._today():
+            raise OSError("Today changed before review could be saved")
         with self.repository.transaction("growth"):
+            if date is None and target_date != self._today():
+                raise OSError("Today changed before review could be saved")
             self._refresh_growth()
             existing = self.growth_data.setdefault("entries", {}).get(target_date)
             existing = existing if isinstance(existing, dict) else {}
@@ -602,8 +718,8 @@ class GrowthManager:
                 raise OSError("Failed to save growth review")
         return {"status": "created", "created": True, "entry": deepcopy(entry)}
 
-    def entries(self) -> List[Dict[str, object]]:
-        self._refresh_growth()
+    def entries(self, *, strict_read: bool = False) -> List[Dict[str, object]]:
+        self._refresh_growth(strict_read=strict_read)
         entries = self.growth_data.get("entries", {})
         if not isinstance(entries, dict):
             return []
@@ -615,7 +731,7 @@ class GrowthManager:
         return list(reversed(self.entries()))[:limit]
 
     def current_month(self) -> str:
-        return self._now().strftime("%Y-%m")
+        return self.now_provider().strftime("%Y-%m")
 
     def entries_for_month(self, month: Optional[str] = None) -> List[Dict[str, object]]:
         target_month = self._validated_month(month or self.current_month())
@@ -685,20 +801,72 @@ class GrowthManager:
             saver(data)
         return data
 
-    def _refresh_plan(self) -> None:
-        self.plan_data = self._convert_plan_data(
-            self.repository.load_plan(self._default_plan_data())
-        )
+    def _refresh_plan(self, *, strict_read: bool = False) -> None:
+        fallback = self._default_plan_data()
+        if strict_read:
+            loaded = self.repository.load_plan(fallback, strict=True)
+            days = loaded.get("days")
+            if isinstance(days, dict):
+                if any(
+                    not isinstance(day, dict)
+                    or not isinstance(day.get("tasks"), list)
+                    or any(not isinstance(task, dict) for task in day["tasks"])
+                    for day in days.values()
+                ):
+                    raise ValueError("Invalid plan tasks")
+            else:
+                tasks = loaded.get("tasks")
+                history = loaded.get("history", [])
+                if (
+                    not isinstance(tasks, list)
+                    or any(not isinstance(task, dict) for task in tasks)
+                    or not isinstance(history, list)
+                    or any(not isinstance(item, dict) or not isinstance(item.get("tasks"), list)
+                           for item in history)
+                ):
+                    raise ValueError("Invalid plan tasks")
+        else:
+            loaded = self.repository.load_plan(fallback)
+        self.plan_data = self._convert_plan_data(loaded)
 
-    def _refresh_actions(self) -> None:
+    def _refresh_actions(self, *, strict_read: bool = False) -> None:
+        fallback = self._default_action_data()
+        if strict_read:
+            loaded = self.repository.load_actions(fallback, strict=True)
+            days = loaded.get("days")
+            if isinstance(days, dict):
+                if any(not isinstance(day, dict)
+                       or not isinstance(day.get("records"), list)
+                       or any(not isinstance(item, dict) for item in day["records"])
+                       for day in days.values()):
+                    raise ValueError("Invalid action records")
+            else:
+                records = loaded.get("records")
+                if not isinstance(records, list) or any(
+                    not isinstance(item, dict) for item in records
+                ):
+                    raise ValueError("Invalid action records")
+        else:
+            loaded = self.repository.load_actions(fallback)
         self.action_data = self._convert_action_data(
-            self.repository.load_actions(self._default_action_data())
+            loaded
         )
 
-    def _refresh_growth(self) -> None:
-        self.growth_data = self._convert_growth_data(
-            self.repository.load_growth(self._default_growth_data())
-        )
+    def _refresh_growth(self, *, strict_read: bool = False) -> None:
+        fallback = self._default_growth_data()
+        if strict_read:
+            loaded = self.repository.load_growth(fallback, strict=True)
+            entries = loaded.get("entries")
+            if isinstance(entries, dict):
+                if any(not isinstance(item, dict) for item in entries.values()):
+                    raise ValueError("Invalid growth entries")
+            elif not isinstance(entries, list) or any(
+                not isinstance(item, dict) for item in entries
+            ):
+                raise ValueError("Invalid growth entries")
+        else:
+            loaded = self.repository.load_growth(fallback)
+        self.growth_data = self._convert_growth_data(loaded)
 
     @staticmethod
     def _default_plan_data() -> Dict[str, object]:
@@ -762,10 +930,10 @@ class GrowthManager:
         return converted
 
     def _today(self) -> str:
-        return self._now().date().isoformat()
+        return self.now_provider().date().isoformat()
 
     def _now(self) -> datetime:
-        return self.now_provider()
+        return (self.timestamp_provider or self.now_provider)()
 
     @staticmethod
     def _validated_date(value: object) -> str:

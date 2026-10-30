@@ -1,0 +1,121 @@
+{
+  "source": "Engineering synthetic real DeepSeek first results, 2026-10-25; no private user content",
+  "cases": [
+    {
+      "id": "g1-d3-t02",
+      "user": "今天想练习Python异常处理。请参考已保存目标、昨日复盘和真实执行，给两条今天可做的具体建议，先别加入计划。",
+      "raw_responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"advice\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2703,
+            "completion_tokens": 84,
+            "total_tokens": 2787,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 271
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "昨天两项计划完成了一项，生成器那项还留着；今天你想练异常处理，长期目标又限定每天最多45分钟，所以我只给两条小建议，先不加入计划。\n\n1. 写一个用 try/except 捕获 ValueError 的小例子，20分钟。比如让 input 输入数字，输入非数字时打印一句提示而不是报错，跑通后用自己的话说明 except 拦住了什么。\n2. 补完昨天那个生成器函数，15分钟。用 yield 产出几个值再逐个 next() 取值，顺便在末尾加一个 try/except StopIteration，把昨天的未完成和今天的异常处理连起来。\n\n两条加起来35分钟，留了余量。你可以只选一条，也可以两条都做。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2854,
+            "completion_tokens": 159,
+            "total_tokens": 3013,
+            "prompt_cache_hit_tokens": 1792,
+            "prompt_cache_miss_tokens": 1062
+          }
+        }
+      ],
+      "source_result_sha256": "a5e725b91195035d9efe45725a4fe9280832250a5d0783db8322d93ef0667ebb"
+    },
+    {
+      "id": "g1-d4-t06",
+      "user": "把今天的先写5个列表推导式，每个都附上等价的for循环对照，20分钟。重点是看清“表达式、循环、条件”三部分分别放在哪里。标记完成，另一项今天还没做完。",
+      "raw_responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"complete_plan\",\"entities\":{\"match_text\":\"先写5个列表推导式，每个都附上等价的for循环对照，20分钟。重点是看清“表达式、循环、条件”三部分分别放在哪里。\"},\"proposed_tool\":\"complete_plan\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2905,
+            "completion_tokens": 126,
+            "total_tokens": 3031,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 473
+          }
+        }
+      ],
+      "source_result_sha256": "474135598b054fc09eea9912f632d2c2cf2bfc4016a4e5033a61fe5c0e09d347"
+    },
+    {
+      "id": "g1-d3-t15",
+      "user": "请把今天的计划与行动整理成复盘并保存。",
+      "raw_responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"daily_review\",\"entities\":{},\"proposed_tool\":\"generate_daily_review\",\"confidence\":0.9,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2741,
+            "completion_tokens": 89,
+            "total_tokens": 2830,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 309
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "我先说明一个前提：复盘保存需要由真实记忆操作完成，而这一轮没有执行任何写入。另外，今天没有记录到计划或行动，之前那两条异常处理建议也已经作废，不属于今天的计划或行动。\n\n所以能整理的内容其实很少：今天没有计划外行动，也没有完成记录；今天没有正式保存的复盘。\n\n如果你希望保存，可以先看下面这几条由你明确表达的内容，发给我之后我才会保存：\n\n请记住：我今天没有做计划外的事情。\n请记住：我取消了异常处理的额外练习建议，按自己的安排学习。\n请记住：我目前更适合早上还是晚上学习，还没有确定。\n\n第三条是待确认项，等你告诉我答案后再改。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2520,
+            "completion_tokens": 146,
+            "total_tokens": 2666,
+            "prompt_cache_hit_tokens": 768,
+            "prompt_cache_miss_tokens": 1752
+          }
+        }
+      ],
+      "source_result_sha256": "26146808126176f91fe569a9fa5ad21938a8a699b340bda9e497fef1f67fc80b"
+    }
+  ]
+}

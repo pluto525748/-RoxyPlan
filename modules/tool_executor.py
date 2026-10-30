@@ -12,6 +12,7 @@ from modules.contracts import ToolError, ToolResult
 from modules.development_log import get_development_log
 from modules.safety_policy import SafetyPolicy
 from modules.tool_registry import ToolRegistry
+from modules.request_boundary import current_request_boundary
 
 
 def _observe_tool(method):
@@ -84,6 +85,69 @@ class ToolExecutor:
                 ),
                 call_id,
             )
+
+        boundary = current_request_boundary()
+        if boundary is not None:
+            try:
+                origin_exists = (
+                    boundary.session_exists(boundary.conversation_id)
+                    if boundary.session_exists is not None else True
+                )
+            except (OSError, ValueError):
+                return self._bind_call_id(self._with_operation_kind(ToolResult(
+                    False, name, "原会话暂时无法核验，本次操作没有执行。",
+                    error="origin_session_unverified",
+                    display_message="原会话暂时无法核验，本次操作没有执行。",
+                ), tool), call_id)
+            if not origin_exists:
+                return self._bind_call_id(self._with_operation_kind(ToolResult(
+                    False, name, "原会话已删除，本次操作没有执行。",
+                    error="origin_session_deleted",
+                    display_message="原会话已删除，本次操作没有执行。",
+                ), tool), call_id)
+            date_bound_tools = {
+                "add_plan", "show_plan", "inspect_plan_duplicates",
+                "add_action_log", "show_action_log", "generate_daily_review",
+                "save_daily_review",
+            }
+            date_unsafe_tools = {
+                "complete_plan", "delete_plan", "update_plan", "merge_plan",
+                "reschedule_plan", "reopen_plan", "cancel_plan",
+                "show_conversation_history",
+            }
+            current_date = boundary.now_provider().date().isoformat()
+            if tool.name in date_unsafe_tools and current_date != boundary.business_date:
+                explanation = (
+                    "请求提交后日期已变化，这项历史查询未执行；请重新发起。"
+                    if tool.name == "show_conversation_history"
+                    else "请求提交后日期已变化，这项计划操作未执行；请重新查看当天计划。"
+                )
+                return self._bind_call_id(self._with_operation_kind(ToolResult(
+                    False, name, explanation,
+                    error="request_date_changed",
+                    display_message=explanation,
+                ), tool), call_id)
+            if tool.name in date_bound_tools:
+                if tool.name == "add_plan" and not boundary.plan_add_date_allowed(args.get("date")):
+                    explanation = "目前只支持安排今天的计划，本次没有添加计划。"
+                    return self._bind_call_id(self._with_operation_kind(ToolResult(
+                        False, name, explanation,
+                        error="unsupported_plan_date",
+                        display_message=explanation,
+                    ), tool), call_id)
+                try:
+                    args["date"] = (
+                        boundary.business_date if tool.name == "add_plan"
+                        else boundary.target_date()
+                    )
+                except ValueError:
+                    return self._bind_call_id(self._with_operation_kind(ToolResult(
+                        False, name, "请求中的日期无效，本次没有执行。",
+                        error="invalid_request_date",
+                        display_message="请求中的日期无效，本次没有执行。",
+                    ), tool), call_id)
+            if tool.name == "show_growth_log" and not str(args.get("month", "")).strip():
+                args["month"] = boundary.business_date[:7]
 
         valid, normalized, error = self._validate_arguments(tool.parameters_schema, args)
         get_development_log().event(

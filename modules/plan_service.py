@@ -300,6 +300,15 @@ class PlanService:
     @classmethod
     def _canonical_task_title(cls, value: object) -> str:
         text = str(value or "")
+        # A suggestion can persist "花25分钟读一节" verbatim, while the
+        # classifier returns title="读一节", duration=25 for the same work.
+        # Strip only this boundary wrapper, never 花 within a task's name.
+        text = re.sub(
+            r"^\s*花\s*(?:半小时|(?:\d+(?:\.\d+)?|[零一二两三四五六七八九十]+)"
+            r"\s*(?:个)?\s*(?:分钟|小时半?))\s*(?=\S)",
+            "",
+            text,
+        )
         text = re.sub(r"半小时", "", text)
         text = re.sub(
             r"(?:\d+(?:\.\d+)?|[零一二两三四五六七八九十]+)\s*(?:个)?\s*(?:分钟|小时半?)",

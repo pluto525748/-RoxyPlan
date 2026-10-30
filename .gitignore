@@ -17,6 +17,9 @@ tests/nlu_benchmark/reports/*.json
 
 logs/
 *.log
+output/
+
+docs/local/*.local.md
 
 memory.json
 config.json
@@ -43,3 +46,7 @@ token.txt
 
 .vscode/
 .idea/
+
+# Local runtime and original artwork archives
+runtime_metadata.json
+assets/pet/source/

@@ -20,12 +20,14 @@ class ReviewBackfillRunner:
         growth_manager,
         *,
         now_provider: Callable[[], datetime] = datetime.now,
+        timestamp_provider: Optional[Callable[[], datetime]] = None,
         diagnostics_dir: Optional[Path] = None,
         notification_callback: Optional[Callable[[str], None]] = None,
         failure_notification_threshold: int = 2,
     ) -> None:
         self.growth_manager = growth_manager
         self.now_provider = now_provider
+        self.timestamp_provider = timestamp_provider or now_provider
         default_root = Path(
             getattr(growth_manager, "private_dir", Path.cwd() / "data" / "private")
         )
@@ -162,7 +164,7 @@ class ReviewBackfillRunner:
             "error_type": str(error_type),
             "consecutive_failures": int(consecutive_failures),
             "data_corruption": bool(data_corruption),
-            "created_at": self.now_provider().isoformat(timespec="seconds"),
+            "created_at": self.timestamp_provider().isoformat(timespec="seconds"),
         }
         try:
             self.diagnostics_dir.mkdir(parents=True, exist_ok=True)

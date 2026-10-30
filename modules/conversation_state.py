@@ -64,6 +64,7 @@ class ConversationStateManager:
         clean = str(text).strip()
         with self._lock:
             state = self._state(conversation_id)
+            state["user_turn_index"] = int(state.get("user_turn_index", 0)) + 1
             state["previous_user_message"] = str(state.get("last_user_message", ""))
             state["last_user_message"] = clean
             result: Dict[str, object] = {}
@@ -164,6 +165,11 @@ class ConversationStateManager:
                 "tool": str(result.get("tool", "")),
                 "tool_call_id": str(result.get("tool_call_id", "")),
                 "status": str(result.get("status", "")),
+                "user_turn_index": int(state.get("user_turn_index", 0)),
+                "memory_read_ids": [
+                    item.get("memory_id") for item in data.get("memory_read", {}).get("facts", [])
+                    if isinstance(item, dict) and item.get("memory_id") is not None
+                ] if isinstance(data.get("memory_read"), dict) else [],
             }
             if isinstance(task, dict):
                 normalized = {
@@ -351,6 +357,7 @@ class ConversationStateManager:
                 "last_task": deepcopy(state.get("last_task")),
                 "recent_tasks": deepcopy(state.get("recent_tasks", [])),
                 "last_tool_result": deepcopy(state.get("last_tool_result")),
+                "previous_user_turn_index": int(state.get("user_turn_index", 0)) - 1,
                 "prior_memory_facts": deepcopy(state.get("prior_memory_facts", [])),
                 "prior_memory_operation": deepcopy(state.get("prior_memory_operation", {})),
                 "prior_client_action": deepcopy(state.get("prior_client_action", {})),

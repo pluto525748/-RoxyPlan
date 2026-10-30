@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -30,8 +30,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.llm_client import LLMClient, load_llm_config
+from modules.llm_client import LLMClient, load_llm_config, default_config
 from modules.llm.routed_client import RoutedLLMClient
+from modules.llm.secret_store import SecretStore
 from modules.llm.response_sanitizer import sanitize_public_reply
 from modules.llm.usage_store import ModelUsageStore
 from modules.model_action_adapter import ModelActionAdapter
@@ -40,6 +41,7 @@ from modules.agent_planner import AgentPlanner, LLMPlanner
 from modules.business_resolver import BusinessResolver
 from modules.capability_registry import DEFAULT_CAPABILITY_REGISTRY
 from modules.chat_history_manager import ChatHistoryManager
+from modules.chinese_entity_parser import ChineseEntityParser
 from modules.development_log import configure_development_log, get_development_log
 from modules.confirmation_manager import ConfirmationManager
 from modules.context_builder import ContextBuilder
@@ -49,6 +51,7 @@ from modules.client_action_result import ClientActionResult
 from modules.conversation_service import ConversationService, ConversationTurn
 from modules.growth import GrowthService
 from modules.growth_manager import GrowthManager
+from modules.learning_loop import LearningLoopService
 from modules.feature_flags import validate_feature_flags
 from modules.intent_router import IntentRouter, LLMIntentParser, match_plan_task
 from modules.interaction_state_coordinator import InteractionStateCoordinator
@@ -61,16 +64,30 @@ from modules.memory_service import MemoryService
 from modules.plan_service import PlanService
 from modules.persona_registry import PersonaRegistry
 from modules.response_composer import ResponseComposer
+from modules.simulation_clock import SimulatedBusinessClock
+from modules.runtime_paths import (
+    RuntimePaths, ensure_windowed_streams, initialize_runtime, read_json_strict,
+    report_startup_failure, resolve_runtime, show_startup_error, write_run_metadata,
+)
 from modules.semantic_action_parser import SemanticActionParser
 from modules.safety_policy import SafetyPolicy
 from modules.tool_executor import ToolExecutor
 from modules.tool_registry import create_roxy_tool_registry
 from modules.today_plan import TodayPlanStore
-from frontend.desktop_pet import DesktopPet
-from frontend.chat_history_dialog import ChatHistoryDialog
+from frontend.desktop_pet import DesktopPet, DEFAULT_CONFIG, DEFAULT_TIPS
+from frontend.window_chrome import install_titlebar_policy
+from frontend.chat_history_dialog import ChatHistoryDialog, session_display_title
+from frontend.chat_widgets import ChatDecoration, ChatTexturePanel, ChatTranscript
+from frontend.first_use_hint import FirstUseHint
 from frontend.growth_dialog import GrowthDialog
+from frontend.today_growth_dialog import TodayGrowthDialog
+from frontend.usage_dialog import UsageDialog
+from frontend.interaction_menu import InteractionMenu
 from frontend.memory_dialog import CATEGORY_LABELS, MemoryDialog
-from frontend.settings_dialog import SettingsDialog, load_pet_settings
+from frontend.settings_dialog import (
+    DEFAULT_SETTINGS, SettingsDialog, first_use_hint_seen, load_pet_settings,
+    mark_first_use_hint_seen, save_pet_settings,
+)
 
 
 DEFAULT_MEMORY_FILE = PROJECT_ROOT / "memory.json"
@@ -157,10 +174,16 @@ class ChatReplyWorker(QObject):
         self.turn_sequence = int(turn_sequence)
 
     def run(self) -> None:
-        self.finished.emit(
-            self.conversation_service.complete(self.turn),
-            self.turn_sequence,
-        )
+        try:
+            response = self.conversation_service.complete(self.turn)
+        except Exception as error:
+            print(f"[Conversation] request failed: {type(error).__name__}", flush=True)
+            response = AgentResponse(
+                "failed", "这次请求处理失败，没有把它当作成功。请检查记录后再试。",
+                request_id=self.turn.request_id or None,
+                conversation_id=self.turn.conversation_id,
+            )
+        self.finished.emit(response, self.turn_sequence)
 
 
 class ChatWindow(QMainWindow):
@@ -179,17 +202,39 @@ class ChatWindow(QMainWindow):
         llm_client: Optional[Any] = None,
         pet_settings: Optional[Dict[str, Any]] = None,
         settings_config_file: Optional[Path] = None,
+        personality_file: Optional[Path] = None,
+        knowledge_dir: Optional[Path] = None,
+        legacy_config_file: Optional[Path] = None,
+        simulation_clock: Optional[SimulatedBusinessClock] = None,
+        runtime: Optional[RuntimePaths] = None,
     ) -> None:
         super().__init__()
+        self.runtime = runtime or getattr(pet_controller, "runtime", None)
+        if self.runtime is not None and self.runtime.is_beta and simulation_clock is not None:
+            raise ValueError("Beta cannot use a simulated business clock")
+        if self.runtime is not None and self.runtime.is_packaged and any(
+            service is None for service in
+            (growth_service, memory_service, chat_history_manager, llm_client)
+        ):
+            raise ValueError("Beta chat requires the shared, path-injected services")
         self.development_log = development_log or get_development_log()
         self.settings_config_file = Path(
             settings_config_file
             or PROJECT_ROOT / "data" / "pet_config.json"
         )
+        self.personality_file = Path(personality_file or PERSONALITY_FILE)
+        self.knowledge_dir = Path(knowledge_dir or KNOWLEDGE_DIR)
+        self.legacy_config_file = Path(legacy_config_file or CONFIG_FILE)
+        self.simulation_clock = simulation_clock
         self._submitted_trace = None
         self._active_reply_trace = None
         self._client_runtime_snapshot: Dict[str, object] = {}
         self.pet_controller = pet_controller
+        # Closing hides this retained object; the worker and its origin stay alive.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        if pet_controller is not None:
+            self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        self._quit_requested = False
         self.client_action_claim_guard = ClientActionClaimGuard()
         self.reply_thread: Optional[QThread] = None
         self.reply_worker: Optional[ChatReplyWorker] = None
@@ -197,9 +242,12 @@ class ChatWindow(QMainWindow):
         self._message_sequence = 0
         self._active_reply_sequence = 0
         self._active_reply_request_id = ""
+        self._active_reply_business_date = ""
         self._last_visible_assistant_message = ""
         self.settings_dialog: Optional[SettingsDialog] = None
         self.growth_dialog: Optional[GrowthDialog] = None
+        self.today_growth_dialog: Optional[TodayGrowthDialog] = None
+        self.usage_dialog: Optional[UsageDialog] = None
         self.memory_dialog: Optional[MemoryDialog] = None
         self.chat_history_dialog: Optional[ChatHistoryDialog] = None
         self._clear_history_confirmation_pending = False
@@ -235,7 +283,7 @@ class ChatWindow(QMainWindow):
         self.memory_retriever = MemoryRetriever(self.memory_manager)
         self.personality = self.load_personality()
         self.knowledge_manager = KnowledgeManager(
-            KNOWLEDGE_DIR,
+            self.knowledge_dir,
             max_file_chars=MAX_KNOWLEDGE_FILE_CHARS,
             max_snippet_chars=MAX_KNOWLEDGE_SNIPPET_CHARS,
             max_matches=MAX_KNOWLEDGE_MATCHES,
@@ -264,8 +312,10 @@ class ChatWindow(QMainWindow):
             if pet_settings is not None
             else load_pet_settings(self.settings_config_file)
         )
+        if self.runtime is not None:
+            self.pet_settings = self.runtime.effective_settings(self.pet_settings)
         self.persona_registry = PersonaRegistry(
-            PROJECT_ROOT / "data" / "personas",
+            (self.runtime.resource_root if self.runtime else PROJECT_ROOT) / "data" / "personas",
             active_persona_id=str(self.pet_settings.get("active_persona_id", "roxy")),
         )
         for warning in validate_feature_flags(self.pet_settings):
@@ -306,11 +356,13 @@ class ChatWindow(QMainWindow):
         self.context_builder = ContextBuilder(
             int(self.pet_settings.get("recent_context_messages", 16))
         )
-        session = self.chat_history_manager.ensure_session(
-            restore_latest=bool(self.pet_settings.get("restore_last_session", True))
-        )
-        self.current_session_id = str(session["session_id"])
-        llm_config = load_llm_config(CONFIG_FILE)
+        self._daily_startup_session_id = ""
+        self._session_startup_error = ""
+        self._viewing_history = False
+        self._first_use_hint_shown_this_run = False
+        self.current_session_id = ""
+        self._select_today_session()
+        llm_config = self._load_legacy_config()
         legacy_config_empty = not any(
             llm_config.get(key) for key in ("provider", "base_url", "model")
         )
@@ -330,9 +382,13 @@ class ChatWindow(QMainWindow):
                 legacy_config=llm_config,
             )
         )
+        self.business_entity_parser = ChineseEntityParser(
+            now_provider=self.growth_service.now_provider
+        )
         self.intent_router = IntentRouter(
             LLMIntentParser(self.llm_client.chat),
             enable_llm=isinstance(self.llm_client, RoutedLLMClient),
+            entity_parser=self.business_entity_parser,
         )
         self.tool_registry = create_roxy_tool_registry(
             self.growth_service,
@@ -388,7 +444,9 @@ class ChatWindow(QMainWindow):
             ),
             confirmation_ttl_seconds=confirmation_ttl_seconds,
         )
-        self.local_feature_extractor = LocalFeatureExtractor()
+        self.local_feature_extractor = LocalFeatureExtractor(
+            self.business_entity_parser
+        )
         self.model_action_proposal_adapter = ModelActionAdapter(self.tool_registry)
         self.semantic_action_parser = SemanticActionParser(
             self.intent_router,
@@ -400,17 +458,28 @@ class ChatWindow(QMainWindow):
             max_actions=3,
         )
         self.plan_service = PlanService(self.growth_service)
+        self.learning_loop_service = (
+            LearningLoopService(
+                self.growth_service, now_provider=self.growth_service.now_provider,
+            )
+            if all(
+                callable(getattr(self.growth_service, name, None))
+                for name in ("pending_before", "tasks", "records_for_date", "entries")
+            ) else None
+        )
         self.business_resolver = BusinessResolver(
             plan_service=self.plan_service,
             memory_service=self.memory_service,
             interaction_coordinator=self.interaction_coordinator,
             tool_registry=self.tool_registry,
             enabled=bool(self.pet_settings.get("business_resolver_enabled", True)),
+            entity_parser=self.business_entity_parser,
         )
         self.response_composer = ResponseComposer(
             enabled=bool(
                 self.pet_settings.get("deterministic_response_enabled", True)
-            )
+            ),
+            now_provider=self.growth_service.now_provider,
         )
         # ModelActionAdapter remains the proposal/schema adapter used by the
         # unified semantic parser.  The old ModelToolCallLoop is intentionally
@@ -427,6 +496,7 @@ class ChatWindow(QMainWindow):
             personality_context_provider=self.build_personality_context,
             persona_registry=self.persona_registry,
             context_sections_provider=self.build_context_sections,
+            learning_loop_service=self.learning_loop_service,
             memory_context_provider=self.build_memory_context,
             knowledge_context_provider=self.build_knowledge_context,
             memory_governance=self.memory_governance,
@@ -480,35 +550,65 @@ class ChatWindow(QMainWindow):
                 / "logs"
                 / "interaction_diagnostics.jsonl"
             ),
+            now_provider=(getattr(self.growth_service, "timestamp_provider", None)
+                          or self.growth_service.now_provider),
+            business_now_provider=self.growth_service.now_provider,
         )
 
         self.setWindowTitle("RoxyPlan · 洛琪希")
-        self.resize(400, 400)
+        self.resize(460, 560)
+        self.setMinimumSize(360, 420)
 
         container = QWidget()
         container.setObjectName("chatRoot")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
 
         session_layout = QHBoxLayout()
         session_layout.setSpacing(7)
-        self.session_title_label = QLabel("新对话")
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(4)
+        title_label = QLabel("洛琪希")
+        title_label.setObjectName("chatTitle")
+        self.session_title_label = QLabel("魔法修行日记")
         self.session_title_label.setObjectName("sessionTitle")
-        self.new_chat_button = QPushButton("新对话")
-        self.new_chat_button.setObjectName("sessionButton")
-        self.new_chat_button.clicked.connect(self.new_chat_session)
+        self.session_title_label.setWordWrap(True)
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(self.session_title_label)
+        self.header_decoration = ChatDecoration("roxy_cat_header.png")
+        self.header_decoration.setFixedSize(112, 63)
+        self.return_today_button = QPushButton("返回今天")
+        self.return_today_button.setObjectName("sessionButton")
+        self.return_today_button.clicked.connect(self.return_today_session)
+        self.return_today_button.hide()
         self.history_button = QPushButton("历史")
         self.history_button.setObjectName("sessionButton")
         self.history_button.clicked.connect(self.open_chat_history_dialog)
-        session_layout.addWidget(self.session_title_label, 1)
-        session_layout.addWidget(self.new_chat_button)
+        session_layout.addLayout(title_layout, 1)
+        session_layout.addWidget(self.header_decoration)
+        session_layout.addWidget(self.return_today_button)
         session_layout.addWidget(self.history_button)
+        self.simulation_date_label = None
+        self.advance_day_button = None
+        if self.simulation_clock is not None:
+            self.simulation_date_label = QLabel()
+            self.simulation_date_label.setObjectName("simulationDate")
+            if self.runtime is not None and self.runtime.is_study:
+                self.simulation_date_label.hide()
+            self.advance_day_button = QPushButton("推进一天")
+            self.advance_day_button.setObjectName("sessionButton")
+            self.advance_day_button.clicked.connect(self.advance_simulation_day)
+            self._update_simulation_date_label()
 
-        self.transcript = QTextEdit()
-        self.transcript.setReadOnly(True)
+        message_panel = ChatTexturePanel()
+        message_panel.setObjectName("chatMessagePanel")
+        message_layout = QVBoxLayout(message_panel)
+        message_layout.setContentsMargins(1, 1, 1, 1)
+        self.transcript = ChatTranscript()
         self.transcript.setPlaceholderText("聊天记录会出现在这里。")
         self.transcript.setObjectName("chatTranscript")
+        message_layout.addWidget(self.transcript)
 
         self.input_box = QLineEdit()
         self.input_box.setPlaceholderText("和洛琪希说点什么吧...")
@@ -525,7 +625,21 @@ class ChatWindow(QMainWindow):
 
         self.growth_button = QPushButton("成长")
         self.growth_button.setObjectName("growthButton")
-        self.growth_button.clicked.connect(self.open_growth_dialog)
+        self.growth_button.clicked.connect(self.open_today_growth_dialog)
+
+        self.interaction_button = InteractionMenu(self)
+        self.interaction_menu = self.interaction_button.menu()
+        self.dance_action = self.interaction_button.action_items["dance"]
+        self.encourage_action = self.interaction_button.action_items["encourage"]
+        self.interaction_button.action_selected.connect(
+            lambda action: self.start_dance() if action == "dance" else self.encourage()
+        )
+        for action in (self.dance_action, self.encourage_action):
+            action.setEnabled(self.pet_controller is not None)
+        self.interaction_menu.addSeparator()
+        self.usage_action = self.interaction_menu.addAction("操作说明")
+        self.usage_action.triggered.connect(self.open_usage_dialog)
+        self.interaction_button.setMenu(self.interaction_menu)
 
         self.memory_button = QPushButton("记忆")
         self.memory_button.setObjectName("memoryButton")
@@ -533,14 +647,34 @@ class ChatWindow(QMainWindow):
 
         input_layout = QHBoxLayout()
         input_layout.setSpacing(8)
-        input_layout.addWidget(self.input_box)
+        self.footer_decoration = ChatDecoration("lantern_footer.png")
+        self.footer_decoration.setFixedSize(48, 36)
+        input_layout.addWidget(self.footer_decoration)
         input_layout.addWidget(self.growth_button)
         input_layout.addWidget(self.memory_button)
         input_layout.addWidget(self.settings_button)
+        input_layout.addWidget(self.interaction_button)
+        input_layout.addStretch(1)
         input_layout.addWidget(self.send_button)
 
+        # 首次打开聊天时的轻量提示：可关闭、非模态，只由 showEvent 决定是否出现。
+        self.first_use_hint = FirstUseHint()
+        self.first_use_hint.hide()
+        self.first_use_hint.example_requested.connect(
+            self._open_examples_from_first_use_hint
+        )
+        self.first_use_hint.dismissed.connect(self._dismiss_first_use_hint)
+
         layout.addLayout(session_layout)
-        layout.addWidget(self.transcript)
+        if self.simulation_clock is not None:
+            simulation_layout = QHBoxLayout()
+            simulation_layout.addWidget(self.simulation_date_label)
+            simulation_layout.addStretch(1)
+            simulation_layout.addWidget(self.advance_day_button)
+            layout.addLayout(simulation_layout)
+        layout.addWidget(self.first_use_hint)
+        layout.addWidget(message_panel, 1)
+        layout.addWidget(self.input_box)
         layout.addLayout(input_layout)
 
         self.setCentralWidget(container)
@@ -553,31 +687,34 @@ class ChatWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget#chatRoot {
-                background: #F7F4FF;
+                background: #FAF8F2;
                 color: #333333;
                 font-family: "Microsoft YaHei";
             }
             QTextEdit#chatTranscript {
-                background: #FFFFFF;
-                border: 1px solid #D8CCFF;
-                border-radius: 14px;
-                padding: 10px;
-                color: #333333;
+                background: transparent;
+                border: none;
+                padding: 2px;
+                color: #35415A;
                 font-family: "Microsoft YaHei";
                 font-size: 13px;
-                selection-background-color: #D8CCFF;
+                selection-background-color: #C8D8EF;
+                selection-color: #263550;
+            }
+            QLabel#chatTitle {
+                color: #475777;
+                font-size: 20px;
+                font-weight: 600;
             }
             QLabel#sessionTitle {
                 color: #59658F;
                 font-family: "Microsoft YaHei";
-                font-size: 13px;
-                font-weight: 600;
-                padding-left: 3px;
+                font-size: 11px;
             }
             QLineEdit#chatInput {
                 background: #FFFFFF;
                 border: 1px solid #D8CCFF;
-                border-radius: 16px;
+                border-radius: 12px;
                 padding: 9px 12px;
                 color: #333333;
                 font-family: "Microsoft YaHei";
@@ -586,12 +723,16 @@ class ChatWindow(QMainWindow):
             QLineEdit#chatInput:focus {
                 border: 1px solid #8EA7FF;
             }
+            QLineEdit#chatInput:disabled {
+                background: #F2F3F8;
+                color: #9AA3BB;
+            }
             QPushButton#sendButton {
-                background: #8EA7FF;
+                background: #829CCD;
                 color: #FFFFFF;
                 border: none;
-                border-radius: 16px;
-                padding: 9px 18px;
+                border-radius: 10px;
+                padding: 8px 18px;
                 font-family: "Microsoft YaHei";
                 font-size: 13px;
                 font-weight: bold;
@@ -602,40 +743,70 @@ class ChatWindow(QMainWindow):
             QPushButton#sendButton:pressed {
                 background: #6F88EA;
             }
-            QPushButton#settingsButton, QPushButton#growthButton, QPushButton#memoryButton, QPushButton#sessionButton {
+            QPushButton#sendButton:disabled {
+                background: #C9D1E4;
+                color: #F8F9FC;
+            }
+            QPushButton#settingsButton, QPushButton#growthButton, QPushButton#memoryButton, QPushButton#sessionButton, QPushButton#interactionButton {
                 background: #FFFFFF;
                 color: #6677B8;
                 border: 1px solid #D8CCFF;
-                border-radius: 16px;
-                padding: 9px 13px;
+                border-radius: 9px;
+                padding: 7px 10px;
                 font-family: "Microsoft YaHei";
                 font-size: 13px;
             }
-            QPushButton#settingsButton:hover, QPushButton#growthButton:hover, QPushButton#memoryButton:hover, QPushButton#sessionButton:hover {
+            QPushButton#settingsButton:hover, QPushButton#growthButton:hover, QPushButton#memoryButton:hover, QPushButton#sessionButton:hover, QPushButton#interactionButton:hover {
                 background: #F1EAFE;
             }
+            QMenu { background: #FFFDFA; color: #475777; border: 1px solid #DADDED; padding: 4px; }
+            QMenu::item { padding: 7px 14px; }
+            QMenu::item:selected { background: #EAF0FA; }
+            QMenu::item:disabled { color: #9CA4B5; }
+            QScrollBar:vertical { background: transparent; width: 7px; margin: 3px 0; }
+            QScrollBar::handle:vertical { background: #CFD7E7; border-radius: 3px; min-height: 24px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
             """
         )
 
     def open_settings_dialog(self) -> None:
+        if self.runtime is not None and self.runtime.is_packaged:
+            read_json_strict(self.settings_config_file)
         if self.pet_controller is not None:
             self.pet_controller.record_interaction()
 
         if self.settings_dialog is None:
+            from modules.feedback_export import feedback_export_for_runtime
             self.settings_dialog = SettingsDialog(
                 self,
                 config_file=self.settings_config_file,
                 chat_history_manager=self.chat_history_manager,
                 secret_store=getattr(self.llm_client, "secret_store", None),
                 usage_store=getattr(self.llm_client, "usage_store", None),
+                knowledge_dir=self.knowledge_dir,
+                feedback_export=feedback_export_for_runtime(self.runtime),
             )
             self.settings_dialog.settings_saved.connect(self.apply_chat_settings)
             self.settings_dialog.history_cleared.connect(
                 self.handle_history_cleared_from_settings
             )
+            for name, handler in (("usage_help_requested", self.open_usage_dialog),
+                                  ("quit_requested", self.request_quit)):
+                signal = getattr(self.settings_dialog, name, None)
+                if signal is not None:
+                    signal.connect(handler)
             if self.pet_controller is not None:
                 self.settings_dialog.settings_saved.connect(
                     self.pet_controller.apply_saved_settings
+                )
+                self.settings_dialog.open_today_growth_requested.connect(
+                    self.pet_controller.open_today_growth_dialog
+                )
+            else:
+                self.settings_dialog.open_today_growth_button.setEnabled(False)
+                self.settings_dialog.open_today_growth_button.setToolTip(
+                    "请从桌宠设置中打开今日成长面板。"
                 )
             self.settings_dialog.finished.connect(self._clear_settings_dialog)
 
@@ -646,16 +817,72 @@ class ChatWindow(QMainWindow):
     def _clear_settings_dialog(self) -> None:
         self.settings_dialog = None
 
+    def open_usage_dialog(self) -> None:
+        self.record_pet_interaction()
+        if self.pet_controller is not None:
+            self.pet_controller.open_usage_dialog()
+            return
+        if self.usage_dialog is None:
+            self.usage_dialog = UsageDialog(self)
+            signal = getattr(self.usage_dialog, "example_selected", None)
+            if signal is not None:
+                signal.connect(self.select_usage_example)
+                ready = getattr(self.usage_dialog, "set_chat_destination_ready", None)
+                if callable(ready):
+                    ready()
+        self.usage_dialog.show()
+        self.usage_dialog.raise_()
+        self.usage_dialog.activateWindow()
+
+    def select_usage_example(self, text: str) -> None:
+        if self._quit_requested or not text.strip():
+            return
+        if self.input_box.text() and QMessageBox.question(
+            self, "替换输入草稿？", "输入框已有内容。是否替换为这条示例？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if self._viewing_history:
+            self.return_today_session()
+        self.show()
+        self.input_box.setText(text)
+        self.input_box.setFocus()
+
+    def start_dance(self) -> None:
+        if self.pet_controller is not None:
+            self.pet_controller.start_dance()
+
+    def encourage(self) -> None:
+        if self.pet_controller is not None:
+            self.pet_controller.encourage()
+
+    def request_quit(self) -> None:
+        self._quit_requested = True
+        if self.reply_thread is not None:
+            # Existing completion saves/presents the response before thread cleanup.
+            # Never destroy or terminate a worker that is executing business logic.
+            self.input_box.setEnabled(False)
+            self.send_button.setEnabled(False)
+            self.setWindowTitle("RoxyPlan · 等待当前回复保存后退出")
+            return
+        QApplication.quit()
+
     def apply_chat_settings(self, config: Dict[str, Any]) -> None:
+        history_was_enabled = self.chat_history_manager.enabled
         self.pet_settings.update(config)
+        if self.runtime is not None:
+            self.pet_settings = self.runtime.effective_settings(self.pet_settings)
         if isinstance(self.llm_client, RoutedLLMClient):
             self.llm_client.reconfigure(
                 self.pet_settings,
-                legacy_config=load_llm_config(CONFIG_FILE),
+                legacy_config=self._load_legacy_config(),
             )
         self.chat_history_manager.set_enabled(
             bool(self.pet_settings.get("chat_history_enabled", True))
         )
+        if history_was_enabled != self.chat_history_manager.enabled:
+            self._select_today_session()
         self.context_builder.set_recent_message_limit(
             int(self.pet_settings.get("recent_context_messages", 16))
         )
@@ -733,25 +960,102 @@ class ChatWindow(QMainWindow):
         )
 
     def handle_history_cleared_from_settings(self) -> None:
-        session = self.chat_history_manager.new_session()
-        self.current_session_id = str(session["session_id"])
-        self.restore_current_session()
+        self.current_session_id = ""
+        self.return_today_session()
 
     def new_chat_session(self) -> None:
-        self.record_pet_interaction()
+        self.add_message("System", "每天只有一个学习会话。可以点击“返回今天”继续。", record_history=False)
+
+    def _select_today_session(self, business_date: Optional[str] = None) -> bool:
+        try:
+            day = business_date or self.growth_service.now_provider().date().isoformat()
+            session = self.chat_history_manager.ensure_daily_learning_session(day)
+            session_id = str(session["session_id"])
+            verified = self.chat_history_manager.get_session(session_id)
+            if verified is None or verified.get("business_date") != day:
+                raise OSError("Daily session could not be read back")
+        except (OSError, ValueError, TypeError, AttributeError, KeyError) as error:
+            print(f"[ChatHistory] daily session unavailable: {error}", flush=True)
+            self.current_session_id = ""
+            self._session_startup_error = "今天的学习会话读取失败，聊天暂不可用。请点击“返回今天”重试。"
+            self._viewing_history = False
+            if hasattr(self, "transcript"):
+                self.transcript.clear()
+                self._show_session_startup_error()
+            return False
+        self._session_startup_error = ""
+        self._daily_startup_session_id = session_id
         previous_session_id = self.current_session_id
-        self.conversation_service.finalize_conversation(previous_session_id)
-        self.confirmation_manager.cancel(scope=previous_session_id)
-        if hasattr(self, "interaction_coordinator"):
-            self.interaction_coordinator.clear_conversation(previous_session_id)
-        if hasattr(self.conversation_service, "state_manager"):
-            self.conversation_service.state_manager.reset(previous_session_id)
-        self._pending_conversation_turn = None
-        self._pending_memory_delete_id = None
-        self._pending_plan_delete_id = None
-        session = self.chat_history_manager.new_session()
-        self.current_session_id = str(session["session_id"])
-        self.restore_current_session()
+        if (previous_session_id and previous_session_id != session_id
+                and hasattr(self, "conversation_service")
+                and not self._request_in_progress_for(previous_session_id)):
+            self.confirmation_manager.cancel(scope=previous_session_id)
+            if hasattr(self, "interaction_coordinator"):
+                self.interaction_coordinator.clear_conversation(previous_session_id)
+            if hasattr(self.conversation_service, "state_manager"):
+                self.conversation_service.state_manager.reset(previous_session_id)
+            self._pending_conversation_turn = None
+            self._pending_memory_delete_id = None
+            self._pending_plan_delete_id = None
+        self._viewing_history = False
+        self.current_session_id = session_id
+        if hasattr(self, "transcript"):
+            self.restore_current_session()
+        return True
+
+    def return_today_session(self) -> None:
+        self._select_today_session()
+
+    def _update_simulation_date_label(self) -> None:
+        if self.simulation_date_label is not None:
+            self.simulation_date_label.setText(
+                f"当前测试日期 {self.simulation_clock.today()}"
+            )
+
+    def advance_simulation_day(self) -> bool:
+        if self.simulation_clock is None:
+            return False
+        if (self.reply_thread is not None and self.reply_thread.isRunning()
+                or self._pending_conversation_turn is not None):
+            self.add_message("System", "请求仍在执行，请等待完成后再推进测试日期。", record_history=False)
+            return False
+        try:
+            self.simulation_clock.advance_one_day()
+            self._update_simulation_date_label()
+            if not self._select_today_session():
+                return False
+            if self.growth_dialog is not None:
+                self.growth_dialog.refresh_all()
+            pet_panel = getattr(self.pet_controller, "today_growth_dialog", None)
+            if pet_panel is not None:
+                pet_panel.refresh_from_service()
+        except (OSError, ValueError) as error:
+            self.add_message("System", f"推进测试日期失败：{error}", record_history=False)
+            return False
+        return True
+
+    def showEvent(self, event) -> None:
+        self._select_today_session()
+        self._maybe_show_first_use_hint()
+        super().showEvent(event)
+
+    def _maybe_show_first_use_hint(self) -> None:
+        """首次打开聊天时显示一次轻量提示；同一次运行内不再重复。"""
+        if self._first_use_hint_shown_this_run or self._viewing_history:
+            return
+        self._first_use_hint_shown_this_run = True
+        if first_use_hint_seen(self.settings_config_file):
+            return
+        self.first_use_hint.show()
+        # 只追加这一个标志；配置损坏时不覆盖，写入失败则下次启动再提示。
+        mark_first_use_hint_seen(self.settings_config_file)
+
+    def _open_examples_from_first_use_hint(self) -> None:
+        self._dismiss_first_use_hint()
+        self.open_usage_dialog()
+
+    def _dismiss_first_use_hint(self) -> None:
+        self.first_use_hint.hide()
 
     def open_chat_history_dialog(self) -> None:
         self.record_pet_interaction()
@@ -759,7 +1063,6 @@ class ChatWindow(QMainWindow):
             self.chat_history_dialog = ChatHistoryDialog(
                 self.chat_history_manager,
                 self.switch_chat_session,
-                self.delete_chat_session,
                 self,
             )
             self.chat_history_dialog.finished.connect(
@@ -777,46 +1080,71 @@ class ChatWindow(QMainWindow):
         session = self.chat_history_manager.switch_session(session_id)
         if session is None:
             return False
+        today = self.growth_service.now_provider().date().isoformat()
+        if session.get("session_kind") == "daily_learning" and session.get("business_date") == today:
+            return self._select_today_session(today)
         previous_session_id = self.current_session_id
-        if previous_session_id != session_id:
-            self.conversation_service.finalize_conversation(previous_session_id)
-        self.confirmation_manager.cancel(scope=previous_session_id)
+        request_in_progress = self._request_in_progress_for(previous_session_id)
+        if not request_in_progress:
+            self.confirmation_manager.cancel(scope=previous_session_id)
         self.confirmation_manager.cancel(scope=session_id)
         if hasattr(self, "interaction_coordinator"):
-            self.interaction_coordinator.clear_conversation(previous_session_id)
+            if not request_in_progress:
+                self.interaction_coordinator.clear_conversation(previous_session_id)
             self.interaction_coordinator.clear_conversation(session_id)
         if hasattr(self.conversation_service, "state_manager"):
-            self.conversation_service.state_manager.reset(previous_session_id)
+            if not request_in_progress:
+                self.conversation_service.state_manager.reset(previous_session_id)
             self.conversation_service.state_manager.reset(session_id)
         self._pending_conversation_turn = None
         self._pending_memory_delete_id = None
         self._pending_plan_delete_id = None
         self.current_session_id = session_id
+        self._viewing_history = True
         self.restore_current_session()
         return True
 
+    def _request_in_progress_for(self, session_id: str) -> bool:
+        return bool(
+            session_id
+            and self._active_reply_trace is not None
+            and self._active_reply_trace.session_id == session_id
+            and self.reply_thread is not None
+            and self.reply_thread.isRunning()
+        )
+
     def delete_chat_session(self, session_id: str) -> bool:
-        deleted = self.chat_history_manager.delete_session(session_id)
-        if not deleted:
-            return False
-        if session_id == self.current_session_id:
-            replacement = self.chat_history_manager.latest_session()
-            if replacement is None:
-                replacement = self.chat_history_manager.new_session()
-            self.current_session_id = str(replacement["session_id"])
-            self.restore_current_session()
-        return True
+        return False
 
     def restore_current_session(self) -> None:
         self.transcript.clear()
+        if self._session_startup_error and not self.current_session_id:
+            self._show_session_startup_error()
+            return
         session = self.chat_history_manager.get_session(self.current_session_id)
         if session is None:
-            session = self.chat_history_manager.new_session()
-            self.current_session_id = str(session["session_id"])
-        self.session_title_label.setText(str(session.get("title", "新对话")))
+            self.current_session_id = ""
+            self._session_startup_error = "会话读取失败，请点击“返回今天”重试。"
+            self._show_session_startup_error()
+            return
+        self._session_startup_error = ""
+        self.input_box.setEnabled(not self._viewing_history and not self._quit_requested)
+        self.send_button.setEnabled(not self._viewing_history and not self._quit_requested)
+        self.return_today_button.setVisible(self._viewing_history)
+        # 只读历史视图不显示首次提示，也不在这里出现新的发送入口。
+        if self._viewing_history and hasattr(self, "first_use_hint"):
+            self.first_use_hint.hide()
+        self.session_title_label.setText(
+            (f"{session_display_title(session)}\n历史对话 · 只读"
+             if session.get("session_kind") == "daily_learning" else
+             f"历史对话 · 只读 · {str(session.get('started_at', '日期未标记'))[:10]}")
+            if self._viewing_history else session_display_title(session)
+        )
+        self._fit_chat_decorations()
         messages = session.get("messages", [])
         if not isinstance(messages, list) or not messages:
-            self.greet_user()
+            if not self._viewing_history:
+                self.greet_user()
             return
         for item in messages:
             if not isinstance(item, dict):
@@ -829,6 +1157,13 @@ class ChatWindow(QMainWindow):
                 record_history=False,
                 timestamp=self._display_timestamp(item.get("created_at")),
             )
+
+    def _show_session_startup_error(self) -> None:
+        self.session_title_label.setText("会话不可用")
+        self.input_box.setEnabled(False)
+        self.send_button.setEnabled(False)
+        self.return_today_button.setVisible(True)
+        self.add_message("System", self._session_startup_error, record_history=False)
 
     @staticmethod
     def _display_timestamp(value: object) -> str:
@@ -850,6 +1185,39 @@ class ChatWindow(QMainWindow):
         self.growth_dialog.show()
         self.growth_dialog.raise_()
         self.growth_dialog.activateWindow()
+
+    def open_today_growth_dialog(self) -> None:
+        self.record_pet_interaction()
+        if self.pet_controller is not None and hasattr(self.pet_controller, "open_today_growth_dialog"):
+            self.pet_controller.open_today_growth_dialog()
+            return
+        if self.today_growth_dialog is None:
+            self.today_growth_dialog = TodayGrowthDialog(
+                growth_manager=self.growth_service,
+                learning_loop=LearningLoopService(
+                    self.growth_service, now_provider=self.growth_service.now_provider,
+                ),
+                parent=self,
+            )
+            self.today_growth_dialog.details_requested.connect(self.open_growth_dialog)
+            self.today_growth_dialog.finished.connect(self._clear_today_growth_dialog)
+        self.today_growth_dialog.show()
+        self.today_growth_dialog.raise_()
+
+    def _clear_today_growth_dialog(self) -> None:
+        self.today_growth_dialog = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_chat_decorations()
+
+    def _fit_chat_decorations(self) -> None:
+        if not hasattr(self, "header_decoration"):
+            return
+        header_width = min(112, max(46, self.width() - (370 if self._viewing_history else 300)))
+        self.header_decoration.setFixedSize(header_width, round(header_width * 941 / 1672))
+        footer_width = min(48, max(28, self.width() - 332))
+        self.footer_decoration.setFixedSize(footer_width, round(footer_width * 1086 / 1448))
 
     def _clear_growth_dialog(self) -> None:
         self.growth_dialog = None
@@ -893,13 +1261,15 @@ class ChatWindow(QMainWindow):
 
     def load_personality(self) -> Dict[str, Any]:
         # V0.4 从 data/roxy_personality.json 读取规则人格，不接入 AI。
-        if not PERSONALITY_FILE.exists():
+        if self.runtime is not None and self.runtime.is_packaged:
+            return read_json_strict(self.personality_file)
+        if not self.personality_file.exists():
             personality = default_personality()
             self.save_personality(personality)
             return personality
 
         try:
-            with PERSONALITY_FILE.open("r", encoding="utf-8") as file:
+            with self.personality_file.open("r", encoding="utf-8") as file:
                 personality = json.load(file)
         except (json.JSONDecodeError, OSError):
             personality = default_personality()
@@ -918,13 +1288,19 @@ class ChatWindow(QMainWindow):
         personality.setdefault("fallback_reply", "你好，{nickname}。")
         return personality
 
+    def _load_legacy_config(self) -> Dict[str, str]:
+        if self.runtime is not None and self.runtime.is_packaged:
+            # Prevent the compatibility loader from replacing damaged config.
+            read_json_strict(self.legacy_config_file)
+        return load_llm_config(self.legacy_config_file)
+
     def save_personality(self, personality: Dict[str, Any]) -> None:
-        PERSONALITY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with PERSONALITY_FILE.open("w", encoding="utf-8") as file:
+        self.personality_file.parent.mkdir(parents=True, exist_ok=True)
+        with self.personality_file.open("w", encoding="utf-8") as file:
             json.dump(personality, file, ensure_ascii=False, indent=2)
 
     def scan_knowledge_files(self) -> List[Dict[str, str]]:
-        self.knowledge_manager.directory = Path(KNOWLEDGE_DIR)
+        self.knowledge_manager.directory = self.knowledge_dir
         return self.knowledge_manager.scan()
 
     def greet_user(self) -> None:
@@ -963,13 +1339,23 @@ class ChatWindow(QMainWindow):
             print("[MEMORY] no non-empty saved memories", flush=True)
 
     def send_message(self) -> None:
+        if self._quit_requested or self._viewing_history or not self.current_session_id:
+            return
         user_text = self.input_box.text().strip()
         if not user_text:
             return
 
+        submitted_business_date = self.growth_service.now_provider().date().isoformat()
+        session = self.chat_history_manager.get_session(self.current_session_id)
+        if (session is None or session.get("session_kind") != "daily_learning"
+                or session.get("business_date") != submitted_business_date):
+            if not self._select_today_session(submitted_business_date):
+                return
+        submitted_session_id = self.current_session_id
+
         self._message_sequence += 1
         trace = self.development_log.new_trace(
-            session_id=self.current_session_id, source="chat",
+            session_id=submitted_session_id, source="chat",
         )
         self._submitted_trace = trace
         with self.development_log.bind(trace):
@@ -989,7 +1375,11 @@ class ChatWindow(QMainWindow):
                 self.development_log.event(trace, "turn_service_finished", status="completed", terminal=True)
                 return
 
-            self.handle_agent_request(user_text)
+            self.handle_agent_request(
+                user_text,
+                session_id=submitted_session_id,
+                business_date=submitted_business_date,
+            )
 
     @staticmethod
     def _retire_legacy_natural_handler(handler_name: str) -> bool:
@@ -1018,8 +1408,10 @@ class ChatWindow(QMainWindow):
     def _handle_legacy_confirmation(self, user_text: str) -> Optional[str]:
         text = user_text.strip().strip("。.!！?？")
         pending = self.confirmation_manager.pending(scope=self.current_session_id)
+        if pending is not None and pending.get("tool") in {"clear_chat_history", "delete_chat_session"}:
+            self.confirmation_manager.cancel(scope=self.current_session_id)
+            return "聊天窗口已关闭历史删除和清空操作。"
         if pending is None or pending.get("tool") not in {
-            "clear_chat_history", "delete_chat_session",
             "clear_memory_candidates", "delete_memory_candidate",
         }:
             return None
@@ -1027,8 +1419,6 @@ class ChatWindow(QMainWindow):
             self.confirmation_manager.cancel(scope=self.current_session_id)
             return "好，刚才的操作已经取消。"
         expected_specific = {
-            "clear_chat_history": "确认清空聊天记录",
-            "delete_chat_session": "确认删除对话",
             "clear_memory_candidates": "确认清空待确认记忆",
             "delete_memory_candidate": "确认删除候选记忆",
         }[str(pending["tool"])]
@@ -1042,16 +1432,6 @@ class ChatWindow(QMainWindow):
             return "刚才的确认已经过期，请重新发起操作。"
         tool = str(consumed["tool"])
         arguments = dict(consumed["arguments"])
-        if tool == "clear_chat_history":
-            self.chat_history_manager.clear_history(confirmed=True)
-            session = self.chat_history_manager.new_session()
-            self.current_session_id = str(session["session_id"])
-            self.transcript.clear()
-            self.session_title_label.setText("新对话")
-            return "本地聊天记录已经清空。长期记忆和成长数据没有改动。"
-        if tool == "delete_chat_session":
-            deleted = self.delete_chat_session(str(arguments.get("session_id", "")))
-            return "这个本地会话已经删除。" if deleted is not False else "没有找到这个会话。"
         if tool == "clear_memory_candidates":
             operation = self.memory_service.clear_pending_candidates()
             count = int(operation.data.get("changed_count", 0))
@@ -1068,18 +1448,24 @@ class ChatWindow(QMainWindow):
             else operation.safe_message
         )
 
-    def handle_agent_request(self, user_text: str) -> bool:
+    def handle_agent_request(
+        self, user_text: str, *, session_id: str = "", business_date: str = ""
+    ) -> bool:
+        session_id = session_id or self.current_session_id
+        business_date = business_date or self.growth_service.now_provider().date().isoformat()
         self._capture_client_runtime_snapshot()
         turn = self.conversation_service.prepare(
             user_text,
-            self.current_session_id,
+            session_id,
             record_history=False,
             allow_llm_intent=False,
+            business_date=business_date,
+            require_existing_session=bool(self.chat_history_manager.enabled),
         )
         if turn.response is None:
             self._pending_conversation_turn = turn if turn.requires_llm else None
             if turn.requires_llm:
-                self.start_ai_reply(user_text, self._message_sequence)
+                self.start_ai_reply(user_text, self._message_sequence, business_date=business_date)
                 return True
             self.add_message("Roxy", "这次没有得到可继续处理的结果，请换一种说法。")
             return True
@@ -1220,7 +1606,10 @@ class ChatWindow(QMainWindow):
         self,
         user_text: str,
         turn_sequence: Optional[int] = None,
+        business_date: str = "",
     ) -> None:
+        if self._quit_requested:
+            return
         if self.reply_thread is not None and self.reply_thread.isRunning():
             self.add_message("Roxy", "我还在思考上一条消息，请稍等一下。")
             return
@@ -1234,6 +1623,8 @@ class ChatWindow(QMainWindow):
                 self.current_session_id,
                 record_history=False,
                 allow_llm_intent=False,
+                business_date=business_date or self.growth_service.now_provider().date().isoformat(),
+                require_existing_session=bool(self.chat_history_manager.enabled),
             )
         if turn.response is not None or turn.deferred:
             response = self.conversation_service.complete(turn)
@@ -1247,6 +1638,7 @@ class ChatWindow(QMainWindow):
             turn_sequence = self._message_sequence
         self._active_reply_sequence = int(turn_sequence)
         self._active_reply_request_id = turn.request_id
+        self._active_reply_business_date = turn.business_date
         self._active_reply_trace = turn.trace_context
         self.start_pet_thinking()
         self.reply_thread = QThread(self)
@@ -1276,21 +1668,39 @@ class ChatWindow(QMainWindow):
             else self._active_reply_sequence
         )
         trace = self._active_reply_trace
+        response_origin_id = (
+            str(response.conversation_id or "")
+            if isinstance(response, AgentResponse) else ""
+        )
         if (
             completed_sequence != self._message_sequence
             or (trace is not None and trace.session_id != self.current_session_id)
+            or (response_origin_id and response_origin_id != self.current_session_id)
         ):
-            print("[Conversation] stale response ignored", flush=True)
+            origin_id = str(
+                response_origin_id
+                or (trace.session_id if trace is not None else "")
+            )
+            saved = None
+            if origin_id and self.chat_history_manager.get_session(origin_id) is not None:
+                message = response.message if isinstance(response, AgentResponse) else str(response)
+                metadata = trace.to_metadata() if trace is not None else {}
+                metadata["request_id"] = (
+                    response.request_id if isinstance(response, AgentResponse)
+                    else self._active_reply_request_id
+                ) or self._active_reply_request_id
+                if self._active_reply_business_date:
+                    metadata["business_date"] = self._active_reply_business_date
+                saved = self.chat_history_manager.add_message(
+                    origin_id, "assistant", sanitize_public_reply(message),
+                    metadata=metadata,
+                )
+            print("[Conversation] response stored in origin session" if saved else "[Conversation] origin response not stored", flush=True)
             self.development_log.event(
-                trace, "reply_not_displayed", status="ignored",
+                trace, "reply_not_displayed", status="stored" if saved else "ignored",
                 reason_code="session_changed" if trace and trace.session_id != self.current_session_id else "reply_stale",
                 terminal=True,
             )
-            if self._last_visible_assistant_message:
-                self.conversation_service.state_manager.observe_assistant(
-                    self.current_session_id,
-                    self._last_visible_assistant_message,
-                )
             return
         reply = response.message if isinstance(response, AgentResponse) else str(response)
         request_id = (
@@ -1313,7 +1723,11 @@ class ChatWindow(QMainWindow):
         self.reply_worker = None
         self._active_reply_sequence = 0
         self._active_reply_request_id = ""
+        self._active_reply_business_date = ""
         self._active_reply_trace = None
+
+        if self._quit_requested:
+            QTimer.singleShot(0, QApplication.quit)
 
     def record_pet_interaction(self) -> None:
         if self.pet_controller is not None and hasattr(self.pet_controller, "record_interaction"):
@@ -1323,6 +1737,10 @@ class ChatWindow(QMainWindow):
         text = user_text.strip()
         if text == "新建对话":
             self.new_chat_session()
+            return True
+
+        if text in {"清空聊天记录", "确认清空聊天记录", "确认删除对话"} or re.fullmatch(r"删除对话\s*\d+", text):
+            self.add_message("Roxy", "聊天窗口已关闭历史删除和清空操作。")
             return True
 
         if text == "查看历史对话":
@@ -1336,7 +1754,7 @@ class ChatWindow(QMainWindow):
                     f"{index}. {session.get('title', '新对话')} "
                     f"（{session.get('message_count', 0)} 条消息）"
                 )
-            lines.append("可以说“切换对话1”或“删除对话1”。")
+            lines.append("可以说“切换对话1”只读回看，随后点击“返回今天”。")
             self.add_message("Roxy", "\n".join(lines))
             return True
 
@@ -1349,34 +1767,6 @@ class ChatWindow(QMainWindow):
                 self.add_message("Roxy", "没有找到这个会话，可以先说“查看历史对话”。")
                 return True
             self.switch_chat_session(str(session["session_id"]))
-            return True
-
-        delete_match = re.fullmatch(r"删除对话\s*(\d+)", text)
-        if delete_match:
-            session = self.chat_history_manager.session_by_index(
-                int(delete_match.group(1))
-            )
-            if session is None:
-                self.add_message("Roxy", "没有找到这个会话，可以先说“查看历史对话”。")
-                return True
-            self.confirmation_manager.create(
-                "delete_chat_session",
-                {"session_id": str(session["session_id"])},
-                "删除本地聊天会话",
-                scope=self.current_session_id,
-            )
-            self.add_message("Roxy", "删除后无法恢复。确定的话，请回复“确认”或“取消”。")
-            return True
-
-        if text == "清空聊天记录":
-            self.confirmation_manager.create(
-                "clear_chat_history", {}, "清空全部本地聊天历史",
-                scope=self.current_session_id,
-            )
-            self.add_message(
-                "Roxy",
-                "这会删除全部本地会话和会话摘要。若确定，请再输入“确认清空聊天记录”。",
-            )
             return True
 
         if text == "总结这段对话":
@@ -2004,8 +2394,9 @@ class ChatWindow(QMainWindow):
                 memory_lines.append(f"[{label}] {content}")
 
         lines = [
-            "长期记忆：",
-            f"用户昵称：{nickname}",
+            ("当前有效长期记忆：" if memories is None
+             else "本轮相关长期记忆（检索子集，不代表全库）："),
+            f"独立称呼设置（不代表记忆是否存在）：{nickname}",
         ]
         if memory_lines:
             lines.append("记忆内容：")
@@ -2016,7 +2407,10 @@ class ChatWindow(QMainWindow):
             for content in memory_lines:
                 lines.append(f"- {content}")
         else:
-            lines.append("记忆内容：暂无")
+            lines.append(
+                "当前有效记录列表为空。" if memories is None
+                else "本轮未召回相关记录；不能据此判断正式记忆是否为空。"
+            )
         return "\n".join(lines)
 
     def build_knowledge_context(self, user_text: str = "") -> str:
@@ -2496,16 +2890,21 @@ class ChatWindow(QMainWindow):
                 metadata=saved_metadata,
             )
             with self.development_log.bind(trace):
+                persisted = saved is not None and self.chat_history_manager.enabled
                 self.development_log.event(
-                    trace, "history_written", success=saved is not None,
+                    trace, "history_written", success=persisted,
                     message_id=str(saved.get("id", "")) if saved else "",
-                    status="success" if saved else "unavailable",
+                    status="success" if persisted else "transient" if saved else "unavailable",
                     reason_code="history_disabled" if not self.chat_history_manager.enabled else
                     ("history_save_failed" if saved is None else ""),
                 )
             session = self.chat_history_manager.get_session(self.current_session_id)
-            if session is not None:
-                self.session_title_label.setText(str(session.get("title", "新对话")))
+            if session is not None and not self._viewing_history:
+                if session.get("session_kind") == "daily_learning":
+                    day = str(session.get("business_date") or "")
+                    self.session_title_label.setText(f"魔法修行日记 · {day}")
+                else:
+                    self.session_title_label.setText(str(session.get("title", "新对话")))
             if role == "assistant":
                 self.maybe_generate_session_summary()
 
@@ -2516,16 +2915,12 @@ class ChatWindow(QMainWindow):
 
         if normalized_sender in {"you", "user", "你"}:
             return (
-                "<div align='right' style='margin: 8px 0;'>"
-                "<div style='color:#777777; font-size:11px; margin-bottom:3px;'>"
-                f"{safe_time} · 你"
-                "</div>"
-                "<span style='display:inline-block; background:#F1EAFE; color:#333333; "
-                "border:1px solid #D8CCFF; border-radius:14px; padding:8px 11px; "
-                "max-width:260px;'>"
-                f"{safe_message}"
-                "</span>"
-                "</div>"
+                "<table width='84%' align='right' cellspacing='0' cellpadding='0'>"
+                "<tr><td align='right' style='color:#778198; font-size:10px;'>"
+                f"你 · {safe_time}</td></tr>"
+                "<tr><td><table width='100%' bgcolor='#EEEAF7' cellspacing='0' cellpadding='9'>"
+                "<tr><td style='color:#35415A; white-space:pre-wrap;'>"
+                f"{safe_message}</td></tr></table></td></tr></table><br>"
             )
 
         if normalized_sender in {"system", "系统"}:
@@ -2536,16 +2931,14 @@ class ChatWindow(QMainWindow):
             )
 
         return (
-            "<div align='left' style='margin: 8px 0;'>"
-            "<div style='color:#777777; font-size:11px; margin-bottom:3px;'>"
-            f"{safe_time} · Roxy"
-            "</div>"
-            "<span style='display:inline-block; background:#EAF4FF; color:#333333; "
-            "border:1px solid #D8CCFF; border-radius:14px; padding:8px 11px; "
-            "max-width:260px;'>"
-            f"{safe_message}"
-            "</span>"
-            "</div>"
+            "<table width='91%' align='left' cellspacing='0' cellpadding='0'>"
+            "<tr><td width='40' valign='top'><img src='roxy-avatar' width='32' height='32'></td>"
+            "<td><table width='100%' cellspacing='0' cellpadding='0'>"
+            "<tr><td style='color:#778198; font-size:10px;'>"
+            f"洛琪希 · {safe_time}</td></tr>"
+            "<tr><td><table width='100%' bgcolor='#EAF1FA' cellspacing='0' cellpadding='9'>"
+            "<tr><td style='color:#35415A; white-space:pre-wrap;'>"
+            f"{safe_message}</td></tr></table></td></tr></table></td></tr></table><br>"
         )
 
     def scroll_to_bottom(self) -> None:
@@ -2566,16 +2959,44 @@ def _acceptance_root_from_argv(argv: List[str]) -> Optional[Path]:
         raise ValueError("--acceptance-root must be an absolute directory")
     resolved = root.resolve()
     project = PROJECT_ROOT.resolve()
-    if resolved == project or project in resolved.parents:
-        raise ValueError("--acceptance-root must be outside the project directory")
+    if resolved == project or project in resolved.parents or resolved in project.parents:
+        raise ValueError("--acceptance-root must be separate from the project directory")
     return resolved
 
 
-def _acceptance_desktop_pet(root: Path, logger) -> DesktopPet:
-    """Compose the production desktop against isolated writable stores."""
+def _acceptance_desktop_pet(
+    root: Path, logger, simulation_clock: Optional[SimulatedBusinessClock] = None,
+    *, runtime: Optional[RuntimePaths] = None,
+) -> DesktopPet:
+    """Shared path-injected composition for Developer acceptance and Beta."""
+    if runtime is not None:
+        if Path(root).resolve() != runtime.data_root:
+            raise ValueError("Composition root must match runtime data root")
+        if runtime.is_packaged:
+            if runtime.is_beta and simulation_clock is not None:
+                raise ValueError("Beta cannot use a simulated business clock")
+            _initialize_desktop_runtime(runtime)
     private_dir = root / "data" / "private"
-    settings = load_pet_settings(PROJECT_ROOT / "data" / "pet_config.json")
-    growth_service = GrowthManager(private_dir)
+    isolated_config = root / "data" / "pet_config.json"
+    isolated_tips = root / "data" / "pet_tips.json"
+    isolated_legacy_config = root / "config.json"
+    if simulation_clock is not None and not isolated_config.exists():
+        save_pet_settings({
+            "test_mode": False,
+            "auto_tips_enabled": False,
+            "proactive_enabled": False,
+            "evening_review_enabled": False,
+            "idle_nudge_enabled": False,
+            "pet_always_on_top": False,
+        }, isolated_config)
+    settings = load_pet_settings(isolated_config)
+    if runtime is not None:
+        settings = runtime.effective_settings(settings)
+    growth_service = GrowthManager(
+        private_dir,
+        now_provider=simulation_clock.now if simulation_clock else datetime.now,
+        timestamp_provider=datetime.now,
+    )
     history_manager = ChatHistoryManager(
         private_dir,
         enabled=bool(settings.get("chat_history_enabled", True)),
@@ -2584,17 +3005,19 @@ def _acceptance_desktop_pet(root: Path, logger) -> DesktopPet:
         root,
         memory_file=root / "memory.json",
         private_dir=private_dir,
-        default_data=default_memory(),
+        default_data=({"version": 2, "profile": {}, "memories": []}
+                      if runtime is not None and runtime.is_packaged else default_memory()),
         candidates_enabled=bool(settings.get("enable_memory_candidates", False)),
     )
+    secret_store = SecretStore(root)
+    usage_store = ModelUsageStore(root)
     llm_client = RoutedLLMClient(
-        PROJECT_ROOT,
+        root,
         settings=settings,
-        legacy_config=load_llm_config(CONFIG_FILE),
-        usage_store=ModelUsageStore(root),
+        legacy_config=load_llm_config(isolated_legacy_config),
+        secret_store=secret_store,
+        usage_store=usage_store,
     )
-    isolated_config = root / "data" / "pet_config.json"
-    isolated_tips = root / "data" / "pet_tips.json"
 
     def chat_factory(pet_controller):
         return ChatWindow(
@@ -2606,6 +3029,11 @@ def _acceptance_desktop_pet(root: Path, logger) -> DesktopPet:
             llm_client=llm_client,
             pet_settings=settings,
             settings_config_file=isolated_config,
+            personality_file=root / "data" / "roxy_personality.json",
+            knowledge_dir=root / "data" / "knowledge",
+            legacy_config_file=isolated_legacy_config,
+            simulation_clock=simulation_clock,
+            runtime=runtime,
         )
 
     return DesktopPet(
@@ -2614,38 +3042,98 @@ def _acceptance_desktop_pet(root: Path, logger) -> DesktopPet:
         chat_history_manager=history_manager,
         config_file=isolated_config,
         tips_file=isolated_tips,
+        secret_store=secret_store,
+        usage_store=usage_store,
+        knowledge_dir=root / "data" / "knowledge",
+        runtime=runtime,
     )
 
 
-def main() -> int:
-    args = sys.argv[1:]
-    acceptance_root = _acceptance_root_from_argv(args)
+def _initialize_desktop_runtime(runtime: RuntimePaths) -> dict:
+    study_defaults = ({"auto_tips_enabled": False, "proactive_enabled": False,
+                       "evening_review_enabled": False, "idle_nudge_enabled": False,
+                       "pet_always_on_top": False} if runtime.is_study else {})
+    return initialize_runtime(runtime, {
+        "data/pet_config.json": runtime.effective_settings({**DEFAULT_CONFIG, **DEFAULT_SETTINGS, **study_defaults}),
+        "data/pet_tips.json": list(DEFAULT_TIPS),
+        "data/roxy_personality.json": default_personality(),
+        "config.json": default_config(),
+    })
+
+
+def main(*, runtime: Optional[RuntimePaths] = None, argv: Optional[List[str]] = None) -> int:
+    ensure_windowed_streams()
+    args = list(sys.argv[1:] if argv is None else argv)
+    runtime = runtime or resolve_runtime("developer", args)
+    if getattr(sys, "frozen", False) and not runtime.is_packaged:
+        raise ValueError("Frozen applications require Beta mode")
+    if runtime.is_study:
+        if args != ["--open-chat"]:
+            raise ValueError("Study entry accepts only its validated startup arguments")
+        acceptance_root = runtime.data_root
+    elif runtime.is_beta:
+        if args:
+            runtime = resolve_runtime("beta", args, resource_root=runtime.resource_root,
+                                      program_root=runtime.program_root)
+        acceptance_root = runtime.data_root
+    else:
+        acceptance_root = _acceptance_root_from_argv(args)
+        if acceptance_root is not None:
+            runtime = RuntimePaths(runtime.resource_root, runtime.program_root,
+                                   acceptance_root, "developer", data_source="engineering")
+    simulation_clock = None
+    if runtime.is_study:
+        first_date = None if runtime.writable("simulation_state.json").exists() else date.today().isoformat()
+        simulation_clock = SimulatedBusinessClock(acceptance_root, first_date)
+    elif "--simulate-days" in args:
+        if acceptance_root is None:
+            raise ValueError("--simulate-days requires --acceptance-root")
+        if "--start-date" in args:
+            index = args.index("--start-date")
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                raise ValueError("--start-date requires YYYY-MM-DD")
+            start_date = args[index + 1]
+        else:
+            start_date = None
+        simulation_clock = SimulatedBusinessClock(acceptance_root, start_date)
+    elif "--start-date" in args:
+        raise ValueError("--start-date requires --simulate-days")
+    metadata = _initialize_desktop_runtime(runtime)
     logger = configure_development_log(
-        (acceptance_root or PROJECT_ROOT) / "logs" / "development",
-        enabled="--no-development-log" not in args,
+        runtime.writable("logs/development"),
+        enabled=runtime.is_packaged or "--no-development-log" not in args,
     )
-    logger.event(None, "run_started")
+    started = logger.event(None, "run_started")
+    if runtime.is_packaged and started is None:
+        raise OSError("Required diagnostic log could not be written")
+    run_metadata = write_run_metadata(runtime, metadata, logger)
     previous_exception_hook = sys.excepthook
 
     def report_exception(error_type, error, traceback):
         logger.record_exception(None, error)
-        previous_exception_hook(error_type, error, traceback)
+        if runtime.is_packaged:
+            show_startup_error(error, report_startup_failure(runtime, error))
+        else:
+            previous_exception_hook(error_type, error, traceback)
 
     sys.excepthook = report_exception
     try:
-        app = QApplication(sys.argv)
+        app = QApplication([sys.argv[0], *args])
         app.setApplicationName("RoxyPlan")
+        app.setQuitOnLastWindowClosed(False)
+        install_titlebar_policy(app)
 
         print("[PET] using frontend.desktop_pet.DesktopPet", flush=True)
         pet = (
-            _acceptance_desktop_pet(acceptance_root, logger)
+            _acceptance_desktop_pet(acceptance_root, logger, simulation_clock, runtime=runtime)
             if acceptance_root is not None
             else DesktopPet(
                 chat_factory=lambda pet_controller: ChatWindow(
-                    pet_controller=pet_controller
-                )
+                    pet_controller=pet_controller, runtime=runtime,
+                ), runtime=runtime,
             )
         )
+        pet.runtime_metadata = run_metadata
         pet.show()
 
         if "--open-chat" in args:

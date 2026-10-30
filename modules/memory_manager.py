@@ -959,8 +959,11 @@ class MemoryManager:
                     ),
                     "location": (
                         (
-                            str(raw.get("location", "")).strip()
-                            or self.extract_location(content)
+                            None if raw.get("location", "") is None
+                            else (
+                                str(raw.get("location", "")).strip()
+                                or self.extract_location(content)
+                            )
                         )
                         if isinstance(raw, dict)
                         else self.extract_location(content)
@@ -1019,9 +1022,13 @@ class MemoryManager:
                 )
             )
             item["location"] = (
-                str(item.get("location", "")).strip()
-                or self.extract_location(str(item.get("content", "")))
-                or None
+                # Explicit JSON null is distinct from a missing legacy field.
+                None if item.get("location", "") is None
+                else (
+                    str(item.get("location", "")).strip()
+                    or self.extract_location(str(item.get("content", "")))
+                    or None
+                )
             )
             item.setdefault("valid_from", None)
             item.setdefault("valid_until", None)

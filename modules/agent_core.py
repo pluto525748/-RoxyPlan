@@ -9,6 +9,7 @@ from modules.agent_planner import AgentPlanner
 from modules.contracts import AgentResponse, ClientAction, ToolResult
 from modules.tool_execution_plan import ToolExecutionPlan
 from modules.tool_executor import ToolExecutor
+from modules.request_boundary import current_request_boundary
 
 
 class AgentCore:
@@ -58,7 +59,7 @@ class AgentCore:
         confidence = float(intent_result.get("confidence", 0.0))
         if (
             str(intent_result.get("source", "")) == "llm"
-            and confidence < 0.65
+            and confidence < 0.60
         ):
             print("[Agent] clarification required", flush=True)
             return AgentResponse(
@@ -83,7 +84,27 @@ class AgentCore:
             # Words inside this exact command's literal record body are not
             # independent negation, capability questions or execution cues.
             safety_text = "忘记"
-        negated = self._is_negated(safety_text)
+        negation_names = [step.tool for step in plan.steps]
+        resolved_actions = intent_result.get("resolved_actions")
+        if isinstance(resolved_actions, list):
+            # Planner bounds may drop an unknown proposal. That must not make
+            # the remainder eligible for an all-read negation exception.
+            negation_names.extend(
+                str(item.get("tool_name", "")) if isinstance(item, dict) else ""
+                for item in resolved_actions
+            )
+        negated = self._negated_for_tools(safety_text, negation_names)
+        bound_single_uid = str(intent_result.get("verified_single_plan_completion", "") or "")
+        if (
+            bound_single_uid
+            and str(intent_result.get("source", "")) == "interaction_state"
+            and len(plan.steps) == 1
+            and plan.steps[0].tool == "complete_plan"
+            and str(plan.steps[0].arguments.get("match_text", "")) == bound_single_uid
+        ):
+            # The verified positive ordinal is the requested operation. A
+            # separate "first item untouched" clause narrows its scope.
+            negated = False
         informational = self._is_informational(safety_text)
         require_confirmation = bool(intent_result.get("needs_confirmation", False))
         authorization_granted = bool(
@@ -371,7 +392,7 @@ class AgentCore:
         """Execute model proposals through the same deterministic safety boundary."""
         results: List[ToolResult] = []
         steps: List[Dict[str, object]] = []
-        negated = self._is_negated(user_text)
+        negated = self._negated_for_tools(user_text, [str(item.get("name", "")) for item in tool_calls])
         informational = self._is_informational(user_text)
         write_calls = [
             item
@@ -456,10 +477,8 @@ class AgentCore:
                 } else "failed"
                 failure_message = self._failure_message(result)
                 if any(item.success for item in results[:-1]):
-                    failure_message = (
-                        f"前面 {sum(item.success for item in results[:-1])} 项已执行；"
-                        f"后续操作停止。{failure_message}"
-                    )
+                    status = "partial_success"
+                    failure_message = self._partial_message(results)
                 return AgentResponse(
                     status,
                     failure_message,
@@ -557,6 +576,33 @@ class AgentCore:
     @staticmethod
     def _is_negated(text: str) -> bool:
         return bool(re.search(r"(?:不要|别|取消|不用).{0,8}(?:删除|归档|恢复|添加|完成|记录|保存|执行)", text))
+
+    def _negated_for_tools(self, text: str, names: List[str]) -> bool:
+        """Scope a separate write/presentation ban only for an all-read plan.
+
+        This does not choose tools or grant read authority. Only existing
+        registry metadata can establish that every proposed step is a read;
+        mixed, unknown and write steps keep the original negation gate.
+        """
+        definitions = [self.executor.registry.get(name) for name in names]
+        reads_only = bool(definitions) and all(
+            tool is not None and tool.operation_kind == "read" and not tool.side_effect
+            for tool in definitions
+        )
+        unquoted = re.sub(r"""“[^”]*”|‘[^’]*’|"[^"]*"|'[^']*'""", "", str(text))
+        clauses = [clause.strip() for clause in re.split(r"[，,。！!？?；;\n]", unquoted)]
+        read_verb = r"(?:查看|看看|看一下|展示|显示|列出|读取|核对|核查|检查|查阅)"
+        if any(tool is not None and tool.operation_kind == "read" for tool in definitions) and any(
+            re.search(rf"(?:不要|别|不用|不必|无需|先不|不想|禁止|取消).{{0,24}}{read_verb}", clause)
+            for clause in clauses
+        ):
+            return True
+        if reads_only and any(
+            re.match(rf"^(?:请)?(?:(?:帮|给)我)?(?:先)?{read_verb}(?:一下)?\S+", clause)
+            for clause in clauses
+        ):
+            return False
+        return self._is_negated(text)
 
     @staticmethod
     def _is_informational(text: str) -> bool:
@@ -687,6 +733,8 @@ class AgentCore:
 
     @staticmethod
     def _success_message(results: List[ToolResult]) -> str:
+        boundary = current_request_boundary()
+        current_date = boundary.now_provider().date().isoformat() if boundary else ""
         if len(results) > 1:
             tools = {item.tool for item in results}
             if {"complete_plan", "add_action_log"} <= tools:
@@ -695,6 +743,8 @@ class AgentCore:
                 review_result = next(item for item in results if item.tool == "generate_daily_review")
                 review = review_result.data.get("review", {})
                 text = str(review.get("text", "")) if isinstance(review, dict) else ""
+                if current_date and str(review.get("date", "")) != current_date:
+                    text = f"{review.get('date')}的复盘：\n{text}"
                 return (text + "\n复盘也已经保存到成长日志了。").strip()
             return "；".join(
                 AgentCore._success_message([item]).rstrip("。")
@@ -704,12 +754,23 @@ class AgentCore:
         result = results[0]
         data = result.data
         if result.tool == "add_plan":
+            task_date = str(data["task"].get("date") or "").strip()
+            if not task_date:
+                # Legacy TodayPlanStore tasks omit date. A successful write
+                # proves the addition, but cannot date the task for this reply.
+                return f"好，我帮你把“{data['task']['title']}”加入计划了。"
+            if current_date and task_date != current_date:
+                return f"已把“{data['task']['title']}”加入{task_date}的计划。"
             return f"好，我帮你把“{data['task']['title']}”加入今天计划了。"
         if result.tool == "show_plan":
             tasks = data.get("tasks", [])
+            selected_date = str(data.get("date", "") or "")
+            dated = bool(current_date and selected_date and selected_date != current_date)
             if not tasks:
-                return "今天还没有计划。"
-            lines = ["今天的计划："]
+                return f"{selected_date}没有计划。" if dated else "今天还没有计划。"
+            lines = [
+                f"{selected_date}的计划：" if dated else "今天的计划："
+            ]
             for item in tasks:
                 details = " ".join(
                     value
@@ -768,20 +829,34 @@ class AgentCore:
         if result.tool == "add_action_log":
             if result.message_code == "already_recorded":
                 return "这条行动已经记录过了，我没有重复添加。"
+            if current_date and str(data["record"].get("date", "")) != current_date:
+                return f"这一步已经记到{data['record']['date']}的行动记录里。"
             return "好，这一步已经记到行动记录里了。"
         if result.tool == "show_action_log":
             records = data.get("records", [])
+            selected_date = str(data.get("date", "") or "")
+            dated = bool(current_date and selected_date and selected_date != current_date)
             if not records:
-                return "今天还没有行动记录。"
-            lines = ["今天的行动记录："]
+                return f"{selected_date}还没有行动记录。" if dated else "今天还没有行动记录。"
+            lines = [
+                f"{selected_date}的行动记录：" if dated else "今天的行动记录："
+            ]
             lines.extend(
                 f"{index}. {item.get('content', '')}"
                 for index, item in enumerate(records, start=1)
             )
             return "\n".join(lines)
         if result.tool == "generate_daily_review":
-            return str(data.get("review", {}).get("text", "今日复盘已经生成。"))
+            review = data.get("review", {})
+            text = str(review.get("text", "今日复盘已经生成。"))
+            return (
+                f"{review.get('date')}的复盘：\n{text}"
+                if current_date and str(review.get("date", "")) != current_date
+                else text
+            )
         if result.tool == "save_daily_review":
+            if current_date and str(data["entry"].get("date", "")) != current_date:
+                return f"{data['entry']['date']}的复盘已经保存到成长日志了。"
             return "今天的复盘已经保存到成长日志了。"
         if result.tool == "show_growth_log":
             entries = data.get("entries", [])

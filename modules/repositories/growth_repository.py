@@ -12,7 +12,9 @@ class GrowthRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_plan(self, fallback: Dict[str, object]) -> Dict[str, object]:
+    def load_plan(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
         raise NotImplementedError
 
     @abstractmethod
@@ -24,7 +26,9 @@ class GrowthRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_actions(self, fallback: Dict[str, object]) -> Dict[str, object]:
+    def load_actions(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
         raise NotImplementedError
 
     @abstractmethod
@@ -36,7 +40,9 @@ class GrowthRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_growth(self, fallback: Dict[str, object]) -> Dict[str, object]:
+    def load_growth(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
         raise NotImplementedError
 
     @abstractmethod

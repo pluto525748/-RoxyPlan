@@ -8,7 +8,7 @@ from typing import Dict, List, Mapping, Optional
 from uuid import uuid4
 
 from modules.agent_planner import AgentPlanner, INTENT_TOOL_MAP
-from modules.local_feature_extractor import LocalFeatureExtractor, LocalFeatures
+from modules.local_feature_extractor import LocalFeatureExtractor, LocalFeatures, requests_concrete_advice
 
 
 DISABLED_MAIN_CHAT_CANDIDATE_TOOLS = {
@@ -139,6 +139,7 @@ class ActionCandidate:
     ambiguous_reference: List[str] = field(default_factory=list)
     risk_level: str = "low"
     action_id: str = field(default_factory=lambda: "action_" + uuid4().hex)
+    subject: str = ""
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -170,6 +171,7 @@ class ActionCandidate:
             "missing_fields": list(self.missing_fields),
             "ambiguous_reference": list(self.ambiguous_reference),
             "risk_level": self.risk_level,
+            "subject": self.subject,
         }
 
 
@@ -368,6 +370,7 @@ class SemanticActionParser:
             llm_parser = getattr(self.intent_router, "llm_parser", None)
             if llm_parser is not None and hasattr(llm_parser, "parameter_docs"):
                 llm_parser.parameter_docs = docs
+                llm_parser.parameter_registry = registry
         intent = self.intent_router.route_semantic_decision(
             self._routing_text(text, features),
             dict(context or {}),
@@ -435,6 +438,13 @@ class SemanticActionParser:
         if (
             not candidates
             and str(intent.get("intent", "")) == "chat"
+            and not (
+                str(intent.get("request_mode", "")) in {"advice", "discuss"}
+                and (
+                    features.advice_cues
+                    or re.search(r"讨论|先问我|供我选", features.normalized_text)
+                )
+            )
             and not features.is_question
             and not features.negation_cues
             and not re.search(
@@ -548,14 +558,24 @@ class SemanticActionParser:
         features: LocalFeatures,
         candidates: List[ActionCandidate],
     ) -> bool:
-        """Keep recommendation purpose separate from reading stored plans.
+        """Keep concrete advice separate from its supporting business reads.
 
         The model may over-weight words such as ``列`` and ``今日计划`` and propose
-        ``show_plan`` even though the user asked for new candidate suggestions.
-        This correction only removes that read when local features confirm both
-        the plan domain and advice purpose, and the sentence has no marker that
-        refers to existing application data.
+        a plan/action/review read even though new options are the requested
+        output. Preserve explicit requests to display those existing records.
         """
+        if (
+            candidates
+            and all(item.tool_name in {"show_plan", "show_action_log", "generate_daily_review"} for item in candidates)
+            and requests_concrete_advice(features.normalized_text)
+        ):
+            # Reading past execution as evidence does not turn a request for
+            # new options into an existing-plan query. Preserve explicit reads.
+            return not re.search(
+                r"(?:查看|看看|展示|列出)(?:我)?(?:今天|今日|昨天|昨日|明天|明日|当前|现有|已有|最近|本周|上周)?"
+                r"(?:的)?(?:计划|任务|行动(?:记录)?|复盘|总结|回顾)(?:清单|列表)?",
+                features.normalized_text,
+            )
         if (
             not candidates
             or any(item.tool_name != "show_plan" for item in candidates)
@@ -674,6 +694,7 @@ class SemanticActionParser:
                     ambiguities=list(base.ambiguities),
                     sequence_index=index,
                     source_intent=base.source_intent,
+                    subject=base.subject,
                 )
             )
         return expanded
@@ -922,6 +943,11 @@ class SemanticActionParser:
             else [],
             sequence_index=index,
             source_intent=name,
+            subject=(
+                str(intent.get("subject", "") or "").strip().lower()
+                if str(intent.get("subject", "") or "").strip().lower() in {"self", "other"}
+                else ""
+            ),
         )
 
     def _normalize_candidate_arguments(
@@ -1005,10 +1031,13 @@ class SemanticActionParser:
                 value,
             ).strip(" ：:，,。.!！")
             if content:
+                arguments = {"content": content}
+                if features.parsed_time.get("duration_minutes") is not None:
+                    arguments["duration_minutes"] = features.parsed_time["duration_minutes"]
                 return ActionCandidate(
                     "action_log",
                     "add_action_log",
-                    {"content": content},
+                    arguments,
                     request_mode="execute",
                     confidence=0.92,
                     explicit_command=True,
@@ -1142,7 +1171,9 @@ class SemanticActionParser:
 
     @staticmethod
     def _domain(tool: str) -> str:
-        if "memory" in tool:
+        # These registered read tools use the plural spelling (their canonical
+        # CapabilityRegistry domain is memory); do not infer a generic domain.
+        if "memory" in tool or tool in {"list_memories", "search_memories"}:
             return "memory"
         if "plan" in tool:
             return "plan"

@@ -32,7 +32,7 @@ _EVENTS = frozenset({
     "tool_response_evidence",
     "reply_composed", "reply_guard_applied", "reply_displayed", "reply_not_displayed",
     "model_request_started", "model_request_finished", "snapshot_state",
-    "parameter_validation",
+    "parameter_validation", "confirmation_decision",
     "ui_operation_started", "ui_operation_result", "ui_operation_finished",
     "ui_operation_cancelled", "startup_backfill_started", "startup_backfill_finished",
     "exception",
@@ -67,7 +67,9 @@ _CODES = frozenset({
 _BOOL_FIELDS = frozenset({
     "changed", "verified", "guard_changed", "read_snapshot_present",
     "suggestion_snapshot_present", "confirmation_pending", "reused", "success",
-    "terminal", "persisted", "response_changed",
+    "terminal", "persisted", "response_changed", "model_hint",
+    "resolver_confirmation", "policy_pending", "effective_confirmation",
+    "explicit_command",
 })
 _NUMBER_FIELDS = frozenset({
     "revision", "total", "done", "pending", "action_count", "count", "read_count",

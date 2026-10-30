@@ -14,6 +14,7 @@ from modules.intent_router import (
     reminder_control_action,
 )
 from modules.llm.response_sanitizer import sanitize_public_reply
+from modules.memory_read import MemoryReadRequest, is_memory_management_display
 
 
 # ── Minimal structural guard for CHAT messages ──────────────────────────
@@ -67,9 +68,15 @@ _PENDING_MUTATION_FAMILIES = {
     "reschedule_plan": "update",
     "merge_plans": "update",
 }
+# 只有“授权执行”形状的确认词才构成交易请求：请确认／你确认后／回复确认指向即将
+# 执行的写操作；目标方向澄清（“等你确认了是哪种考试”）和讲解只是普通讨论，不算
+# 对写操作的授权。
 _TRANSACTION_CONFIRMATION_REQUEST = re.compile(
-    r"你(?:确认|同意|确定)|请(?:你)?确认|回复.{0,4}确认|"
-    r"确认(?:后|一下|删除|添加|保存|完成)"
+    r"你(?:同意|确定|确认(?:后|一下|就|的话|好))|请(?:你)?确认|"
+    r"回复.{0,4}确认|确认(?:后|一下|删除|添加|保存|完成)"
+)
+_COMMITTED_WRITE_VERB = (
+    r"删除|删掉|清空|加入|添加|保存|记住|记录|记下|记进|标记完成|更新|修改"
 )
 _COMMITTED_REPLY_WRITE = re.compile(
     r"(?:我|这边|系统)(?:现在)?(?:会|将|就|再)(?:帮你|替你|为你)?"
@@ -77,6 +84,49 @@ _COMMITTED_REPLY_WRITE = re.compile(
     r"|(?:我|这边|系统)(?:现在)?可以(?:帮你|替你|为你)?把"
     r".{0,24}(?:删除|加入|添加|保存|记录|记下|记进|标记完成)"
 )
+
+
+def _has_affirmative_write_commitment(message: str) -> bool:
+    # Inspect each predicate separately: a later negative must not hide an
+    # earlier commitment, nor may “我会讲解，不会加入计划” become a write.
+    for verb in re.finditer(_COMMITTED_WRITE_VERB, message):
+        claim = next(
+            (match for match in _COMMITTED_REPLY_WRITE.finditer(message[:verb.end()])
+             if match.end() == verb.end()),
+            None,
+        )
+        if not claim:
+            continue
+        prefix = message[claim.start():verb.start()]
+        clause = re.split(
+            r"[，,。；;！？!?\n]|但是|不过|而是|然后|但", prefix,
+        )[-1]
+        if re.search(
+            r"(?:不会|不再|没有|并未|尚未|还没|"
+            r"不(?=把|将|帮你|替你|为你|自动|直接|再|先|$))"
+            r"[^，,。；;！？!?\n]{0,24}$", clause,
+        ):
+            continue
+        # A negative auxiliary immediately governing this predicate is not a
+        # commitment. Keep the scope tight: “不需要解释就加入” still promises
+        # a write, as does a separate affirmative predicate in another clause.
+        if re.search(
+            r"(?:不需要|不必|不用|不要|不打算|不想|无需)"
+            r"(?:再|先|直接|自动|帮你|替你|为你){0,3}$", clause,
+        ):
+            continue
+        # An invitation to choose and tell us the item is not an authorized
+        # transaction. Scope it to this future predicate, never the whole reply:
+        # another clause's completed write or confirmation promise still guards.
+        sentence_prefix = re.split(r"[。；;！？!?\n]", message[:claim.start()])[-1]
+        if (re.search(r"(?:我|这边|系统)(?:再|会|将)", prefix)
+                and re.search(r"(?:选好|选择|采用|哪(?:一)?项).{0,24}(?:告诉我|跟我说|再说)", sentence_prefix)
+                and not _TRANSACTION_CONFIRMATION_REQUEST.search(sentence_prefix)
+                and verb.group() in {"加入", "添加"}
+                and re.match(r"(?:到|进)?(?:我)?(?:今天|今日)?(?:的)?(?:计划|任务|待办|清单)", message[verb.end():])):
+            continue
+        return True
+    return False
 
 
 def _reply_mutation_family(message: str) -> str:
@@ -123,13 +173,13 @@ def _requests_mutation_confirmation(message: str) -> bool:
         and _reply_mutation_family(message)
         and (
             _REPLY_APP_DOMAIN.search(message)
-            or _COMMITTED_REPLY_WRITE.search(message)
+            or _has_affirmative_write_commitment(message)
         )
     )
 
 
 def _claims_committed_app_write(message: str) -> bool:
-    if not _COMMITTED_REPLY_WRITE.search(message):
+    if not _has_affirmative_write_commitment(message):
         return False
     return bool(
         _REPLY_APP_DOMAIN.search(message)
@@ -147,12 +197,48 @@ _FALSE_DATA_ABSENCE = re.compile(
     r"(?:今天|现在|目前)?(?:没有|还没有)(?:任何|相关)?"
     r"(?:计划|任务|行动记录|成长日志|记忆|长期记忆|正式记忆)"
 )
+# 同一声明在整句中的范围：最小纠正只移除这一句，不用一整段套话覆盖闲聊。
+_UNVERIFIED_ABSENCE_SENTENCE = re.compile(
+    r"[^。！？!?\n]*" + _FALSE_DATA_ABSENCE.pattern + r"[^。！？!?\n]*[。！？!?]*"
+)
+
+
+def _strip_unverified_absence_claims(message: str) -> str:
+    """移除没有读取依据的空数据声明所在句子，保留其余可独立成立的聊天内容。
+
+    空数据声明仍然只能来自成功查询结果；这里只是缩小纠正范围。
+    """
+    cleaned = _UNVERIFIED_ABSENCE_SENTENCE.sub("", str(message or ""))
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned if re.search(r"\w", cleaned) else ""
+
 
 _UNVERIFIED_MEMORY_ABSENCE = re.compile(
-    r"(?:正式(?:长期)?记忆|长期记忆).{0,28}"
-    r"(?:是空的|为空|没有(?:任何|你的|相关)?(?:记录|内容|信息|昵称|偏好|记忆))"
-    r"|(?:没有|不存在)(?:任何|相关)?(?:正式(?:长期)?记忆|长期记忆)"
+    r"(?:正式(?:长期)?记忆|长期记忆)"
+    r"(?:(?:中|里|库|目前|现在|当前|还|确实|一直|仍|都|也|是|的|内容|记录)|\s){0,12}"
+    r"(?:是空的|为空|没有(?:任何)?(?:记录|内容|信息|记忆))"
+    r"|(?:没有|不存在|未曾?(?:保存|存储|形成)|没(?:有)?(?:存下|保存|存储|形成))"
+    r"(?:过|下)?(?:(?:任何|关于你|有关你|关于用户|属于你|你的|相关|可用|一条|的)){0,6}"
+    r"(?:正式(?:长期)?记忆|长期记忆)"
 )
+
+
+def _asserts_unverified_absence(message: str, pattern: re.Pattern) -> bool:
+    """Check the assistant's own absence assertion, not a quote or its negation."""
+    text = re.sub(
+        r'(?:你(?:刚才)?说|用户(?:说|提到)|原话(?:是)?|引用)[：:\s]*'
+        r'(?:“[^”]*”|「[^」]*」|"[^"\n]*")', "", message,
+    )
+    for clause in re.split(r"[。！？!?；;\n]", text):
+        for match in pattern.finditer(clause):
+            prefix = clause[:match.start()]
+            if re.search(
+                r"(?:不能|不应|不该|不会|不代表|不意味着|并非|不是)"
+                r"[^，,。！？!?；;\n]{0,10}$", prefix,
+            ):
+                continue
+            return True
+    return False
 
 
 def _is_delete_help_query(text: str, domain_pattern: str) -> bool:
@@ -268,52 +354,77 @@ def _claims_unverified_plan_change(message: str) -> bool:
     Questions and suggestions remain normal chat; only an asserted, completed
     mutation is impossible when the verified turn contains no ToolResult.
     """
-    if not message or re.search(
-        r"(?:吗|么|是否|有没有|要不要|能否|可不可以)[？?]?|[？?]",
-        message,
-    ):
+    if not message:
         return False
-    if _NEGATED_APP_INTENT.search(message) or re.search(
-        r"(?:没有必要|不用|无需|不需要).{0,12}(?:重新)?"
-        r"(?:添加|加入|加进|放进|完成|删除|更新|修改)",
-        message,
-    ):
-        return False
-    parsed = _REPLY_ENTITY_PARSER.parse(message)
-    operation = str(parsed.get("operation", "") or "").strip()
-    if operation not in _PLAN_WRITE_OPERATIONS:
-        return False
-    assistant_or_system_actor = bool(
-        re.search(
+    # A whole numbered answer may contain both an innocent "这版已经按..." and
+    # "没有加入计划". Do not combine the past-tense marker from one clause with
+    # a write verb in another; still inspect every clause for an actual claim.
+    for clause in re.split(r"[，,。；;！？!?\n]+", message):
+        clause = clause.strip()
+        if not clause or re.search(
+            r"(?:吗|么|是否|有没有|要不要|能否|可不可以)[？?]?$", clause,
+        ):
+            continue
+        if _NEGATED_APP_INTENT.search(clause) or re.search(
+            r"(?:没有必要|不用|无需|不需要|没有|还没|尚未|未).{0,12}(?:重新)?"
+            r"(?:添加|加入|加进|放进|完成|删除|更新|修改)",
+            clause,
+        ) or re.search(r"(?:不|别|不要).{0,4}安排(?:学习|课程|计划|任务)", clause):
+            continue
+        parsed = _REPLY_ENTITY_PARSER.parse(clause)
+        operation = str(parsed.get("operation", "") or "").strip()
+        if operation not in _PLAN_WRITE_OPERATIONS:
+            continue
+        if (operation == "complete" and re.search(r"(?:还|仍)?待完成(?:状态)?$", clause)
+                and not re.search(r"标记|设为|设置|改为|更新", clause)):
+            # An existing task's pending status is not a completed mutation;
+            # an assertion ending in 已完成/标记完成 does not match this state.
+            continue
+        assistant_or_system_actor = bool(re.search(
             r"(?:我|这边|系统|本地)(?:已经|已|刚刚|会|将|可以|帮你|替你|为你)"
             r"|(?:帮你|替你|为你)",
-            message,
+            clause,
+        ))
+        # In “没有已安排的记录”, 已 qualifies a negated existing record;
+        # it is not an affirmative completed arrangement. Remove only that
+        # local tense marker, so an independent “但我已安排...” still guards.
+        assertion_clause = re.sub(
+            r"((?:没有|还没|尚未|未))(?:已经|已)(?=安排)", r"\1", clause,
         )
-    )
-    asserted_change = bool(_ASSERTED_CHANGE_MARKER.search(message)) or bool(
-        assistant_or_system_actor
-        and re.search(r"(?:了|好了)[。！？!?]?$", message.strip())
-    )
-    if not asserted_change:
-        return False
-    user_real_world_actor = bool(
-        re.search(
+        asserted_change = bool(_ASSERTED_CHANGE_MARKER.search(assertion_clause)) or bool(
+            assistant_or_system_actor and re.search(r"(?:了|好了)$", clause)
+        )
+        if not asserted_change:
+            continue
+        user_real_world_actor = bool(re.search(
             r"(?:听起来|看起来|看来|恭喜|原来|所以)?你"
-            r"(?:现在|刚刚|刚才|已经|已|还没有|还没|把|将)",
-            message,
-        )
-    )
-    if user_real_world_actor and not assistant_or_system_actor:
-        return False
-    app_domain = bool(
-        re.search(
+            r"(?:现在|刚刚|刚才|已经|已|还没有|还没|把|将|完成|做完)",
+            clause,
+        ))
+        if user_real_world_actor and not assistant_or_system_actor:
+            continue
+        if (operation == "complete" and not assistant_or_system_actor
+                and re.search(r"昨天|昨日|前天|上周|上次", clause)
+                and not re.search(r"标记|设为|设置|同步|更新|(?:把|将).{0,24}完成", clause)):
+            # A past progress fact is not a claim that Roxy changed a stored
+            # task in this turn. Explicit assistant/system mutations above
+            # still require their actual ToolResult.
+            continue
+        # “完成了” can describe real-world progress with an omitted user
+        # subject. Bind its application domain in that clause; another
+        # clause's today-plan suggestions do not turn it into a plan write.
+        # Other mutations retain context such as a following duration clause
+        # grounding an asserted reschedule (“已经改到晚上，时长保持…”).
+        domain_text = clause if operation == "complete" else message
+        app_domain = bool(re.search(
             r"(?:今日|今天)?(?:计划|任务|待办|清单)|"
             r"(?:本地|系统|计划|行动|长期记忆)(?:记录|记忆)|"
             r"(?:时长|时间段)",
-            message,
-        )
-    )
-    return assistant_or_system_actor or app_domain
+            domain_text,
+        ))
+        if assistant_or_system_actor or app_domain:
+            return True
+    return False
 
 
 def _verified_prior_operation(
@@ -349,10 +460,16 @@ def _prior_memory_save_acknowledgement(
     if not content or not raw.get("observed_at"):
         return ""
     text = re.sub(r"\s+", "", str(user_text or "")).strip("。！!")
+    # “请核对已保存的...” refers to an existing record. Only imperative
+    # save verbs may exclude a historical receipt; keep the original text for
+    # resolving the past operation below.
+    command_text = re.sub(r"(?:已经|已)保存(?:的)?", "既存记录", text)
     if (
         not text
-        or re.search(r"(?:请|帮我|帮忙|现在|重新|再|以后|接下来).{0,8}(?:记住|保存)", text)
+        or re.search(r"(?:请|帮我|帮忙|现在|重新|再|以后|接下来).{0,8}(?:记住|保存)", command_text)
         or re.search(r"记住[：:]|保存[：:]|加入|添加|删除|更新|标记完成", text)
+        or re.search(r"(?:更正|纠正|取消|撤销)|(?:不要|别|不用).{0,6}(?:保存|记住|读取|核对)", text)
+        or re.search(r"我(?:现在|目前).{0,20}(?:不喜欢|不再|不想|改成|改为|变了)", text)
     ):
         return ""
     short_query = bool(re.fullmatch(
@@ -369,6 +486,7 @@ def _prior_memory_save_acknowledgement(
     past_query = bool(
         (
             _QUESTION_MARKER.search(text)
+            or re.search(r"(?:核对|核实)", text)
             or re.search(r"(?:什么|哪些|什么内容|了没|了没有)[？?]?$", text)
         )
         and re.search(r"(?:刚才|刚刚|之前|上一轮)", text)
@@ -729,8 +847,9 @@ class ResponseComposer:
     No post-hoc text scanner may override a ToolResult-backed SUCCESS.
     """
 
-    def __init__(self, *, enabled: bool = True) -> None:
+    def __init__(self, *, enabled: bool = True, now_provider=None) -> None:
         self.enabled = bool(enabled)
+        self.now_provider = now_provider or datetime.now
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -846,6 +965,8 @@ class ResponseComposer:
         if outcome == ResponseOutcome.CLARIFY:
             return message or "我还需要一点信息才能继续。"
         if outcome == ResponseOutcome.FAILURE:
+            if len(results) == 1 and self._reminder_unavailable_message(results[0]):
+                return self._result_line(results[0], False)
             return message or "这次操作没有完成，现有数据没有改变。"
         # CHAT — no tools executed; LLM prose is allowed but structurally
         # impossible execution claims are blocked.
@@ -889,11 +1010,13 @@ class ResponseComposer:
             )
             preferences = context.get("response_preferences", {})
             preferences = preferences if isinstance(preferences, Mapping) else {}
-            return self._formal_memory_message(
+            read_message = self._formal_memory_message(
                 formal_read,
                 user_text=user_text,
                 response_preferences=preferences,
             )
+            receipt = _prior_memory_save_acknowledgement(user_text, context)
+            return f"{receipt}\n\n{read_message}" if receipt else read_message
 
         # Formal memory save
         formal_save = next(
@@ -964,8 +1087,9 @@ class ResponseComposer:
             )
         if _is_memory_delete_help_query(user_text):
             return (
-                "聊天中只支持精确删除一条正式长期记忆：先查看记忆原文，"
-                "再发送“忘记：完整记忆正文”；我会展示真实目标，等你回复“确认”后才删除。"
+                "聊天中只支持精确删除一条正式长期记忆：先发送“展示长期记忆”，"
+                "复制要删除的那条原文（不要带编号），再发送“忘记：完整记忆正文”；"
+                "我会展示真实目标，等你回复“确认”后才删除，回复“取消”则不删除。"
                 "也可以打开“记忆”面板选择记录删除。"
             )
         if _is_plan_delete_help_query(user_text):
@@ -996,12 +1120,21 @@ class ResponseComposer:
                 "这次没有成功让桌宠进入睡眠，所以我不能说已经休息。"
                 "你可以再说一次“洛琪希，你休息一下”。"
             )
-        if _UNVERIFIED_MEMORY_ABSENCE.search(message):
+        if _asserts_unverified_absence(message, _UNVERIFIED_MEMORY_ABSENCE):
             get_development_log().event(
                 None,
                 "reply_guard_applied",
                 rule_code="memory_absence_without_read",
             )
+            memory_facts = verified.get("prior_memory_facts", [])
+            if isinstance(memory_facts, list) and any(
+                isinstance(fact, Mapping) and str(fact.get("content", "")).strip()
+                for fact in memory_facts
+            ):
+                return (
+                    "本会话此前读取的正式记忆，本轮核验仍有有效记录，不能说没有保存过。"
+                    "若你的情况变了，我会按你这次说明理解；本轮没有改写正式记忆。"
+                )
             return (
                 "这一轮没有实际读取正式长期记忆，所以我不能判断它是否为空。"
                 "如果要核验，请说“查看长期记忆”；我只会根据真实读取结果回答。"
@@ -1015,7 +1148,7 @@ class ResponseComposer:
             )
             return (
                 "这轮还没有保存长期记忆，但我可以在当前对话中按你的偏好回应。"
-                "若要长期保存，请明确说“记住：……”。"
+                "若要长期保存，可以明确说“记住：……”或“我想让你记住……”。"
             )
         if DEFAULT_CAPABILITY_REGISTRY.is_user_help_query(user_text):
             # Capability explanations legitimately mention future operations
@@ -1111,8 +1244,11 @@ class ResponseComposer:
         ):
             get_development_log().event(None, "reply_guard_applied", rule_code="false_execution_claim")
             return "我刚才的表达不够准确。我们可以继续聊聊你真正想推进的内容。"
-        if _FALSE_DATA_ABSENCE.search(message):
-            return "这个问题需要先读取实际记录，才能准确回答。"
+        if _asserts_unverified_absence(message, _FALSE_DATA_ABSENCE):
+            # 没有读取依据的空数据声明不能原样放行；最小纠正只移除这句话，
+            # 整段替换留给“整段都是该声明”的情况。
+            corrected = _strip_unverified_absence_claims(message)
+            return corrected or "这个问题需要先读取实际记录，才能准确回答。"
         return message
 
     # ── Batch / partial ─────────────────────────────────────────────────
@@ -1154,13 +1290,51 @@ class ResponseComposer:
         user_text: str = "",
         response_preferences: Optional[Mapping[str, object]] = None,
     ) -> str:
-        natural_answer = str(result.data.get("natural_answer", "") or "").strip()
-        if natural_answer:
-            return sanitize_public_reply(natural_answer)
+        if is_memory_management_display(user_text):
+            memories = result.data.get("memories", [])
+            visible = (
+                [item for item in memories if isinstance(item, Mapping)]
+                if isinstance(memories, list) else []
+            )
+            if not visible:
+                return (
+                    "当前没有可展示的有效长期记忆。"
+                    "可以说“记住：完整内容”保存一条记忆。"
+                )
+            # Management output is copyable storage text, not a portrait.
+            # Keep original person, punctuation, newlines and duplicate bodies.
+            lines = ["以下是有效长期记忆的原文（记录编号仅供核对）："]
+            for item in visible:
+                lines.append(
+                    f"记录编号 {item.get('id')}：\n{str(item.get('content', '') or '')}"
+                )
+            lines.append(
+                "删除时复制那条原文（不要带编号），发送“忘记：完整记忆正文”，"
+                "再回复“确认”或“取消”。当前不支持按编号删除，"
+                "也可以在“记忆”面板选择记录删除。"
+            )
+            return "\n\n".join(lines)
         memory_read = result.data.get("memory_read", {})
         memory_read = memory_read if isinstance(memory_read, Mapping) else {}
         request = memory_read.get("request", {})
         request = request if isinstance(request, Mapping) else {}
+        typed_request = MemoryReadRequest.from_arguments(request)
+        if len(typed_request.requested_attributes) > 1:
+            # A category union is deliberately scoped, including negative
+            # findings. Render its real snapshot rather than free prose.
+            raw_facts = memory_read.get("facts", [])
+            facts = [dict(item) for item in raw_facts if isinstance(item, Mapping)] if isinstance(raw_facts, list) else []
+            names = {"goal": "目标", "preference": "偏好", "habit": "习惯", "project": "项目"}
+            scope = "、".join(names[attribute] for attribute in typed_request.requested_attributes)
+            if not facts:
+                return f"本轮已核对正式长期记忆中的{scope}，该范围内没有匹配记录；这不表示其他类别没有记录。"
+            return f"本轮核对的范围是已保存的{scope}：\n" + "\n".join(
+                f"{names.get(str(item.get('category', '')), str(item.get('category', '')))}：{item.get('content', '')}"
+                for item in facts
+            )
+        natural_answer = str(result.data.get("natural_answer", "") or "").strip()
+        if natural_answer:
+            return sanitize_public_reply(natural_answer)
         query_mode = str(request.get("query_mode", "overview") or "overview")
         attribute = str(request.get("attribute", "") or "")
         if query_mode != "overview" or attribute:
@@ -1659,8 +1833,7 @@ class ResponseComposer:
             lines.append(self._result_line(result, True))
         return "\n".join(p for p in lines if p) or "操作已经完成。"
 
-    @staticmethod
-    def _plan_date_label(value: object) -> str:
+    def _plan_date_label(self, value: object) -> str:
         text = str(value or "").strip()
         if not text:
             return "今天"
@@ -1668,7 +1841,7 @@ class ResponseComposer:
             target = datetime.fromisoformat(text).date()
         except ValueError:
             return text
-        today = datetime.now().date()
+        today = self.now_provider().date()
         if target == today:
             return "今天"
         if target == today - timedelta(days=1):
@@ -1678,7 +1851,19 @@ class ResponseComposer:
         return target.isoformat()
 
     @staticmethod
-    def _result_line(result: ToolResult, success: bool) -> str:
+    def _reminder_unavailable_message(result: ToolResult) -> str:
+        if (
+            not result.success
+            and result.tool in {"pause_reminders", "resume_reminders"}
+            and result.error_code == "pet_unavailable"
+        ):
+            return "当前无法连接桌宠的提醒控制，本次没有改变提醒状态。"
+        return ""
+
+    def _result_line(self, result: ToolResult, success: bool) -> str:
+        reminder_failure = self._reminder_unavailable_message(result)
+        if reminder_failure:
+            return reminder_failure
         raw_display = str(result.display_message or result.message or "").strip()
         technical_markers = {
             "completed",
@@ -1720,7 +1905,7 @@ class ResponseComposer:
         if success:
             if name == "show_plan":
                 tasks = result.data.get("tasks", [])
-                date_label = ResponseComposer._plan_date_label(
+                date_label = self._plan_date_label(
                     result.data.get("date", "")
                 )
                 if not isinstance(tasks, list) or not tasks:
@@ -1768,7 +1953,15 @@ class ResponseComposer:
                 if isinstance(review, dict):
                     natural_raw = str(review.get("natural_summary", "")).strip()
                     if natural_raw:
-                        return sanitize_public_reply(natural_raw)
+                        natural = sanitize_public_reply(natural_raw)
+                        review_date = str(review.get("date", "") or "").strip()
+                        date_named = bool(re.search(
+                            r"昨天|昨日|前天|\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?"
+                            r"|[\d一二三四五六七八九十]+月[\d一二三四五六七八九十]+日", natural,
+                        ))
+                        if review_date and review_date != self.now_provider().date().isoformat() and not date_named:
+                            return f"{review_date}复盘：\n{natural}"
+                        return natural
                     review_text = str(review.get("text", "")).strip()
                     if review_text:
                         return review_text

@@ -147,18 +147,24 @@ def test_growth_save_error_keeps_original_exception_and_does_not_show_success(
 
 
 def test_plan_buttons_log_returned_uid_and_do_not_claim_missing_delete_success(
-    growth_panel, evidence
+    growth_panel, evidence, monkeypatch
 ):
     manager, panel = growth_panel
+    notices = []
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: notices.append(True))
     panel.plan_input.setText("合成计划标题")
     panel.add_plan()
     task = manager.tasks()[0]
-    panel.delete_plan(int(task["id"]))
-    panel.delete_plan(int(task["id"]))
+    panel.delete_plan(task)
+    panel.delete_plan(task)
     events = finished(evidence)
-    assert [row["source"] for row in events] == ["ui_plan_add", "ui_plan_delete", "ui_plan_delete"]
-    assert [row["status"] for row in events] == ["success", "success", "not_found"]
+    assert [row["source"] for row in events] == ["ui_plan_add", "ui_plan_delete"]
+    assert [row["status"] for row in events] == ["success", "success"]
     assert events[0]["changed_resource_ids"] == events[1]["changed_resource_ids"] == [task["uid"]]
+    assert notices == [True]
     assert "合成计划标题" not in json.dumps(evidence.events, ensure_ascii=False)
 
 

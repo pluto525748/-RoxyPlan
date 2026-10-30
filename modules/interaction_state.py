@@ -26,6 +26,8 @@ VALID_KINDS = {
     "missing_slots",
     "advice_choice",
     "advice_or_action_choice",
+    "learning_mode_choice",
+    "discussion_choice",
     "object_selection",
     "action_log_offer",
     "memory_candidate_review",
@@ -45,6 +47,7 @@ VALID_KINDS = {
     "duplicate_plan_resolution",
     "suggestion_batch_duplicate_resolution",
     "plan_batch_completion",
+    "plan_batch_addition",
     "action_log_creation",
 }
 

@@ -185,7 +185,13 @@ def test_growth_dialog_complete_workflow():
         dialog.plan_input.setText("临时计划")
         dialog.add_plan()
         dialog.plan_table.item(0, 0).setCheckState(Qt.CheckState.Checked)
-        dialog.delete_plan(2)
+        task_to_delete = next(item for item in manager.tasks() if int(item["id"]) == 2)
+        original_question = QMessageBox.question
+        QMessageBox.question = lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+        try:
+            dialog.delete_plan(task_to_delete)
+        finally:
+            QMessageBox.question = original_question
 
         dialog.action_input.setText("完成了面板操作检查")
         dialog.add_action()

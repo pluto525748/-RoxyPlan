@@ -1,8 +1,75 @@
 # Tests
 
+## Windows Beta preparation
+
+The root `roxy_main.py` is the Beta entry; `roxy.bat` remains the source
+Developer entry. Beta stores records outside the program directory, by default
+under `%LOCALAPPDATA%/RoxyPlan`. For an isolated Beta acceptance run, specify
+`--data-root` with a new absolute directory. Beta cannot reuse simulated data
+or accept Developer date controls. Never test against the default real data
+root. Changing the program directory must keep the same chosen data root.
+
+Build only in the coordinator's sole build slot, using a dedicated Windows
+x64 Python 3.10.1+ venv, separate from the application's `.venv`:
+
+```powershell
+& 'C:\path\to\build-venv\Scripts\python.exe' -m pip install -r packaging\requirements-build.txt
+& .\scripts\build_beta.ps1 -PythonExecutable 'C:\path\to\build-venv\Scripts\python.exe' -ProductVersion '0.9.0-beta.1' -BuildSlotApproved
+```
+
+The build retains a unique run directory with phase logs, exit code, source
+hashes, resource whitelist, dependency versions, and ZIP hashes. Review the
+entire onedir and external manifest; the build status only proves package
+checks, not GUI, HTTPS, clean Windows, persistence, or upgrade acceptance.
+Distribute the complete folder, never the EXE alone. Actual API credentials,
+user stores, logs, preview artifacts, and original material packs are excluded.
+
+Feedback export is available through settings when startup injects the instance
+context. The user reviews categories and explicitly consents before generating
+a ZIP. Diagnostic logs remain fingerprints and summaries; exports do not
+promise full original model input/output. Daily sessions follow business date;
+legacy sessions follow recorded timestamps. Development logs select whole runs
+by UTC start date, so a cross-midnight run may include events outside the range.
+
 RoxyPlan tests cover the desktop client, Local Web adapter, Agent pipeline,
 memory and growth repositories, chat history, client actions, and Chinese NLU
 benchmarks.
+
+## 持续回归语料：复用历史表达与真实失败
+
+语料优先复用现有 JSON／JSONL 文件，不新增数据库服务，也不把业务用户数据写入公开测试库。2026-10-14 只读清点：`tests/nlu_benchmark/train.jsonl`／`dev.jsonl`／`test.jsonl` 分别有 2100／700／700 条，共 3500 条单轮分区记录；`multi_turn_cases.jsonl` 有 400 组，`tests/eval/interaction_golden_cases.json` 有 30 条。seed／generated／adversarial 文件与这些分区存在来源关系，不能相加冒充独立样本总数。数量是文件记录统计，不是当前通过率或真实用户样本数。
+
+- 原始语料、历史预期与 `final_test.sha256` 保留不变。先核对当前产品合同，使用独立的引用索引与当前预期补充历史用例；不为通过而改写历史失败。现有 benchmark 主要检查本地路由／语义解析，不能替代在线模型、多轮业务执行、持久化与桌面验收。
+- 每个新增场景至少记录来源、原句／轮次、前置状态、当前预期、禁止写入、真实工具及数据结果、受测版本。只有句子列表，无法判断执行对错。真实用户原始证据保存在授权的私人证据目录；进入公开测试的表达使用经核对的非私人复现内容，索引不包含密钥与私人路径。
+- 来源明确区分：历史工程测试、真实反馈、公开数据集、人工／模型合成改写。公开或生成表达不得当作真实用户实验；改写只增加风格覆盖，不增加独立用户数。同一原句的变体作为一个场景家族，避免同时进入开发和盲测而夸大泛化效果。
+- 首批优先覆盖今日任务建议、长期规划与目标选择、操作方法询问、肯定／否定、确认／取消、计划完成、行动与长期记忆；保留已好用路径，专门检查误写和假成功。界面自然程度可人工评审，工具是否执行及数据是否改变由程序事实核对。
+- 每次修复先跑受影响场景家族与原有成功路径；积累后的较大集合低频运行。新增或失败的模型路径选少量真实 DeepSeek 验证，提前固定请求／Token 上限，逐轮保留首次结果。大语料不等于每次全部调用在线 API，也不自动恢复用户暂缓的分层全量回归。
+- 可研究 [MASSIVE 的中文分区](https://huggingface.co/datasets/AmazonScience/massive)：含意图及字段标注，数据源经过翻译／本地化，不是本产品真实对话；原数据许可及署名按 [官方 NOTICE](https://github.com/alexa/massive/blob/main/NOTICE.md) 维护。只筛选相关表达，并重标 RoxyPlan 当前预期；数据集中支持的日程操作不因此成为本产品能力。
+- [CLINC150](https://github.com/clinc/oos-eval) 为英文单轮众包表达，可参考支持范围内外的判别，中文翻译应明确标注转换来源。两个公共集都不能直接覆盖本产品“建议后选择 → 工具执行”的多轮状态问题，此类场景仍需真实记录及人工审核变体。
+
+上述是语料维护与后续采样方案，本轮没有下载公共全集、导入数据库、运行大集合或新增在线请求。
+
+### 2026-10-22 来源及覆盖核对
+
+现有基准的主要句面由 `scripts/generate_chinese_nlu_benchmark.py` 中的项目场景和受控变体构造，不是公开用户对话集。3500条单轮分区记录含50条基句的3200个礼貌前后缀变体及300条对抗变体；合并去重为3392个不同句面。train/dev有48句、train/test有60句完全重叠，因此不作为严格无泄漏盲测。400条多轮记录只有50种完整对话，每种重复8次。历史文件名 `train` 不代表本项目训练过模型；现有基准运行器关闭LLM，仅评估本地路由与解析。
+
+测试方法参考记录在 `docs/chinese_interaction_reliability.md`：CheckList、Contrast Sets、中文省略重构、CREAD、DialogUSR、CrossWOZ用于组织语言现象和边界对照。当前来源记录未显示直接导入这些研究的数据原句；MASSIVE与CLINC150只作调研，未收录表达。参赛时分别披露方法参考、项目合成语句、脱敏故障复现与真实模型返回，不把它们合称开源训练数据。
+
+129条Beta语料为107单轮、22多轮，9个业务家族加1个历史家族；登记来源为101条既有测试、27条人工变体、1条真实反馈。原状态不因其他测试通过而自动改绿。`bt_today_add_14`（方向选项短答误设新增）、`bt_cd_09`（无行动正文同时预期成功与澄清）、`bt_cd_10`（非今日新增限制混入明日只读查询）需要先核对当前预期；原句与历史证据保持原样。完整复盘、7/30日事实建议、进程重启、损坏数据、睡眠、首次提示、动作与发行等场景应结合各专项测试检查，129条本身不构成全部用户场景覆盖。
+
+## 模拟跨天独立启动
+
+源码根目录 `roxy_simulated_days.bat` 启动现有隔离桌宠和聊天，显示测试日期及“推进一天”。首次默认从系统当天开始，后续启动接续该实例保存的日期；不修改Windows日期。默认实例位于系统本地应用数据目录的 `RoxyPlanTestInstances/simulated-days`，与日常数据分开，不复制正式聊天、记忆、设置或密钥。模型设置在测试实例内单独管理。
+
+需要另建测试实例或指定首日时：
+
+```powershell
+& .\scripts\run_simulated_days.ps1 -InstanceRoot 'C:\path\to\isolated-simulation' -StartDate '2026-10-01'
+# 同一实例后续启动不传StartDate，接续已经推进的日期。
+& .\scripts\run_simulated_days.ps1 -InstanceRoot 'C:\path\to\isolated-simulation'
+```
+
+模拟实例不得用作真实成长成效证据，也不与普通Beta数据互换。模拟日期能力复用现有业务时钟和共享服务，普通日常启动继续使用真实日期。打开该可见程序属于桌面占用，AI员工仍须先取得本次桌面使用权。
 
 ## Private-data isolation
 
@@ -209,31 +276,78 @@ boundary. No provider integration was added and no network call was made.
 `modules/llm_client.py`, private configuration, `memory.json`, and formal user
 data were not modified.
 
-Example lane runs (use a fresh external base directory for each command):
+Example lane runs (the wrapper creates a fresh isolated run directory for each command):
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider `
-  -m production_contract --basetemp 'C:\Temp\roxyplan-production'
-.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider `
-  -m compatibility_contract --basetemp 'C:\Temp\roxyplan-compatibility'
-.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider `
-  -m historical_baseline --basetemp 'C:\Temp\roxyplan-historical'
+.\scripts\run_isolated_tests.ps1 -m production_contract
+.\scripts\run_isolated_tests.ps1 -m compatibility_contract
+.\scripts\run_isolated_tests.ps1 -m historical_baseline
 ```
 
 ## Recommended Windows run
 
-Use the project virtual environment, disable the cache plugin, and place each
-pytest base directory outside the repository:
+Use the isolated runner. It resolves the interpreter, disables the pytest cache
+plugin, redirects `TEMP`/`TMP`, changes to the worktree root before pytest, and
+creates a unique run under `test_workspace/runs/`:
 
 ```powershell
-$env:QT_QPA_PLATFORM = 'offscreen'
-$env:PYTHONDONTWRITEBYTECODE = '1'
-.\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider `
-  --basetemp 'C:\path\outside\Roxyplan\pytest-run'
+.\scripts\run_isolated_tests.ps1
+.\scripts\run_isolated_tests.ps1 tests\test_data_isolation.py
+.\scripts\run_isolated_tests.ps1 -KeepRun tests\test_data_isolation.py
 ```
 
-Do not reuse a stale system pytest temporary directory, and do not weaken
-assertions to work around an isolation failure.
+Test paths are resolved against the worktree root, whatever directory the caller
+stands in. Successful run directories are removed by default. `-KeepRun`
+preserves a successful run for inspection; failed runs are always preserved, and
+every run records `artifacts/python-executable.txt`, `artifacts/project-root.txt`
+(the worktree the run actually tested), `artifacts/exit-code.txt`,
+`artifacts/pytest-output.txt`, and `artifacts/junit.xml`. Do not pass a separate
+`--basetemp`, reuse a stale run directory, or weaken assertions to work around
+an isolation failure. pytest flags that collide with runner switch names must go
+through `-PytestArgs @(...)`, for example `-PytestArgs @("tests/test_x.py", "-k",
+"case_name")`: a bare `-k` binds to `-KeepRun`.
+
+### Choosing the interpreter
+
+By default the runner uses `<worktree>\.venv\Scripts\python.exe` and stops with
+an actionable message when that file is missing. `-PythonExecutable` points the
+same run at any existing interpreter, which is how a worktree without its own
+`.venv` runs the suite:
+
+```powershell
+.\scripts\run_isolated_tests.ps1 -PythonExecutable "C:\path\to\python.exe" tests\test_data_isolation.py
+.\scripts\run_isolated_tests.ps1 -PythonExecutable "C:\path\to\python.exe" -KeepRun tests\test_data_isolation.py
+```
+
+The selected interpreter supplies Python and the installed dependencies only.
+The code under test, the test files, the run directory, and every isolated data
+path still belong to the worktree that owns the script: the runner derives that
+worktree from its own script path, changes to that root before pytest, and runs
+`-m pytest`, so the usual import and collection come from the worktree under
+test rather than from the caller's directory. That is the default behaviour, not
+a hard boundary: changing directory cannot cancel `PYTHONPATH`, a site-wide
+`sitecustomize`, an installed package with the same name, or any other
+environment setting the caller already has. Keep the environment ordinary — the
+runner does not attempt to sanitise it. The runner refuses an interpreter that
+cannot import pytest, and records the interpreter plus the project root it
+tested in `artifacts/python-executable.txt` and `artifacts/project-root.txt`.
+
+Verified 2026-10-12 in a worktree without `.venv`, running that worktree's own
+`scripts\run_isolated_tests.ps1` with `-PythonExecutable` pointing at an
+existing interpreter:
+
+- default invocation without `.venv`: stops before creating a run directory and
+  names the missing path plus the `-PythonExecutable` form;
+- `tests/test_data_isolation.py`: `8 passed`, exit 0, successful run cleaned;
+- invocation from a different directory: same `8 passed` in the script's
+  worktree, no pollution of the calling directory;
+- a retained run records both halves of the pair: `artifacts/project-root.txt`
+  names the worktree that was tested, `artifacts/python-executable.txt` the
+  interpreter that ran it;
+- failing selections retain the run with `artifacts/exit-code.txt` `4`
+  (collection error) and `5` (no tests collected), and the caller observes the
+  same code through `$LASTEXITCODE` in a session or as the process exit code
+  when the script is started with `powershell -File`.
 
 ## Development-evidence regressions
 

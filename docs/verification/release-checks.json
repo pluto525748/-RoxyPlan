@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-30",
+  "source_commit": "71bbaea6f8b90a73207a800f3d78f3b7cccdbef4",
+  "tested_tree": "privacy-filtered public candidate",
+  "test_type": "offline_isolated",
+  "result": {
+    "tests": 213,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 2,
+    "passed": 211
+  },
+  "python": "3.10.20",
+  "pytest": "9.1.1",
+  "platform": "Windows x64 / Qt offscreen",
+  "selection": [
+    "test_daily_growth_reference.py",
+    "test_learning_context_continuity.py",
+    "test_learning_dialogue_history.py",
+    "test_study_edition.py",
+    "test_runtime_paths.py",
+    "test_beta_packaging.py",
+    "test_feedback_export.py",
+    "test_seven_day_priority_regressions.py",
+    "test_today_candidate_date_binding.py",
+    "test_long_suggestion_adoption.py",
+    "test_pet_sleep_quiet.py"
+  ],
+  "junit_original_sha256": "9b5a3bac0b747938683d7e4ed099127e2b873d4c133887215aa96fbb3ebcfe2e",
+  "public_source_check": "passed",
+  "python_source_files": 344,
+  "python_logic_changes": 0,
+  "visible_desktop_acceptance": false,
+  "real_model_requests": 0,
+  "clean_machine_test": false,
+  "installer_attached": false
+}

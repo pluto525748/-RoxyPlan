@@ -380,7 +380,7 @@ def test_second_suggestion_can_be_added_after_first_selection_completed(tmp_path
         intent="chat",
     )
 
-    listed = service.handle("嗯，把你刚刚梳理的安排塞进我今天待办吧", conversation_id)
+    listed = service.handle("嗯，把你刚刚梳理的安排中的第一项塞进我今天待办吧", conversation_id)
     assert listed.status == "clarification"
     assert "1." in listed.message and "2." in listed.message
 
@@ -445,7 +445,7 @@ def test_suggestion_is_consumed_after_explicit_duplicate_confirmation(tmp_path):
         intent="chat",
     )
     growth.add_task("花25分钟看完一小节机器学习内容")
-    service.handle("把你刚刚梳理的安排加入今天待办", conversation_id)
+    service.handle("把你刚刚梳理的安排中的第一项加入今天待办", conversation_id)
 
     duplicate = service.handle("第一个", conversation_id)
     assert duplicate.status == "clarification"

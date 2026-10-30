@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from modules.contracts import ToolResult
+from modules.development_log import DevelopmentLog
 from modules.intent_router import LLMIntentParser
 from modules.semantic_action_parser import SemanticParseResult
 from v18_test_support import NoCallLLM, RecordingLLM, build_service
@@ -103,6 +104,130 @@ def _production_semantic_service(tmp_path, llm):
     service.intent_router.configure_llm(LLMIntentParser(llm.chat), True)
     service.conversation_service.semantic_decision_compatibility_enabled = False
     return service, growth, memory, history
+
+
+def _two_plan_decision(*, explicit_command, needs_confirmation=True,
+                       request_mode=None):
+    return {
+        "mode": "write", "intent": "multi_action", "entities": {},
+        "proposed_tool": None, "confidence": 0.98,
+        "follow_up_target": None, "needs_confirmation": needs_confirmation,
+        "warnings": [], "clarification_question": None,
+        "candidate_actions": [
+            {"intent": "add_plan", "entities": {"title": "离线验收复习窗口函数"}},
+            {"intent": "add_plan", "entities": {"title": "离线验收阅读技术文档"}},
+        ],
+        "subject": "self", "polarity": "positive", "modality": "desire",
+        "request_mode": request_mode or ("execute" if explicit_command else "possible_action"),
+        "explicit_command": explicit_command,
+    }
+
+
+def test_explicit_two_plan_add_ignores_unjustified_model_confirmation(tmp_path):
+    llm = SemanticThenReplyLLM(
+        _two_plan_decision(explicit_command=True), "不应进入普通聊天回复。",
+    )
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    diagnostics = DevelopmentLog(tmp_path / "development-log", enabled=True)
+    service.conversation_service.development_log = diagnostics
+
+    result = service.handle(
+        "今天安排两项：复习窗口函数；阅读技术文档。请执行这两项", "two-explicit-adds",
+    )
+
+    assert result.status == "completed", result.message
+    assert [item.tool for item in result.tool_results] == ["add_plan", "add_plan"]
+    assert [item["title"] for item in growth.tasks()] == [
+        "离线验收复习窗口函数", "离线验收阅读技术文档",
+    ]
+    events = [
+        json.loads(line) for path in diagnostics.run_directory.glob("events*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    decision = next(event["fields"] for event in events
+                    if event["event"] == "confirmation_decision")
+    assert decision == {
+        "action_count": 2, "model_hint": True,
+        "resolver_confirmation": False, "policy_pending": False,
+        "explicit_command": True, "effective_confirmation": False,
+    }
+    assert "离线验收复习窗口函数" not in json.dumps(events, ensure_ascii=False)
+
+
+def test_confirmed_two_plan_add_keeps_entire_batch(tmp_path):
+    llm = SemanticThenReplyLLM(
+        _two_plan_decision(explicit_command=False, request_mode="execute"),
+        "不应进入普通聊天回复。",
+    )
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "two-confirmed-adds"
+
+    first = service.handle("我想安排两项计划", conversation_id)
+    assert first.status == "confirmation_required", first.message
+    assert "离线验收复习窗口函数" in first.message
+    assert "离线验收阅读技术文档" in first.message
+    assert growth.tasks() == []
+
+    second = service.handle("确认", conversation_id)
+    assert second.status == "completed", second.message
+    assert [item.tool for item in second.tool_results] == ["add_plan", "add_plan"]
+    assert [item["title"] for item in growth.tasks()] == [
+        "离线验收复习窗口函数", "离线验收阅读技术文档",
+    ]
+    repeated = service.handle("确认", conversation_id)
+    assert repeated.status != "completed" or not repeated.tool_results
+    assert len(growth.tasks()) == 2
+
+
+def test_two_plan_confirmation_cancel_writes_nothing(tmp_path):
+    llm = SemanticThenReplyLLM(
+        _two_plan_decision(explicit_command=False, request_mode="execute"),
+        "不应进入普通聊天回复。",
+    )
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "two-cancelled-adds"
+    assert service.handle("我想安排两项计划", conversation_id).status == "confirmation_required"
+    service.handle("取消", conversation_id)
+    assert growth.tasks() == []
+    service.handle("确认", conversation_id)
+    assert growth.tasks() == []
+
+
+def test_two_plan_confirmation_expires_when_business_date_changes(tmp_path):
+    llm = SemanticThenReplyLLM(
+        _two_plan_decision(explicit_command=False, request_mode="execute"),
+        "不应进入普通聊天回复。",
+    )
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    now = [datetime(2026, 10, 10, 20, 0)]
+    service.conversation_service.business_now_provider = lambda: now[0]
+    growth.now_provider = lambda: now[0]
+    conversation_id = "two-cross-day-adds"
+    assert service.handle("我想安排两项计划", conversation_id).status == "confirmation_required"
+    now[0] += timedelta(days=1)
+
+    result = service.handle("确认", conversation_id)
+
+    assert result.status == "failed"
+    assert "日期已经变化" in result.message
+    assert growth.tasks("2026-10-10") == []
+    assert growth.tasks("2026-10-11") == []
+
+
+def test_two_plan_confirmation_revalidates_full_batch_before_writing(tmp_path):
+    llm = SemanticThenReplyLLM(
+        _two_plan_decision(explicit_command=False, request_mode="execute"),
+        "不应进入普通聊天回复。",
+    )
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "two-stale-adds"
+    assert service.handle("我想安排两项计划", conversation_id).status == "confirmation_required"
+    existing = growth.add_task("离线验收复习窗口函数")
+
+    result = service.handle("确认", conversation_id)
+
+    assert result.status == "failed"
+    assert [item["uid"] for item in growth.tasks()] == [existing["uid"]]
 
 
 def _seed_mixed_plan_state(growth):
@@ -413,6 +538,10 @@ def test_stable_preference_uses_one_llm_decision_then_requires_confirmation(tmp_
     [
         ("我要努力学习", "这个方向还比较宽。你最想先提升哪门具体内容？"),
         ("我要成为百万富翁", "这个愿望背后，你更看重自由、保障，还是事业成就？"),
+        (
+            "我还想今年通过某项考试",
+            "这件事可以慢慢准备。你更希望先了解考试安排，还是先定一个今年的节奏？",
+        ),
     ],
 )
 def test_broad_aspirations_remain_chat_without_side_effects(tmp_path, text, reply):
@@ -926,6 +1055,30 @@ def test_natural_assistant_plan_reference_lists_options_before_writing(tmp_path)
     assert [item["title"] for item in growth.tasks()] == ["确认素材筛选"]
 
 
+def test_exact_visible_four_item_reply_is_added_without_second_extraction(tmp_path):
+    assistant_reply = (
+        "今天可以这样做：\n"
+        "1. 把文档拆成小段\n"
+        "2. 用十五分钟整理这些标记\n"
+        "3. 写一段文档总结\n"
+        "4. 做一道算法题"
+    )
+    llm = AssistantPlanOptionLLM([])
+    service, growth, _memory, history = _production_semantic_service(tmp_path, llm)
+    session_id = "v22-exact-four-reference"
+    service.conversation_service._ensure_history_session(session_id)
+    history.add_message(session_id, "assistant", assistant_reply, intent="chat")
+
+    response = service.handle("把你说的全部加入今天计划", session_id)
+
+    assert [item.tool for item in response.tool_results] == ["add_plan"] * 4
+    assert all(item.success for item in response.tool_results)
+    assert [item["title"] for item in growth.tasks()] == [
+        "把文档拆成小段", "用十五分钟整理这些标记", "写一段文档总结", "做一道算法题",
+    ]
+    assert "option_extraction" not in llm.events
+
+
 def test_assistant_plan_reference_separates_context_from_write_destination(tmp_path):
     assistant_reply = "今晚按三步推进：核对片头、检查音轨、记录发布清单。"
     llm = AssistantPlanOptionLLM(
@@ -1256,7 +1409,8 @@ def test_missing_completed_plan_creates_structured_action_log_offer(tmp_path):
     pending = service.interaction_coordinator.current(conversation_id)
 
     assert first.status == "clarification"
-    assert "记录一条行动" in first.message
+    assert "我完成了桌面真实验收" in first.message
+    assert "时长未记录" in first.message
     assert pending.state == "awaiting_confirmation"
     assert pending.interaction_kind == "action_log_offer"
     assert pending.immutable_arguments == {
@@ -1273,6 +1427,184 @@ def test_missing_completed_plan_creates_structured_action_log_offer(tmp_path):
         "我完成了桌面真实验收"
     ]
     assert service.interaction_coordinator.current(conversation_id).state == "completed"
+
+
+@pytest.mark.parametrize("wording", [
+    "第二项我做完了，其余先不动。",
+    "只把第二项完成。",
+    "第二个做好了，其他保持原样。",
+    "第一项别动，第二项完成。",
+])
+def test_displayed_single_completion_keeps_other_uids(tmp_path, wording):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    seeded = [growth.add_task(title) for title in
+              ("验收整理笔记", "验收练一道算法题", "验收读英文材料")]
+    conversation_id = "oct10-single-" + str(len(wording)) + wording
+    listed = service.handle("查看今日计划", conversation_id)
+    response = service.handle(wording, conversation_id)
+    actual = {item["uid"]: item["done"] for item in growth.tasks()}
+    assert listed.status == "completed"
+    assert response.status == "completed", response.message
+    assert [result.tool for result in response.tool_results] == ["complete_plan"]
+    assert [actual[item["uid"]] for item in seeded] == [False, True, False]
+
+
+def test_displayed_single_completion_fails_closed_after_target_removed(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    first = growth.add_task("验收第一项")
+    second = growth.add_task("验收第二项")
+    conversation_id = "oct10-single-deleted"
+    assert service.handle("查看今日计划", conversation_id).status == "completed"
+    growth.delete_by_id(int(second["id"]))
+    result = service.handle("第二项我做完了，其余先不动。", conversation_id)
+    assert result.status == "failed"
+    assert result.tool_results == []
+    assert next(item for item in growth.tasks() if item["uid"] == first["uid"])["done"] is False
+
+
+def test_displayed_single_completion_rejects_expired_list(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    seeded = [growth.add_task(title) for title in ("验收第一项", "验收第二项")]
+    conversation_id = "oct10-single-expired"
+    assert service.handle("查看今日计划", conversation_id).status == "completed"
+    service.interaction_coordinator.now_provider = lambda: datetime.now() + timedelta(days=1)
+    result = service.handle("第二项我做完了，其余先不动。", conversation_id)
+    assert result.status == "failed"
+    assert result.tool_results == []
+    assert [item["done"] for item in growth.tasks() if item["uid"] in
+            {seeded[0]["uid"], seeded[1]["uid"]}] == [False, False]
+
+
+def test_displayed_single_completion_rejects_cross_day_list(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    seeded = [growth.add_task(title) for title in ("验收第一项", "验收第二项")]
+    conversation_id = "oct10-single-cross-day"
+    assert service.handle("查看今日计划", conversation_id).status == "completed"
+    growth.now_provider = lambda: datetime.now() + timedelta(days=1)
+    result = service.handle("第二项我做完了，其余先不动。", conversation_id)
+    assert result.status == "failed"
+    assert result.tool_results == []
+    assert [item["done"] for item in growth.tasks(seeded[0]["date"])] == [False, False]
+
+
+def test_action_offer_prompt_tracks_pending_content_and_duration(tmp_path):
+    decision = {
+        "mode": "write", "intent": "add_action_log",
+        "entities": {"content": "帮同学排查脚本报错", "duration_minutes": 25},
+        "proposed_tool": "add_action_log", "confidence": 0.95,
+        "follow_up_target": None, "needs_confirmation": True,
+        "warnings": [], "clarification_question": None,
+        "candidate_actions": [], "subject": "self", "polarity": "positive",
+        "modality": "commitment", "request_mode": "possible_action",
+        "explicit_command": False,
+    }
+    llm = SemanticThenReplyLLM(decision, "不应进入普通回复")
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "oct10-action-offer"
+    first = service.handle(
+        "今天临时帮同学排查了一个脚本报错，花了二十五分钟，记一下这件进展。",
+        conversation_id,
+    )
+    assert "帮同学排查脚本报错" in first.message
+    assert "25 分钟" in first.message
+    assert growth.records_for_date() == []
+    llm.decision["entities"] = {"content": "读完了一篇技术文章"}
+    second = service.handle(
+        "后来我还读完了一篇技术文章，也记到今天的实际进展里，时间没统计。",
+        conversation_id,
+    )
+    pending = service.interaction_coordinator.current(conversation_id)
+    assert "读完了一篇技术文章" in second.message
+    assert "时长未记录" in second.message
+    assert "脚本报错" not in second.message
+    assert pending.immutable_arguments == {
+        "tool_name": "add_action_log", "content": "读完了一篇技术文章",
+    }
+
+
+def test_displayed_advice_selection_preserves_structured_fields_and_order(tmp_path):
+    advice = (
+        "1. Python 列表推导式，40 分钟。先看例子再做练习。\n"
+        "2. 英文技术文档阅读，35 分钟。选一篇 Python 相关文档，先通读，再精读并记录术语。\n"
+        "3. 收尾，15 分钟。用自己的话复述要点。"
+    )
+    advice_decision = _chat_decision()
+    advice_decision.update(request_mode="advice", modality="desire")
+    llm = SemanticThenReplyLLM(advice_decision, advice)
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "oct10-advice-fields"
+    first = service.handle(
+        "我今晚有一个半小时，想兼顾 Python 列表推导式和英文技术文档阅读。"
+        "先帮我想个可执行安排，暂时别加进计划。",
+        conversation_id,
+    )
+    assert first.status == "chat"
+    assert growth.tasks() == []
+    second = service.handle("第二个挺合适，把它放进今天的计划。", conversation_id)
+    saved = growth.tasks()[0]
+    assert second.status == "completed"
+    assert saved["title"] == "英文技术文档阅读"
+    assert saved["note"] == "选一篇 Python 相关文档，先通读，再精读并记录术语。"
+    assert saved["duration_minutes"] == 35
+    assert saved["time_slot"] == "晚上"
+    assert len(growth.tasks()) == 1
+    llm.decision.update(
+        mode="write", intent="add_plan", proposed_tool="add_plan",
+        entities={"title": "第三个"}, confidence=0.95,
+        request_mode="execute", modality="commitment", explicit_command=True,
+    )
+    third = service.handle("第三个也加入今天的计划。", conversation_id)
+    assert third.status == "completed"
+    assert [item["title"] for item in growth.tasks()] == ["英文技术文档阅读", "收尾"]
+
+
+def test_advice_duration_first_format_keeps_full_note_without_new_model_call(tmp_path):
+    advice = (
+        "1. 先用 15 分钟热身：复习列表推导式的基本写法。\n"
+        "2. 接着 25 分钟做练习：自己写 5 到 8 个小例子，从简单映射过渡到带 if 过滤，"
+        "再试一个嵌套推导式。写不出来就回看第 1 步的笔记。\n"
+        "3. 然后用 35 分钟读英文技术文档：选一篇和 Python 相关的文档。"
+    )
+    decision = _chat_decision()
+    decision.update(request_mode="advice", modality="desire")
+    llm = SemanticThenReplyLLM(decision, advice)
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "oct10-duration-first-advice"
+    first = service.handle(
+        "我今晚有一个半小时，想兼顾 Python 列表推导式和英文技术文档阅读。"
+        "先帮我想个可执行安排，暂时别加进计划。",
+        conversation_id,
+    )
+    calls_before_selection = llm.semantic_calls + len(llm.reply_calls)
+    second = service.handle("第二个挺合适，把它放进今天的计划。", conversation_id)
+    saved = growth.tasks()[0]
+    assert first.status == "chat" and second.status == "completed"
+    assert saved["title"] == "做练习"
+    assert saved["note"] == (
+        "自己写 5 到 8 个小例子，从简单映射过渡到带 if 过滤，"
+        "再试一个嵌套推导式。写不出来就回看第 1 步的笔记。"
+    )
+    assert saved["duration_minutes"] == 25
+    assert saved["time_slot"] == "晚上"
+    assert llm.semantic_calls + len(llm.reply_calls) == calls_before_selection
+
+
+def test_advice_selection_latest_explicit_time_slot_overrides_original(tmp_path):
+    advice = "1. 英文技术文档阅读，35 分钟。先通读，再精读并记录术语。"
+    decision = _chat_decision()
+    decision.update(request_mode="advice", modality="desire")
+    llm = SemanticThenReplyLLM(decision, advice)
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    conversation_id = "oct10-advice-time-override"
+    assert service.handle(
+        "我今晚想读英文技术文档，先给我一条建议，暂时别加计划。",
+        conversation_id,
+    ).status == "chat"
+    before = llm.semantic_calls + len(llm.reply_calls)
+    result = service.handle("第一项改到今天下午，加入计划。", conversation_id)
+    assert result.status == "completed", result.message
+    assert growth.tasks()[0]["time_slot"] == "下午"
+    assert llm.semantic_calls + len(llm.reply_calls) == before
 
 
 def test_plan_display_ordinal_corrects_wrong_model_target_end_to_end(tmp_path):
@@ -1448,6 +1780,133 @@ def test_all_except_named_plan_is_bound_then_confirmed(tmp_path):
     assert second.status == "completed"
     assert [item.tool for item in second.tool_results] == ["complete_plan"] * 3
     assert [done_by_uid[item["uid"]] for item in tasks] == [True, True, True, False]
+
+
+def test_recent_list_all_completed_claim_never_becomes_one_completion(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    service.conversation_service.semantic_decision_compatibility_enabled = False
+    tasks = [growth.add_task(title) for title in ("梳理链路", "精读综述", "动手实验")]
+    growth.complete_by_id(int(tasks[0]["id"]))
+    conversation_id = "v22-recent-list-all-completed"
+    service.handle("查看今日计划", conversation_id)
+
+    preview = service.handle("全部已经完成", conversation_id)
+    pending = service.interaction_coordinator.current(conversation_id)
+    before = {item["uid"]: item["done"] for item in growth.tasks()}
+    agreement = service.handle("对", conversation_id)
+    after_agreement = {item["uid"]: item["done"] for item in growth.tasks()}
+
+    assert preview.status == "clarification"
+    assert "精读综述" in preview.message and "动手实验" in preview.message
+    assert pending.interaction_kind == "plan_batch_completion"
+    assert pending.state == "awaiting_confirmation"
+    assert service.interaction_coordinator.current(conversation_id).state == "completed"
+    assert [before[item["uid"]] for item in tasks] == [True, False, False]
+    assert [item.tool for item in agreement.tool_results] == ["complete_plan"] * 2
+    assert all(after_agreement[item["uid"]] for item in tasks)
+
+
+def test_recent_list_except_last_unfinished_previews_only_other_pending(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    service.conversation_service.semantic_decision_compatibility_enabled = False
+    tasks = [growth.add_task(title) for title in ("梳理链路", "精读综述", "动手实验")]
+    conversation_id = "v22-recent-list-except-last"
+    service.handle("查看今日计划", conversation_id)
+
+    preview = service.handle("除了最后一项没有完成其余都完成了", conversation_id)
+    before = {item["uid"]: item["done"] for item in growth.tasks()}
+    confirmation = service.handle("确认", conversation_id)
+    after = {item["uid"]: item["done"] for item in growth.tasks()}
+
+    assert preview.status == "clarification"
+    assert "梳理链路" in preview.message and "精读综述" in preview.message
+    assert "动手实验" not in preview.message
+    assert not any(before.values())
+    assert [item.tool for item in confirmation.tool_results] == ["complete_plan"] * 2
+    assert [after[item["uid"]] for item in tasks] == [True, True, False]
+
+
+def test_batch_completion_cancel_keeps_every_uid(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    tasks = [growth.add_task(title) for title in ("梳理链路", "精读综述", "动手实验")]
+    conversation_id = "oct10-batch-cancel"
+    service.handle("查看今日计划", conversation_id)
+    preview = service.handle("这三项我都完成了", conversation_id)
+    cancelled = service.handle("取消", conversation_id)
+    assert preview.status == "clarification"
+    assert cancelled.tool_results == []
+    assert [item["done"] for item in growth.tasks() if item["uid"] in
+            {task["uid"] for task in tasks}] == [False, False, False]
+
+
+@pytest.mark.parametrize(
+    "batch_claim", ["全部已经完成", "除了最后一项没有完成其余都完成了"]
+)
+def test_unbound_batch_claim_and_short_agreement_cannot_write_one_plan(tmp_path, batch_claim):
+    decision = {
+        "mode": "write",
+        "intent": "complete_plan",
+        "entities": {"match_text": "精读综述"},
+        "proposed_tool": "complete_plan",
+        "confidence": 0.98,
+        "follow_up_target": None,
+        "needs_confirmation": False,
+        "warnings": [],
+        "clarification_question": None,
+        "candidate_actions": [],
+        "subject": "self",
+        "polarity": "positive",
+        "modality": "commitment",
+        "request_mode": "execute",
+        "explicit_command": True,
+    }
+    llm = SemanticThenReplyLLM(decision, "不应声称完成计划。")
+    service, growth, _memory, _history = _production_semantic_service(tmp_path, llm)
+    growth.add_task("梳理链路")
+    growth.add_task("精读综述")
+    conversation_id = "v22-unbound-batch-" + str(len(batch_claim))
+
+    refused = service.handle(batch_claim, conversation_id)
+    agreement = service.handle("对", conversation_id)
+
+    assert refused.tool_results == []
+    assert "没有修改计划" in refused.message
+    assert agreement.tool_results == []
+    assert "没有修改计划" in agreement.message
+    assert all(not item["done"] for item in growth.tasks())
+
+
+def test_unparsed_batch_wording_cannot_fall_through_to_one_model_target(tmp_path):
+    decision = {
+        "mode": "write",
+        "intent": "complete_plan",
+        "entities": {"match_text": "精读综述"},
+        "proposed_tool": "complete_plan",
+        "confidence": 0.98,
+        "follow_up_target": None,
+        "needs_confirmation": False,
+        "warnings": [],
+        "clarification_question": None,
+        "candidate_actions": [],
+        "subject": "self",
+        "polarity": "positive",
+        "modality": "commitment",
+        "request_mode": "execute",
+        "explicit_command": True,
+    }
+    service, growth, _memory, _history = _production_semantic_service(
+        tmp_path, SemanticThenReplyLLM(decision, "不应声称完成计划。"),
+    )
+    growth.add_task("梳理链路")
+    growth.add_task("精读综述")
+    conversation_id = "v22-unparsed-batch-scope"
+    service.handle("查看今日计划", conversation_id)
+
+    result = service.handle("除了最后一个没做完，其他我都完成了", conversation_id)
+
+    assert result.tool_results == []
+    assert "没有修改计划" in result.message
+    assert all(not item["done"] for item in growth.tasks())
 
 
 def test_multiple_named_completed_plans_are_bound_then_confirmed(tmp_path):

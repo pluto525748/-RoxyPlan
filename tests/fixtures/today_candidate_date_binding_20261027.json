@@ -1,0 +1,27 @@
+{
+  "source": "Fresh synthetic real-provider first answer on 434e7a1; immutable original retained in ignored run",
+  "case": "W04-v2-r1-advice",
+  "source_sha256": "1eee2623a830f79917abfa5d34f9f6158c5caa48c506451e18d528bc95c992f8",
+  "business_date": "2026-11-24",
+  "user": "今天能学20分钟过拟合，结合昨天的实际进展给两项今日候选，分别12和8分钟，先只展示。",
+  "semantic": {
+    "mode": "read",
+    "intent": "show_plan",
+    "entities": {},
+    "proposed_tool": "show_plan",
+    "confidence": 0.55,
+    "follow_up_target": "",
+    "needs_confirmation": false,
+    "warnings": [],
+    "clarification_question": "",
+    "candidate_actions": [],
+    "subject": "self",
+    "polarity": "positive",
+    "modality": "question",
+    "request_mode": "query",
+    "explicit_command": false
+  },
+  "raw_reply": "（轻轻点头）可以，先只展示，不写进计划。\n\n昨天的实际记录是：你完成了“理解训练集与测试集的区别”12分钟，也整理了概念卡；还剩“说明训练集和测试集各用在哪一步”8分钟没完成。今天没有已有计划，所以这20分钟可以这样分：\n\n1. 理解过拟合：训练误差低但测试误差高的含义，12分钟。接着昨天的训练集、测试集概念往下走。\n2. 用一句话说明过拟合为什么在测试集上暴露，8分钟。写下你的判断，不要求完整讲义式回答。\n\n这两项合起来正好20分钟。你想选其中一项、两项都加入，还是先调整内容？",
+  "original_final": "（轻轻点头）可以，先只展示，不写进计划。\n\n昨天的实际记录是：你完成了“理解训练集与测试集的区别”12分钟，也整理了概念卡；还剩“说明训练集和测试集各用在哪一步”8分钟没完成。今天没有已有计划，所以这20分钟可以这样分：\n\n1. 理解过拟合：训练误差低但测试误差高的含义，12分钟。接着昨天的训练集、测试集概念往下走。\n2. 用一句话说明过拟合为什么在测试集上暴露，8分钟。写下你的判断，不要求完整讲义式回答。\n\n这两项合起来正好20分钟。你想选其中一项、两项都加入，还是先调整内容？",
+  "original_snapshot": {}
+}

@@ -43,6 +43,7 @@ class ProactiveManager:
         self._last_any_reminder_at: Optional[datetime] = None
         self._last_type_reminder_at: Dict[str, datetime] = {}
         self._review_reminded_dates: Set[str] = set()
+        self._action_hint_dates: Set[str] = set()
         self._last_growth_reminder_type = ""
         # An idle nudge is useful once per uninterrupted idle stretch.  A short
         # test-mode cooldown must not turn the same nudge into chat spam while
@@ -141,7 +142,7 @@ class ProactiveManager:
 
         reminder = {
             "type": "progress_encourage",
-            "text": "这个完成得不错，要不要顺手记录一下你刚才做了什么？",
+            "text": "这个完成得不错，今天又推进了一步。",
         }
         self._mark_reminded("progress_encourage", now)
         print("[Proactive] remind: progress_encourage", flush=True)
@@ -183,19 +184,30 @@ class ProactiveManager:
                 "要不要先挑一个最小的做？"
             ),
         }
+        completed_count = len(tasks) - len(pending)
+        if tasks and not pending:
+            action_text = "今天的计划都完成了，做得不错。有计划之外的小进展，也可以随手记下来。"
+        elif completed_count:
+            action_text = (
+                f"今天已经完成 {completed_count} 项计划。"
+                "如果还有计划之外的进展，也可以随手记下来。"
+            )
+        else:
+            action_text = "今天还没有行动记录；有计划之外做过的事，也可以随手记下来。"
         action_reminder = {
             "type": "no_action_log",
-            "text": "今天还没有行动记录，要不要从一个很小的动作开始？",
+            "text": action_text,
         }
+        can_hint_action = today not in self._action_hint_dates
 
-        if pending and tasks and not records:
+        if pending and tasks and not records and can_hint_action:
             if self._last_growth_reminder_type == "plan_pending":
                 candidates.extend((action_reminder, plan_reminder))
             else:
                 candidates.extend((plan_reminder, action_reminder))
         elif pending:
             candidates.append(plan_reminder)
-        elif tasks and not records:
+        elif tasks and not records and can_hint_action:
             candidates.append(action_reminder)
         return candidates
 
@@ -204,6 +216,8 @@ class ProactiveManager:
         self._last_type_reminder_at[reminder_type] = now
         if reminder_type == "review_time":
             self._review_reminded_dates.add(now.date().isoformat())
+        if reminder_type == "no_action_log":
+            self._action_hint_dates.add(now.date().isoformat())
         if reminder_type == "idle_nudge":
             self._idle_nudge_sent = True
         if reminder_type in {"plan_pending", "no_action_log"}:

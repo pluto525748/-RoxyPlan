@@ -37,8 +37,12 @@ class LocalJsonGrowthRepository(GrowthRepository):
     def plan_exists(self) -> bool:
         return self.plan_file.exists()
 
-    def load_plan(self, fallback: Dict[str, object]) -> Dict[str, object]:
-        return self._load_with_legacy(self.plan_file, self.legacy_plan_file, fallback)
+    def load_plan(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
+        return self._load_with_legacy(
+            self.plan_file, self.legacy_plan_file, fallback, strict=strict
+        )
 
     def save_plan(self, data: Dict[str, object]) -> bool:
         return atomic_write_json(
@@ -48,8 +52,12 @@ class LocalJsonGrowthRepository(GrowthRepository):
     def action_exists(self) -> bool:
         return self.action_file.exists()
 
-    def load_actions(self, fallback: Dict[str, object]) -> Dict[str, object]:
-        return self._load_with_legacy(self.action_file, self.legacy_action_file, fallback)
+    def load_actions(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
+        return self._load_with_legacy(
+            self.action_file, self.legacy_action_file, fallback, strict=strict
+        )
 
     def save_actions(self, data: Dict[str, object]) -> bool:
         return atomic_write_json(
@@ -59,8 +67,12 @@ class LocalJsonGrowthRepository(GrowthRepository):
     def growth_exists(self) -> bool:
         return self.growth_file.exists()
 
-    def load_growth(self, fallback: Dict[str, object]) -> Dict[str, object]:
-        return self._load_with_legacy(self.growth_file, self.legacy_growth_file, fallback)
+    def load_growth(
+        self, fallback: Dict[str, object], *, strict: bool = False,
+    ) -> Dict[str, object]:
+        return self._load_with_legacy(
+            self.growth_file, self.legacy_growth_file, fallback, strict=strict
+        )
 
     def save_growth(self, data: Dict[str, object]) -> bool:
         return atomic_write_json(
@@ -82,6 +94,7 @@ class LocalJsonGrowthRepository(GrowthRepository):
         current: Path,
         legacy: Optional[Path],
         fallback: Dict[str, object],
+        *, strict: bool = False,
     ) -> Dict[str, object]:
         if current.exists():
             return load_json_document(
@@ -90,6 +103,7 @@ class LocalJsonGrowthRepository(GrowthRepository):
                 label="Growth",
                 lock_dir=self.lock_dir,
                 backup_dir=self.backup_dir,
+                strict=strict,
             )
         if legacy is not None and legacy.exists():
             print(f"[Growth] migrated legacy {legacy.name}", flush=True)
@@ -99,5 +113,8 @@ class LocalJsonGrowthRepository(GrowthRepository):
                 label="Growth",
                 lock_dir=self.lock_dir,
                 backup_dir=self.backup_dir,
+                strict=strict,
             )
+        if strict:
+            raise FileNotFoundError(current)
         return deepcopy(fallback)

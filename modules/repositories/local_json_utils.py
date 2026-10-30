@@ -73,9 +73,12 @@ def load_json_document(
     label: str,
     lock_dir: Path,
     backup_dir: Optional[Path] = None,
+    strict: bool = False,
 ) -> Dict[str, object]:
     target = Path(path)
     if not target.exists():
+        if strict:
+            raise FileNotFoundError(target)
         return deepcopy(fallback)
     try:
         with json_transaction(target, lock_dir):
@@ -83,16 +86,22 @@ def load_json_document(
         if isinstance(loaded, dict):
             return loaded
         print(f"[{label}] load failed: {target.name}: InvalidDocument", flush=True)
+        if strict:
+            raise ValueError(f"Invalid {label} document: {target.name}")
         if backup_dir is not None:
             backup_corrupt_file(target, backup_dir, label=label, lock_dir=lock_dir)
         return deepcopy(fallback)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         print(f"[{label}] load failed: {target.name}: {type(error).__name__}", flush=True)
+        if strict:
+            raise ValueError(f"Invalid {label} document: {target.name}") from error
         if backup_dir is not None:
             backup_corrupt_file(target, backup_dir, label=label, lock_dir=lock_dir)
         return deepcopy(fallback)
     except (OSError, TimeoutError) as error:
         print(f"[{label}] load failed: {target.name}: {type(error).__name__}", flush=True)
+        if strict:
+            raise
         return deepcopy(fallback)
 
 

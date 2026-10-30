@@ -743,6 +743,8 @@ class InteractionStateCoordinator:
     @staticmethod
     def _normalize(text: str) -> str:
         value = re.sub(r"[\s，,。.!！?？；;：:]", "", str(text or "").strip())
+        if value == "确定" and not re.search(r"[?？]", str(text or "")):
+            return "确认"
         # Accept harmless surrounding quote punctuation on a short control
         # reply (for example ``确认‘``) without stripping quotes from the
         # middle of ordinary user content.

@@ -201,9 +201,11 @@ def test_new_conversation_keeps_service_memories_and_candidates():
         original_repository = window.memory_service.repository
         old_session = window.current_session_id
 
-        window.new_chat_session()
+        old = history.new_session("旧手动会话")
+        assert window.switch_chat_session(old["session_id"])
+        window.return_today_session()
 
-        assert window.current_session_id != old_session
+        assert window.current_session_id == old_session
         assert window.memory_service is original_service
         assert window.memory_service.repository is original_repository
         assert len(window.memory_service.list_memories().data["memories"]) == 1

@@ -173,7 +173,7 @@ def test_fixed_commands_keep_priority_with_structured_intents():
         "完成计划1": "complete_plan",
         "删除计划1": "delete_plan",
         "记录：完成测试": "add_action_log",
-        "今日复盘": "daily_review",
+        "今日复盘": "save_review",
         "记住：我喜欢蓝色": "add_memory_request",
         "忘记：我喜欢蓝色": "delete_memory",
     }
