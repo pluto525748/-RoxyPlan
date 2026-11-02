@@ -14,10 +14,11 @@ RoxyPlan 的业务编排、交互状态、工具校验、正式记忆治理、�
 | FastAPI / Uvicorn | 开发验证0.103.2 / 0.23.2 | MIT / BSD-3-Clause；可选Local Web适配，不是公网服务 |
 | pytest / HTTPX | 开发验证9.1.1 / 0.24.1 | MIT / BSD-3-Clause；离线测试与Web测试工具 |
 | PyInstaller | 6.22.3，hooks 2026.8 | GPL及bootloader例外／适用hook许可；构建工具，不将本项目代码改为GPL |
+| Inno Setup | 6.7.4，[官方许可](https://jrsoftware.org/files/is/license.txt) | Windows安装器生成工具，本项目非商业构建；原始许可随包保留 |
 | DeepSeek / Ollama | 见模型配置文档 | 外部模型服务／运行服务；不随仓库分发Key或模型权重，不将服务条款写成MIT |
 | 桌宠图集 | ga hing / yznzl，见 [NOTICE](NOTICE) | 独立个人非商业范围，见 [素材许可](ASSET_LICENSE.md)，不属于MIT资产 |
 
-这是源码发布，不包含Qt、Python、微软运行库或打包后的DLL。以后分发二进制时，需要按**实际收集内容**重新附许可证、版权及适用对应源码获取／替换材料；旧Beta清单不能代替新包核验。本候选不附未经验证的安装包。
+Git 仓库不提交Qt、Python或编译产物。Release 单独提供 Windows 安装包与便携包：其中包含 Python、Qt 动态运行依赖、原始许可证与五份对应 Qt/PySide 源码归档，按实际文件清单核验；`third_party/` 提供来源、哈希及动态库替换说明。Qt PDF/PDFium、Virtual Keyboard、Quick/QML 与可选软件 OpenGL 不在保留的原生依赖闭包中。微软运行库由用户从微软官方获取，不随包复制。完整检查范围见 [windows-release.json](docs/verification/windows-release.json)，不以本机检查冒充干净机验收。
 
 ## 数据及研究参考
 

@@ -1,7 +1,7 @@
 {
   "source_commit": "71bbaea6f8b90a73207a800f3d78f3b7cccdbef4",
   "public_base": "75301f7d933f4827db9a865e632b30e69581ec9e",
-  "python_sources": 344,
+  "python_sources": 346,
   "logic_changes": false,
   "noncode_omissions": [
     "assets/pet/source/roxy_dance_sheet.png",
@@ -482,7 +482,7 @@
     {
       "path": "modules/runtime_paths.py",
       "source_blob": "b884f3327c2a2de692239083e59647823b0ac1ef",
-      "published_sha256": "009293c74c19ae06c03c2e56ed507ef5078010386e9721746de7f1c7aac525b1"
+      "published_sha256": "6f345022ad146dc491f81cf82d2a76391f1f24b3a25a058537d9ef86134e99cd"
     },
     {
       "path": "modules/safety_policy.py",
@@ -550,6 +550,12 @@
       "published_sha256": "4b6c74d356e4eb33a1421d677a6dba8b7e76c83f92d39ee26ea2cd9f06538773"
     },
     {
+      "path": "packaging/native_policy.py",
+      "source_blob": null,
+      "published_sha256": "ef110d62db890ad6160f2584dae659cc827e6b5cbd36cc9dca6f9c26dfb06b39",
+      "origin": "release packaging addition"
+    },
+    {
       "path": "roxy_main.py",
       "source_blob": "ecfcb81e310c407b994172de5d8a0253a9cb997d",
       "published_sha256": "b6fd6e3be9054a63d674bea02248a5f05baf1a23148525fa3d2fe549a5aacea3"
@@ -593,6 +599,12 @@
       "path": "scripts/online_transport_error.py",
       "source_blob": "7500dccf9d175b7b7cc87136552847a579e516c6",
       "published_sha256": "9a2d10e958b793ae2a96b9253eee33c9faa04d120daf8540003ef475a7ac0c29"
+    },
+    {
+      "path": "scripts/prepare_windows_bundle.py",
+      "source_blob": null,
+      "published_sha256": "50491d8bac7ec669773e86a9b4b9b8cd684c338538c3cffef2b464322309596c",
+      "origin": "release packaging addition"
     },
     {
       "path": "scripts/preview_chat.py",
@@ -1733,6 +1745,21 @@
       "path": "tools/extract_dance_frames.py",
       "source_blob": "c3661ef2b282e39e0d7bb959eacac247239e6038",
       "published_sha256": "6efab134d339e0aeff5c607fd3bd43e88f937209854bce29ce08cc44407fc8d8"
+    }
+  ],
+  "baseline_python_sources": 344,
+  "release_adjustments": [
+    {
+      "path": "modules/runtime_paths.py",
+      "change": "VERSION/STUDY_VERSION metadata only"
+    },
+    {
+      "path": "packaging/native_policy.py",
+      "change": "Publish existing native-closure build helper"
+    },
+    {
+      "path": "scripts/prepare_windows_bundle.py",
+      "change": "Add self-contained licensed Windows distribution helper"
     }
   ]
 }

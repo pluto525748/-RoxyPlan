@@ -1,5 +1,7 @@
 # 四分钟复现演示
 
+视频与安装版、便携版均在 [GitHub Release](https://github.com/pluto525748/-RoxyPlan/releases/tag/v0.9.0-aic2026-rc.1) 的附件区；普通用户先选择 `Setup-x64.exe`，无需从源码安装。
+
 负责人已提供并授权公开MP4原片，确认不含身份、密钥或未经同意的私人对话。时长292.781秒，1714×1390，359,993,269字节；原片SHA256：`d118468280e3770a0c78a020a711304ea66059d8ad279c462fdccce764e55f71`。以Release附件提供，不放入Git历史，不重编码、不补造画面。本机视频解码抽检未完成，不能声称逐帧／音轨已独立核验。
 
 [播放／下载演示视频](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-AIC2026-demo.mp4)

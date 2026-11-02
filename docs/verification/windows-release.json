@@ -1,0 +1,103 @@
+{
+  "date": "2026-11-02",
+  "version": "0.9.0-aic2026-rc.1",
+  "base_source_commit": "71bbaea6f8b90a73207a800f3d78f3b7cccdbef4",
+  "release_adjustment": "Version constants and Windows packaging only; no product feature changes",
+  "source_content_sha256": "394af5f0e469c6aabc761884afc8d9c13ed9fe659ba7b4058f748f38dd39c5e3",
+  "toolchain": {
+    "python": "3.10.20",
+    "qt": "6.4.2",
+    "pyinstaller": "6.22.3",
+    "hooks": "2026.8",
+    "inno_setup": "6.7.4"
+  },
+  "offline_tests": {
+    "tests": 57,
+    "passed": 56,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "selection": [
+      "tests/test_runtime_paths.py",
+      "tests/test_beta_packaging.py",
+      "tests/test_study_edition.py"
+    ],
+    "junit_sha256": "3620f17186eae5c68ad7d449a439d4354651800830ede8f61badf5b77c3ff5fa"
+  },
+  "packages": [
+    {
+      "profile": "daily",
+      "version": "0.9.0-aic2026-rc.1",
+      "frozen_version_exit": 0,
+      "native_load_exit": 0,
+      "zip_crc_and_hashes": "passed",
+      "configured_credentials_detected": 0,
+      "source_content_sha256": "394af5f0e469c6aabc761884afc8d9c13ed9fe659ba7b4058f748f38dd39c5e3",
+      "files": 322,
+      "zip_name": "RoxyPlan-0.9.0-aic2026-rc.1-Windows-x64.zip",
+      "zip_sha256": "1a5ddc6851dddc26a90c104615fca90be108dbbeda6530e335fc7d8156036107",
+      "zip_bytes": 102243506
+    },
+    {
+      "profile": "study",
+      "version": "0.9.0-aic2026-rc.1-study",
+      "frozen_version_exit": 0,
+      "native_load_exit": 0,
+      "zip_crc_and_hashes": "passed",
+      "configured_credentials_detected": 0,
+      "source_content_sha256": "394af5f0e469c6aabc761884afc8d9c13ed9fe659ba7b4058f748f38dd39c5e3",
+      "files": 322,
+      "zip_name": "RoxyPlan-0.9.0-aic2026-rc.1-study-Windows-x64.zip",
+      "zip_sha256": "bcd7c0c9d3a1ca7d994e162ba52425429c1d7fce3ba8cfa4b7a258ce3fcdfaf2",
+      "zip_bytes": 102243511
+    }
+  ],
+  "installer": {
+    "silent_install_exit": 0,
+    "installed_payload_files_matching": 322,
+    "installed_frozen_version_exit": 0,
+    "silent_reinstall_exit": 0,
+    "silent_uninstall_exit": 0,
+    "outside_app_data_retained": true,
+    "path_test": "Chinese characters and spaces",
+    "desktop_icons": "disabled in acceptance",
+    "visible_windows": "not_opened",
+    "clean_machine": "not_performed",
+    "signature": "unsigned"
+  },
+  "formal_data_unchanged": true,
+  "artifacts": [
+    {
+      "name": "RoxyPlan-0.9.0-aic2026-rc.1-Windows-x64.zip",
+      "bytes": 102243506,
+      "sha256": "1a5ddc6851dddc26a90c104615fca90be108dbbeda6530e335fc7d8156036107"
+    },
+    {
+      "name": "RoxyPlan-0.9.0-aic2026-rc.1-study-Windows-x64.zip",
+      "bytes": 102243511,
+      "sha256": "bcd7c0c9d3a1ca7d994e162ba52425429c1d7fce3ba8cfa4b7a258ce3fcdfaf2"
+    },
+    {
+      "name": "RoxyPlan-0.9.0-aic2026-rc.1-Setup-x64.exe",
+      "bytes": 95909832,
+      "sha256": "565a11bef36dfe615b975e1d747301c4c833b0a9d582135b99c1c7fc363dbac9"
+    },
+    {
+      "name": "RoxyPlan-AIC2026-demo.mp4",
+      "bytes": 359993269,
+      "sha256": "d118468280e3770a0c78a020a711304ea66059d8ad279c462fdccce764e55f71"
+    }
+  ],
+  "corresponding_source_archives": 5,
+  "initial_harness_interruption": {
+    "error": "WinError 32: attempted acceptance while compiler still held installer file",
+    "resolution": "Waited for successful compiler exit; repeated in a fresh isolated install path",
+    "product_change": false
+  },
+  "limits": [
+    "Unsigned installer; no SmartScreen reputation claim",
+    "No visible desktop, new online-model or separate no-Python-machine acceptance",
+    "User supplies model credentials/service and Microsoft VC++ v14 x64 runtime if missing",
+    "Artwork terms are separate from MIT source license"
+  ]
+}

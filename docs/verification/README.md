@@ -1,5 +1,7 @@
 # 验证结果与复现边界
 
+2026-11-02 Windows交付：路径／打包／study专项 **56通过、1跳过**；日常版与跨天版分别构建，另完成冻结版本、原生库加载、包哈希、静默安装／重装／卸载核验。完整范围及附件哈希见 [windows-release.json](windows-release.json)。这次没有新在线模型、可见窗口或另一台无Python电脑验收；不与下述历史选择相加。
+
 本候选公开导出目录已执行必要离线回归：211通过、2跳过，零失败／错误。选择为11个专项文件，不是全仓回归；两项跳过仍保留在总数中。详情见 [release-checks.json](release-checks.json)。历史结果见 [historical-results.json](historical-results.json)。不同版本、不同执行选择不相加为总通过率。
 
 | 历史批次 | 实际结果 | 可证明范围 |

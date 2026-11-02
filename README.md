@@ -2,6 +2,10 @@
 
 ### 让成长，不必那么用力。
 
+**[下载 Windows 安装版](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-Setup-x64.exe)** · [免安装 ZIP](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-Windows-x64.zip) · [查看全部下载与演示](https://github.com/pluto525748/-RoxyPlan/releases/tag/v0.9.0-aic2026-rc.1)
+
+Windows 10/11 x64；无需 Python 或 Conda。聊天需配置自己的 DeepSeek Key，或本地 Ollama。当前为未签名的体验候选版。
+
 Windows 本地运行的成长陪伴 AI 桌宠：自然聊天、安排学习、记录真正完成的小事，在复盘后接着下一天继续。**计划**是预先安排的目标，**行动**也可以是计划之外真实完成的小事。
 
 AIC 2026 完整自研源码候选，来源提交 `71bbaea`，包含后续修复，不追认比赛实际提交的软件与本版本一致。产品仍是 **V0.9 原型**；历史“V2.2”表示交互稳定化阶段。
@@ -74,7 +78,21 @@ flowchart TD
 
 ## 安装运行
 
-Windows 10/11 x64，Python 3.10；需有适用的 [Microsoft Visual C++ x64运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。本候选不附未经验证的安装包。
+### 普通用户：下载安装版
+
+1. 点击顶部 **下载 Windows 安装版**，运行 `Setup-x64.exe`，按提示安装。
+2. 打开桌面快捷方式 **RoxyPlan**，右键桌宠选择“打开聊天”。
+3. 打开设置，配置自己的模型服务，之后即可聊天、安排计划、记录行动和复盘。
+
+安装版与 ZIP 日常版使用真实日期，记录保存在 `%LOCALAPPDATA%\RoxyPlan`；程序与记录分开，卸载保留记录。更新前退出旧程序。ZIP 需完整解压到新文件夹，不能单独复制 EXE。
+
+需要试验跨天衔接时，单独下载 [跨天体验版 ZIP](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-study-Windows-x64.zip)。它使用隔离数据目录和手动推进业务日期，与日常版记录分开，不代表真人连续使用天数。
+
+运行前需有适用的 [Microsoft Visual C++ x64运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。安装包未签名，Windows 可能提示发布者未知；请从本项目 Release 下载并核对 `SHA256SUMS.txt`，无需关闭安全防护。当前包的检查范围见 [Windows 发行核验](docs/verification/windows-release.json)，尚无另一台无 Python 电脑的完整界面验收。
+
+### 开发者：从源码运行
+
+Windows 10/11 x64，Python 3.10。
 
 ```powershell
 git clone --branch codex/aic2026-release https://github.com/pluto525748/-RoxyPlan.git RoxyPlan

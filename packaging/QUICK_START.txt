@@ -1,0 +1,19 @@
+RoxyPlan Windows 体验版 / Quick start
+
+1. 支持 Windows 10/11 x64；无需安装 Python、Conda 或开发工具。
+2. 安装完成后打开 RoxyPlan，右键桌宠选择“打开聊天”。
+3. 在设置中配置自己的 DeepSeek API Key，或已安装的本地 Ollama。
+   未配置服务时，不能保证在线聊天可用。程序不提供免费 API 额度。
+4. 计划是预先安排，行动也可记录计划之外真实完成的小事。
+   操作说明提供示例；选择示例不会自动发送。
+5. 日常版使用真实日期，数据保存在 %LOCALAPPDATA%\RoxyPlan。
+   单独下载的跨天体验版使用隔离数据和手动推进日期，不能代替真实连续使用。
+6. 更新前退出旧程序。ZIP 版应解压到新目录，不能只复制 EXE。
+   重新安装/卸载保留用户数据；请勿把用户数据目录当作程序目录删除。
+
+如果提示缺少 VCRUNTIME/MSVCP DLL，请从微软官方安装 Visual C++ v14 x64：
+https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
+安装程序未签名，Windows 可能显示发布者未知；请从本项目 Release 下载，
+并按 SHA256SUMS.txt 核对文件。请勿关闭系统安全防护。
+
+项目与问题反馈：https://github.com/pluto525748/-RoxyPlan

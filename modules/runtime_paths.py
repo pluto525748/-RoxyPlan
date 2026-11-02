@@ -19,8 +19,8 @@ import traceback
 from uuid import UUID, uuid4
 
 
-VERSION = "0.9.0-beta.3"
-STUDY_VERSION = "0.9.0-beta.4-study.2"
+VERSION = "0.9.0-aic2026-rc.1"
+STUDY_VERSION = "0.9.0-aic2026-rc.1-study"
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FILES = {
     "data/pet_config.json": dict,
