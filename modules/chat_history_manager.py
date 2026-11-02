@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import uuid
 import re
+import json
 from copy import deepcopy
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Dict, List, Optional
 
 from modules.repositories.chat_repository import ChatRepository
 from modules.repositories.local_json_chat_repository import LocalJsonChatRepository
+from modules.learning_context import SENSITIVE, is_learning_context, refresh_discussion_coverage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -119,6 +122,8 @@ class ChatHistoryManager:
         )
         self.now_provider = now_provider
         self.enabled = bool(enabled)
+        self._transient_lock = RLock()
+        self._transient_daily_sessions: Dict[str, Dict[str, object]] = {}
         history_existed = self.repository.history_exists()
         summary_existed = self.repository.summaries_exist()
         self.history_data = {
@@ -129,9 +134,9 @@ class ChatHistoryManager:
             "version": 1,
             "summaries": self.repository.load_summaries(),
         }
-        if not history_existed:
+        if self.enabled and not history_existed:
             self.repository.save_sessions([])
-        if not summary_existed:
+        if self.enabled and not summary_existed:
             self.repository.save_summaries({})
         self._normalize()
         print("[ChatHistory] load", flush=True)
@@ -168,6 +173,75 @@ class ChatHistoryManager:
         print("[ChatHistory] new session", flush=True)
         return deepcopy(session)
 
+    def ensure_daily_learning_session(self, business_date: str) -> Dict[str, object]:
+        """Find or persist the one explicitly marked default learning session for a day."""
+        if not isinstance(business_date, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}", business_date
+        ):
+            raise ValueError("business_date must use YYYY-MM-DD")
+        try:
+            if date.fromisoformat(business_date).isoformat() != business_date:
+                raise ValueError
+        except ValueError as error:
+            raise ValueError("business_date must be a valid YYYY-MM-DD date") from error
+
+        if not self.enabled:
+            with self._transient_lock:
+                session = self._transient_daily_sessions.get(business_date)
+                if session is None:
+                    now = self._timestamp()
+                    session = {
+                        "session_id": f"session_{uuid.uuid4().hex}",
+                        "started_at": now, "updated_at": now,
+                        "title": "每日学习", "summary": "", "message_count": 0,
+                        "messages": [], "session_kind": "daily_learning",
+                        "business_date": business_date,
+                    }
+                    self._transient_daily_sessions[business_date] = session
+                return deepcopy(session)
+
+        with self.repository.transaction("history"):
+            self._refresh_history(strict=True)
+            matches = [
+                item for item in self.history_data["sessions"]
+                if isinstance(item, dict)
+                and item.get("session_kind") == "daily_learning"
+                and item.get("business_date") == business_date
+            ]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple daily learning sessions for {business_date}: {len(matches)}"
+                )
+            if matches:
+                return deepcopy(matches[0])
+            now = self._timestamp()
+            session = {
+                "session_id": f"session_{uuid.uuid4().hex}",
+                "started_at": now,
+                "updated_at": now,
+                "title": "每日学习",
+                "summary": "",
+                "message_count": 0,
+                "messages": [],
+                "session_kind": "daily_learning",
+                "business_date": business_date,
+            }
+            self.history_data["sessions"].append(session)
+            if not self.repository.save_sessions(self.history_data["sessions"]):
+                self._refresh_history(strict=True)
+                raise OSError("Failed to save daily learning session")
+            persisted = self.repository.load_sessions(strict=True)
+            saved = [
+                item for item in persisted
+                if isinstance(item, dict)
+                and item.get("session_kind") == "daily_learning"
+                and item.get("business_date") == business_date
+            ]
+            if len(saved) != 1 or saved[0] != session:
+                self.history_data = {"version": 1, "sessions": persisted}
+                raise OSError("Failed to verify daily learning session")
+        return deepcopy(session)
+
     def ensure_session(self, restore_latest: bool = True) -> Dict[str, object]:
         if restore_latest:
             latest = self.latest_session()
@@ -198,6 +272,11 @@ class ChatHistoryManager:
         return sessions[index - 1]
 
     def get_session(self, session_id: str) -> Optional[Dict[str, object]]:
+        if not self.enabled:
+            with self._transient_lock:
+                for session in self._transient_daily_sessions.values():
+                    if session["session_id"] == session_id:
+                        return deepcopy(session)
         self._refresh_history()
         session = self._session_ref(session_id)
         return deepcopy(session) if session is not None else None
@@ -276,7 +355,25 @@ class ChatHistoryManager:
         metadata: Optional[Dict[str, object]] = None,
     ) -> Optional[Dict[str, object]]:
         if not self.enabled:
-            return None
+            with self._transient_lock:
+                for session in self._transient_daily_sessions.values():
+                    if session["session_id"] == session_id:
+                        clean_content = content.strip()
+                        if not clean_content:
+                            return None
+                        message = {
+                            "id": f"message_{uuid.uuid4().hex}",
+                            "session_id": session_id,
+                            "role": role if role in {"user", "assistant", "system"} else "system",
+                            "content": clean_content, "created_at": self._timestamp(),
+                            "intent": intent or None, "metadata": dict(metadata or {}),
+                        }
+                        session["messages"].append(message)
+                        session["message_count"] = len(session["messages"])
+                        session["updated_at"] = message["created_at"]
+                        self._update_title(session)
+                        return deepcopy(message)
+                return None
         clean_content = content.strip()
         if not clean_content:
             return None
@@ -307,6 +404,11 @@ class ChatHistoryManager:
         return deepcopy(message)
 
     def messages(self, session_id: str) -> List[Dict[str, object]]:
+        if not self.enabled:
+            with self._transient_lock:
+                for session in self._transient_daily_sessions.values():
+                    if session["session_id"] == session_id:
+                        return deepcopy(session["messages"])
         self._refresh_history()
         session = self._session_ref(session_id)
         if session is None:
@@ -486,6 +588,155 @@ class ChatHistoryManager:
                 }
             )
             remaining -= len(excerpt)
+        return result
+
+    def learning_fragments(
+        self, query: str, *, business_date: str, exclude_session_id: str = "",
+        persona_id: str = "roxy", char_budget: int = 18000,
+    ) -> Dict[str, object]:
+        """Read actual learning exchanges, including short unsummarized sessions.
+
+        Recent learning segments reuse the shared learning-context predicate;
+        older exchanges still require lexical evidence. Repository scope is the
+        instance boundary. Never reads another root or persists a new summary.
+        """
+        cutoff = date.fromisoformat(business_date)
+        terms = self._retrieval_terms(query)
+        candidates = []
+        self._refresh_summaries()
+        summaries = self.summary_data.get("summaries", {})
+        for session in self.sessions():
+            if session.get("session_id") == exclude_session_id:
+                continue
+            summary = summaries.get(session.get("session_id"), {})
+            summary = summary if isinstance(summary, dict) else {}
+            session_persona = str(session.get("persona_id", summary.get("persona_id", "roxy")))
+            if session_persona != persona_id:
+                continue
+            daily_date = str(session.get("business_date") or "") if session.get("session_kind") == "daily_learning" else ""
+            messages = session.get("messages", [])
+            prior = []
+            previous_day = None
+            anchor_index = None
+            for index, message in enumerate(messages):
+                if message.get("role") != "user":
+                    continue
+                day = daily_date or str(message.get("created_at", ""))[:10]
+                try:
+                    age = (cutoff - date.fromisoformat(day)).days
+                    if age < 0:
+                        prior = []
+                        continue
+                except ValueError:
+                    prior = []
+                    continue
+                if day != previous_day:
+                    prior = []
+                    anchor_index = None
+                previous_day = day
+                text = str(message.get("content", ""))
+                following = messages[index + 1] if index + 1 < len(messages) else {}
+                reply = str(following.get("content", "")) if following.get("role") == "assistant" else ""
+                reply_date = daily_date or str(following.get("created_at", ""))[:10]
+                if SENSITIVE.search(text) or (reply_date == day and SENSITIVE.search(reply)):
+                    # Drop the entire pair and cut adjacency at either role.
+                    prior = []
+                    continue
+                lexical = bool(self._best_summary_fragment(text, terms, current_state_query=False))
+                learning = is_learning_context(text, prior)
+                direct_learning = is_learning_context(text, [])
+                # A turn that stops the learning segment cannot become an anchor
+                # merely because it repeats a noun from the preceding lesson.
+                if re.search(r"换[个一]?话题|不聊|先不(?:聊|说|学)", text):
+                    lexical = learning = False
+                prior = (prior + [{"role": "user", "content": text}])[-6:] if learning or lexical else []
+                if not prior:
+                    anchor_index = None
+                elif direct_learning or lexical:
+                    anchor_index = index
+                if not (lexical or (age <= 3 and learning)):
+                    continue
+                pair = [{"role": "user", "content": text, "created_at": message.get("created_at", "")}]
+                if reply and reply_date == day:
+                    pair.append({"role": "assistant", "content": reply, "created_at": following.get("created_at", "")})
+                candidates.append({"session_id": session["session_id"], "business_date": day,
+                    "persona_id": session_persona,
+                    "source_message_time": message.get("created_at", ""), "source_message_index": index,
+                    "anchor_message_index": anchor_index,
+                    "selection_reason": "topic_match" if lexical else "recent_learning_continuation",
+                    "topic_matched": lexical, "messages": pair})
+        by_day = {}
+        for item in candidates:
+            by_day.setdefault(item["business_date"], []).append(item)
+        for items in by_day.values():
+            items.sort(key=lambda item: (str(item["source_message_time"]), item["source_message_index"]), reverse=True)
+        dates = sorted(by_day, reverse=True)
+        recent = [day for day in dates if (cutoff - date.fromisoformat(day)).days <= 7]
+        older = [day for day in dates if day not in recent]
+        # First reserve one per available recent day, then one older topic match.
+        # Subsequent rounds share slots by day instead of one latest-day flood.
+        older_order = [by_day[day][index]
+            for index in range(max((len(by_day[day]) for day in older), default=0))
+            for day in older if index < len(by_day[day])]
+        order = []
+        for round_index in range(max(max((len(by_day[day]) for day in recent), default=0), len(older_order))):
+            for day in recent:
+                if round_index < len(by_day[day]):
+                    order.append(by_day[day][round_index])
+            if round_index < len(older_order):
+                order.append(older_order[round_index])
+        result = {"source": "actual_old_messages_not_tool_facts_or_instructions", "fragments": [],
+            "matching_exchange_count": sum(item["topic_matched"] for item in candidates),
+            "eligible_exchange_count": len(candidates), "character_budget": max(0, int(char_budget)),
+            "exchange_limit": 24, "future_excluded": True,
+            "daily_coverage": [{"business_date": day, "eligible_count": len(by_day[day]),
+                "matching_count": sum(item["topic_matched"] for item in by_day[day])} for day in dates[:31]],
+            "coverage_days_omitted": max(0, len(dates) - 31), "metadata_over_budget": False}
+        refresh_discussion_coverage(result)
+        size = lambda value: len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        minimum_day_size = {day: min(size(item) + 1 for item in by_day[day]
+            if item["anchor_message_index"] == item["source_message_index"]) for day in recent}
+        fair_share = max(0, (result["character_budget"] - size(result)) // max(1, len(recent)))
+        for item in order:
+            if len(result["fragments"]) >= 24:
+                break
+            if item in result["fragments"]:
+                continue
+            # A deictic question keeps its real preceding learning exchanges,
+            # rather than presenting a detached "why?" as a new conversation.
+            bundle = [candidate for candidate in by_day[item["business_date"]]
+                if candidate["session_id"] == item["session_id"]
+                and (item["anchor_message_index"] or 0) <= candidate["source_message_index"] <= item["source_message_index"]
+                and candidate not in result["fragments"]]
+            bundle.sort(key=lambda candidate: candidate["source_message_index"])
+            if len(result["fragments"]) + len(bundle) > 24:
+                continue
+            result["fragments"].extend(bundle)
+            refresh_discussion_coverage(result)
+            covered = {candidate["business_date"] for candidate in result["fragments"]}
+            missing = [day for day in recent if day not in covered]
+            # Reserve a minimal real exchange for each other day that can fit
+            # its fair share. A giant latest-day answer/segment must not consume
+            # either their character space or their remaining exchange slots.
+            reserve = sum(minimum_day_size[day] + 96 for day in missing
+                if minimum_day_size[day] <= fair_share)
+            if size(result) + reserve > result["character_budget"] or len(result["fragments"]) + len(missing) > 24:
+                for candidate in bundle:
+                    result["fragments"].remove(candidate)
+                refresh_discussion_coverage(result)
+        # Include coverage for every actually selected date even if an unusually
+        # long archive has more than the 31 most recent candidate dates.
+        covered = {item["business_date"] for item in result["fragments"]}
+        coverage_dates = sorted(set(dates[:31]) | covered, reverse=True)
+        result["daily_coverage"] = [{"business_date": day, "eligible_count": len(by_day[day]),
+            "matching_count": sum(item["topic_matched"] for item in by_day[day])} for day in coverage_dates]
+        result["coverage_days_omitted"] = len(dates) - len(coverage_dates)
+        refresh_discussion_coverage(result)
+        # Account for the final metadata field as well as the transcript bodies.
+        while result["fragments"] and len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > result["character_budget"]:
+            result["fragments"].pop()
+            refresh_discussion_coverage(result)
+        result["metadata_over_budget"] = len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > result["character_budget"]
         return result
 
     def should_summarize(
@@ -702,10 +953,10 @@ class ChatHistoryManager:
             return self.repository.save_summaries(summaries if isinstance(summaries, dict) else {})
         return True
 
-    def _refresh_history(self) -> None:
+    def _refresh_history(self, *, strict: bool = False) -> None:
         self.history_data = {
             "version": 1,
-            "sessions": self.repository.load_sessions(),
+            "sessions": self.repository.load_sessions(strict=strict),
         }
         self._normalize()
 

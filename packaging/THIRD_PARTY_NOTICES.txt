@@ -1,0 +1,35 @@
+RoxyPlan AIC 2026 Windows RC1 - Third-party notices
+
+Python 3.10.20: Python Software Foundation and historical notices.
+PySide6 / shiboken6 / Qt 6.4.2: applicable LGPLv3 route; unmodified dynamic
+libraries. Copyright The Qt Company Ltd. and upstream contributors. Original
+licenses and embedded component notices are in third_party/licenses/.
+The upstream full source archives for qtbase, qtsvg, qtimageformats,
+qttranslations and pyside-setup are included in third_party/sources/.
+See third_party/source-index.json and SOURCE_AND_REPLACEMENT.md for hashes,
+official URLs and compatible replacement instructions. Keep this material when
+redistributing. Users may modify/replace LGPL libraries and reverse engineer
+for debugging those modifications as permitted by LGPLv3.
+
+OpenSSL 3.5.7: Apache-2.0. libffi 3.4.8: MIT. bzip2 1.0.8: bzip2 license.
+liblzma/XZ 5.8.2: liblzma 0BSD; source tools may have other notices.
+zlib 1.3.2: Zlib. PyInstaller 6.22.3: bootloader exception and runtime-hook
+notices retained. Build hooks do not relicense this application under GPL.
+Qt PDF/PDFium, Virtual Keyboard, Quick/QML and optional software OpenGL
+fallback are excluded from the distributed native dependency closure.
+
+Installer generated using Inno Setup 6.7.4, Copyright (C) 1997-2026 Jordan
+Russell; portions Copyright (C) 2000-2026 Martijn Laan. https://jrsoftware.org/
+Original license supplied in third_party/INNO-LICENSE.txt.
+
+Microsoft VC/UCRT/API-set libraries are not redistributed. Windows 10/11 x64
+and the Microsoft Visual C++ v14 x64 runtime are prerequisites:
+https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
+
+Artwork has separate restricted rights; it is not MIT-licensed. Default sprite:
+ga hing / yznzl, https://github.com/yznzl/roxy-pet ; source commit
+c4b57efed72af983f3b14cacf5ddb864771ab8b4. Personal/noncommercial sharing with
+attribution only, under the retained author statement. Third-party character
+rights are not granted. See ASSET_LICENSE.md and third_party/ARTWORK_PERMISSION.md.
+Other project graphics were supplied/AI-assisted by the project owner.
+No credentials, model weights, private conversations or user stores are bundled.

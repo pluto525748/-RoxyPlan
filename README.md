@@ -1,162 +1,147 @@
-# RoxyPlan
+# RoxyPlan · 洛琪希计划
 
-RoxyPlan（洛琪希计划）是一个运行在 Windows 本地的 Python / PySide6 成长陪伴桌宠原型。它把自然聊天、今日计划、行动记录、正式长期记忆、会话连续性和桌宠动作接入同一条受校验的交互链，并保留 Local Web 作为可信局域网内的适配入口。
+### 让成长，不必那么用力。
 
-当前产品阶段为 **V0.9 本地原型**；**V2.2** 是现有中文自然语言交互和成长闭环的稳定化工作流，不代表产品阶段升级或新增 V2.3 功能。它仍不是商业产品或公网服务；没有账号系统、云数据库、任意电脑控制、语音或向量数据库。
+**[下载 Windows 安装版](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-Setup-x64.exe)** · [免安装 ZIP](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-Windows-x64.zip) · [查看全部下载与演示](https://github.com/pluto525748/-RoxyPlan/releases/tag/v0.9.0-aic2026-rc.1)
 
-当前完成度见 [docs/current_status.md](docs/current_status.md)，用户推荐表达与能力边界见 [docs/capability_boundaries.md](docs/capability_boundaries.md)，中文语境评测方法见 [docs/chinese_interaction_reliability.md](docs/chinese_interaction_reliability.md)，继续开发前请阅读 [docs/v2_2_agent_handover.md](docs/v2_2_agent_handover.md)。
+Windows 10/11 x64；无需 Python 或 Conda。聊天需配置自己的 DeepSeek Key，或本地 Ollama。当前为未签名的体验候选版。
 
-## 核心原则
+Windows 本地运行的成长陪伴 AI 桌宠：自然聊天、安排学习、记录真正完成的小事，在复盘后接着下一天继续。**计划**是预先安排的目标，**行动**也可以是计划之外真实完成的小事。
 
-1. 只有极少量完整匹配、长期稳定的精确命令可以绕过在线语义理解，例如精确“跳舞”、固定 UI 命令，以及当前会话确有待处理状态时的确认或取消。
-2. 其他自然语言每轮只形成一个 canonical `SemanticDecision`。模型负责理解意图，程序负责参数、对象、权限、风险、确认和执行校验。
-3. 模型不能直接调用 Manager 或修改 JSON。所有业务动作都必须经过白名单工具和 `ToolExecutor`。
-4. `ToolResult` 是最终回复的事实骨架。没有匹配的成功写工具结果，就不能声称已经添加、保存、完成或删除。
-5. 普通聊天、知识问答、情绪表达和只读查询不得误入写操作或待澄清状态。
-6. 当前会话的“刚才”“上一条回答”“第二个”和确认状态不得跨窗口继承。
+AIC 2026 完整自研源码候选，来源提交 `71bbaea`，包含后续修复，不追认比赛实际提交的软件与本版本一致。产品仍是 **V0.9 原型**；历史“V2.2”表示交互稳定化阶段。
 
-## 生产交互链
+[演示视频](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-AIC2026-demo.mp4) · [验证结果](docs/verification/README.md) · [能力边界](docs/capability_boundaries.md) · [MIT代码许可](LICENSE) · [素材范围](ASSET_LICENSE.md)
 
-```text
-用户消息
-→ 精确命令门（仅少量完整匹配）
-→ 唯一 SemanticDecision
-→ BusinessResolver / SafetyPolicy
-→ ToolExecutor
-→ ToolResult
-→ ResponseComposer / ActionClaimGuard
-→ 桌面或 Local Web
+## 三大亮点
+
+**低压力的成长陪伴。** 今日成长面板把计划、实际行动、已记录时长和复盘放在一起。不要求先建计划才认可进步，也不把“没记录”说成“什么都没做”。
+
+**有执行依据的Agent。** 模型负责理解和建议，程序负责参数、对象、权限、确认及执行。没有匹配的工具成功结果，不能声称已添加、完成或删除。
+
+**能接续的学习上下文。** 当前实例的目标、近期计划、行动、复盘和相关学习讨论进入有界上下文。明确学习请求使用完整学习投影；每日会话的省略表达也保留成长参考，不需要每次重述昨天的记录。
+
+## 桌面界面
+
+以下是当前源码组件的离线渲染，全部为**合成示例**，没有模型调用，不是真人体验或效果证明。图中角色遵循独立素材许可。
+
+<img src="docs/images/chat.png" alt="聊天：从一个小例子开始" width="460">
+
+<img src="docs/images/today-growth.png" alt="今日成长：计划、行动、时长与复盘" width="860">
+
+[记忆管理界面](docs/images/memory.png)：查看原文、分类筛选、编辑、归档、冲突和删除确认。候选记忆不是普通用户入口。
+
+## Agent架构
+
+```mermaid
+flowchart TD
+    U[用户消息或界面操作] --> C[共享 ConversationService]
+    H[记忆 / 计划 / 行动 / 复盘 / 相关历史] --> B[ContextBuilder 有界只读上下文]
+    B --> C
+    C --> S[SemanticDecision 语义提案]
+    S --> V[对象绑定 / 参数 / 安全 / 确认]
+    V --> T[ToolExecutor 白名单执行]
+    T --> R[ToolResult 与后置状态]
+    R --> O[ResponseComposer 事实约束回复]
+    O --> D[桌面界面与客户端动作]
 ```
 
-高精度的正式记忆查询等确定性读入口可以直接生成同一份 `SemanticDecision`，但不能在主链之后再次扫描消息或产生第二次工具决策。桌宠动作由工具返回声明式 `client_actions`，桌面端再通过 `DesktopClientActionDispatcher` 在 UI 线程校验和派发；Local Web 服务端不执行 PySide6 动画。
+- `modules/`：共享Agent、工具校验、Memory、Growth、上下文和Repository。
+- `frontend/`：PySide6桌宠、聊天、设置、记忆及成长界面；包含拖动跑步、静止思考气泡、睡眠及动作派发。
+- `server/`：可选Local Web适配，复用相同业务，不是第二套Agent或默认公网服务。
+- `tests/`、`scripts/`：隔离测试、回放夹具、语料、模型验收和预算工具。
 
-## 当前能力
+模型不能直接修改JSON，也没有任意Shell或电脑控制权限。具体实现见 [代码地图](docs/learning/roxyplan_file_map_simple.md)。
 
-### 桌面与 Local Web
-
-- PySide6 透明桌宠、聊天窗口、设置面板、成长面板和记忆面板。
-- `jump`、`nod`、`thinking / shake`、`study / scale`、`sleep / wake` 和多帧 `dance` 动作。
-- QThread 后台模型请求，避免阻塞 Qt UI。
-- 桌面与 Local Web 共用 `ConversationService`、业务服务、工具注册表、本地 Repository 和人格包。
-- Local Web 仅作为 `server/` 下的可信局域网适配层，不部署到公网。
-
-### 中文自然语言与安全执行
-
-- 模型语义输出先区分 `chat`、`read`、`write` 和 `clarify`，再归一化为 canonical `SemanticDecision` 的 `chat_only`、`tool_then_reply` 或 `clarify`；执行层只消费这一种契约。
-- `BusinessResolver` 只校验、绑定真实对象和解析结构化引用，不重新猜测另一种意图。
-- 写批次包含未解析项时零写入；不会把“这些”“那个”“刚才那些”等残片直接落库。
-- 命令与内容载荷隔离。计划或记忆正文中的“跳舞、完成、删除”等词不会再次触发动作。
-- pending 状态按 `conversation_id` 隔离，只消费语义和字段类型兼容的补充回答。
-- 成功只读结果可以支撑事实回答，但不能被误判成一次写操作完成声明。
-
-### 正式长期记忆
-
-- 用户明确说“记住……”“保存到长期记忆”时，低风险且内容完整的请求直接调用 canonical `save_formal_memory`，不再进入普通用户可见的候选审核。
-- 普通陈述默认只聊天，不自动写正式记忆，也不自动生成用户可见候选。
-- 重复、近似、冲突、敏感和不完整内容继续经过现有 `MemoryService` 治理；需要时最多进行一次确认或澄清。
-- 支持同一会话内引用上一条合适的用户消息或 assistant 回复；找不到内容或切换窗口后必须澄清。
-- 保存成功后可在当前会话短期内撤销，底层使用归档而非永久删除。
-- 候选、冲突、审计和归档底层保留给兼容、自动发现和高级诊断，但候选不再是普通聊天主流程。
-- “你知道我什么”等表达通过正式记忆查询工具读取真实数据，再由人格化回复层自然归纳；不展示内部编号、分类标签或候选数量。
-
-### 人格包与统一上下文
-
-- 人格包位于 `data/personas/<persona_id>/`；当前只分发 `roxy`。
-- `PersonaRegistry` 扫描、选择和回退人格，`PersonaPack` 负责加载、校验并分离固定人格核心与按需 lore、关系和对话示例。
-- 当前人格只能通过设置面板的 `active_persona_id` 修改，聊天文字不能切换角色。
-- `ContextBuilder` 是唯一上下文组装点，按预算组织安全边界、人格核心、正式目标、今日状态、当前会话、相关旧会话摘要、相关记忆、人格材料和知识。
-- `ToolResult` 先形成不可改变的事实骨架；人格只能调整语气、称呼和简短鼓励，不能改变成功/失败、数量、日期、ID 或错误原因。
-
-### 情景摘要与跨窗口连续性
-
-- 正式长期记忆、情景会话摘要和当前工作状态保持三层分离。
-- `ChatHistoryManager` 在会话结束、切换窗口或达到摘要阈值时更新摘要，不在每条消息后重写全部历史。
-- 新窗口可以按当前问题检索同一 persona 的相关旧摘要，但不会加载全部旧消息，也不会继承确认、澄清、序号、“刚才”或撤销状态。
-- 摘要只能支持“大概讨论过什么”的连续性，不能冒充精确原句、计划事实或正式长期记忆。
-
-## 项目结构
+## 学习闭环
 
 ```text
-RoxyPlan/
-├─ assets/                  # 桌宠图片和舞蹈帧
-├─ data/
-│  ├─ personas/roxy/       # 当前洛琪希人格包
-│  ├─ knowledge/           # 本地 TXT / Markdown 知识文件
-│  └─ private/             # 被 Git 忽略的聊天、计划、审计等私人数据
-├─ docs/                    # 当前说明、设计、研究和历史报告
-├─ frontend/                # PySide6 桌面端及动作派发
-├─ modules/                 # 对话、语义、工具、记忆、上下文和 Repository
-├─ server/                  # Local Web 适配层
-├─ tests/                   # 隔离测试、生产型组合根测试和评测矩阵
-├─ requirements.txt
-└─ roxy.bat
+目标与偏好 → 今日建议（未写入） → 用户选择 → 保存计划
+                  ↓                         ↓
+              具体知识讲解              完成状态 / 计划外行动
+                                            ↓
+                                        保存当日复盘
+                                            ↓
+                         次日读取真实历史 → 调整下一步建议
 ```
 
-## Windows 环境与启动
+完成计划不伪造行动和实际时长；尊重用户对完成与掌握的判断，不额外增加掌握测验。旧复盘是历史记录，不能覆盖当前执行状态。
 
-推荐 Python 3.10，并在项目根目录创建 `.venv`：
+可尝试：`记住：我偏好先看例子再讲概念。` → `给我两项今天的学习建议，先不要加入。` → `把第一项加入今天计划。` → `记录今天的计划外行动：整理笔记，实际用了8分钟。` → `今日复盘。`
+
+自然表达仍可能误判或澄清，具体序号、确认、取消和日期边界以 [能力契约](docs/capability_boundaries.md) 为准，不保证任意中文均成功。
+
+## 演示视频
+
+[播放／下载 AIC 演示视频（MP4，约4分53秒）](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-AIC2026-demo.mp4)
+
+由负责人提供并授权公开。视频是演示材料，不是多人真实连续学习实验；推进业务日期不代表现实经过天数。文件版本及处理信息见 [演示说明](docs/demo.md)。
+
+## 安装运行
+
+### 普通用户：下载安装版
+
+1. 点击顶部 **下载 Windows 安装版**，运行 `Setup-x64.exe`，按提示安装。
+2. 打开桌面快捷方式 **RoxyPlan**，右键桌宠选择“打开聊天”。
+3. 打开设置，配置自己的模型服务，之后即可聊天、安排计划、记录行动和复盘。
+
+安装版与 ZIP 日常版使用真实日期，记录保存在 `%LOCALAPPDATA%\RoxyPlan`；程序与记录分开，卸载保留记录。更新前退出旧程序。ZIP 需完整解压到新文件夹，不能单独复制 EXE。
+
+需要试验跨天衔接时，单独下载 [跨天体验版 ZIP](https://github.com/pluto525748/-RoxyPlan/releases/download/v0.9.0-aic2026-rc.1/RoxyPlan-0.9.0-aic2026-rc.1-study-Windows-x64.zip)。它使用隔离数据目录和手动推进业务日期，与日常版记录分开，不代表真人连续使用天数。
+
+运行前需有适用的 [Microsoft Visual C++ x64运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。安装包未签名，Windows 可能提示发布者未知；请从本项目 Release 下载并核对 `SHA256SUMS.txt`，无需关闭安全防护。当前包的检查范围见 [Windows 发行核验](docs/verification/windows-release.json)，尚无另一台无 Python 电脑的完整界面验收。
+
+### 开发者：从源码运行
+
+Windows 10/11 x64，Python 3.10。
 
 ```powershell
+git clone --branch codex/aic2026-release https://github.com/pluto525748/-RoxyPlan.git RoxyPlan
+cd RoxyPlan
 py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\roxy.bat
 ```
 
-`roxy.bat` 实际启动 `frontend\pet_app.py`。也可以直接运行：
+从桌宠打开聊天，在设置中配置自己的模型服务。在线对话需要网络和自己的DeepSeek凭据，或可用的本地Ollama。仓库没有Key、模型权重或免费的托管服务。详见 [模型配置](docs/model_routing.md)。
+
+### 无密钥离线预览
 
 ```powershell
-.\.venv\Scripts\python.exe -u frontend\pet_app.py
+.\.venv\Scripts\python.exe -B scripts\preview_chat.py
+.\.venv\Scripts\python.exe -B scripts\preview_growth.py --scenario populated
 ```
 
-DeepSeek 和 Ollama 都是可选模型来源。真实 API Key 只能来自环境变量或被 Git 忽略的本地密钥配置，不应出现在聊天、测试夹具、日志、Issue 或提交记录中。
+预览使用独立合成数据，仅观察界面，不是在线业务验收。
 
-Local Web 需要额外安装 `server\requirements.txt`，再运行 `run_roxy_web.bat`。局域网访问必须配置 `ROXY_LOCAL_TOKEN`；程序不会自动修改 Windows 防火墙。
-
-## 本地数据与隐私
-
-- `memory.json`：正式长期记忆，私人文件。
-- `data/private/chat_history.json`、`chat_summaries.json`：聊天消息和情景摘要。
-- `data/private/today_plan.json`、`action_log.json`、`growth_log.json`：计划、行动和成长数据。
-- `data/private/memory_candidates.json`、`memory_conflicts.json`、`memory_audit.json`、`memory_archive.json`：兼容候选、冲突、审计和归档。
-- `data/pet_config.json`：用户本地桌宠和设置配置。
-- `logs/interaction_diagnostics.jsonl`：可选脱敏开发诊断；用户消息仅记录长度和 SHA-256，不记录正文、密钥或完整记忆。
-
-测试必须使用完整临时 Repository 和项目外 `basetemp`。测试防火墙会阻止对 `memory.json` 与 `data/private/**` 的写入，并在测试前后比较真实文件清单和 SHA-256。不要用空 JSON、模板或猜测内容覆盖私人文件。
-
-## 测试与诊断
+### 独立实例与跨天演示
 
 ```powershell
-# 全量离线测试
-.\.venv\Scripts\python.exe -m pytest -q --basetemp C:\Users\Public\RoxyPlan-pytest-temp
-
-# Python 编译检查
-.\.venv\Scripts\python.exe -m compileall -q modules frontend server tests
-
-# 补丁空白与冲突检查
-git diff --check
+.\roxy_simulated_days.bat -InstanceRoot "$env:LOCALAPPDATA\RoxyPlanTestInstances\demo"
 ```
 
-研究驱动的中文离线矩阵和在线真实模型验收方式见 [docs/chinese_interaction_reliability.md](docs/chinese_interaction_reliability.md)。离线 Stub 测试验证程序边界，不等价于真实模型中文理解质量；在线验收结果必须单独记录，未运行时不得写成“通过”。
+首次从当天开始，后续恢复该实例保存的业务日期；“推进一天”不修改Windows时间。正常Beta仍使用真实日期；`roxy_study_main.py`是单独构建的日期推进体验版。多名使用者应指定不同数据根，**仅移动程序目录不会自动隔离用户**。模拟日期不能当作真实使用天数。
 
-## 文档入口
+### 数据与反馈
 
-- [当前项目状态](docs/current_status.md)
-- [中文交互可靠性与评测方法](docs/chinese_interaction_reliability.md)
-- [V2.1 开发交接](docs/v2_1_semantic_reliability_handoff.md)
-- [当前架构清单](docs/current_architecture_inventory.md)
-- [运行调用链](docs/runtime_call_chains.md)
-- [记忆系统](docs/memory_system.md)
-- [对话历史与连续性](docs/chat_history_system.md)
-- [回复事实一致性](docs/response_truthfulness.md)
-- [路线图](docs/ROADMAP.md)
-- [变更记录](docs/CHANGELOG.md)
+源码日常入口使用项目中被忽略的运行文件；正常冻结Beta默认保存在 `%LOCALAPPDATA%/RoxyPlan`，日期推进实例使用独立目录。数据不自动上传。
 
-`docs/analysis/`、`docs/research/` 和旧版本 completion/acceptance 文档是当时决策与验收的历史记录，不能替代当前状态说明。
+设置 → 导出内测反馈 → 选择范围 → 查看清单 → 明确同意 → 生成本地ZIP。聊天和记忆默认不选，凭据排除。历史界面只读；设置可清空当前实例全部历史，**没有单会话删除按钮**。
 
-## 当前边界
+## 测试与复用
 
-- 不提供任意 Shell、PowerShell、文件写入或电脑控制工具。
-- 不包含公网部署、账号、支付、云数据库或跨设备同步。
-- 不包含语音、向量数据库、完整历史原文 RAG 或外部人格代码加载。
-- 当前只附带洛琪希人格包，不包含第二个角色、角色商城或蒸馏训练管线。
-- 项目仍需通过持续离线回归和真实模型小规模验收来提高开放中文表达覆盖率，测试通过不代表任意中文输入都能被正确理解。
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\scripts\run_isolated_tests.ps1 -KeepRun -PytestArgs @('tests/test_daily_growth_reference.py','tests/test_learning_context_continuity.py','tests/test_learning_dialogue_history.py','tests/test_runtime_paths.py','tests/test_feedback_export.py','-q')
+```
+
+runner隔离临时目录、日志、报告及应用数据；`-KeepRun`保留现场。共享解释器可传 `-PythonExecutable`，受测项目仍为脚本所属工作树。不要让测试读取正式数据。
+
+公开了真实模型失败捕获的离线回放、参数与对象绑定、跨天上下文、凭据排除等测试。历史三组七日观察177轮、两组自然表达107轮，均为**真实DeepSeek＋工程合成用户＋模拟业务日**，存在失败，不是总体通过率或真人成效。新检查与历史批次分列于 [验证记录](docs/verification/README.md)。
+
+可复用共享会话编排、工具事实回复、类型化引用、成长投影、日期隔离和验收工具，不必连同角色形象一起使用。
+
+## 许可与限制
+
+自研代码、测试和技术文档采用 [MIT](LICENSE)。MIT不覆盖第三方角色素材；图集按作者允许的个人非商业范围分享并署名。见 [ASSET_LICENSE](ASSET_LICENSE.md)、[第三方资源](THIRD_PARTY_RESOURCES.md) 和 [NOTICE](NOTICE)。商业复用代码时应替换受限素材或取得相应许可。
+
+当前是原型：没有任意表达成功率、全量知识准确率和真人长期学习收益结论。知识库轻量读取不作为已验证RAG成果。多角色、云端／移动端及个人资料RAG属于 [未来规划](docs/ROADMAP.md)。已知问题与版本变化见 [验证说明](docs/verification/README.md) 和 [更新日志](docs/CHANGELOG.md)。

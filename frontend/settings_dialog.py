@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
+from string import Template
 
-from PySide6.QtCore import QObject, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QRectF, QSize, QThread, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,6 +38,179 @@ from modules.persona_registry import PersonaRegistry
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PET_CONFIG_FILE = PROJECT_ROOT / "data" / "pet_config.json"
 KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "knowledge"
+UI_ASSET_DIR = PROJECT_ROOT / "assets" / "ui" / "settings"
+
+# 奶白 / 浅蓝 / 雾紫 配色，与 UI 素材包 V1 的视觉方向一致。
+# 图案素材由 tools/build_settings_ui_assets.py 从素材包图集切片生成。
+SETTINGS_COLORS = {
+    "bg": "#F1F2FA",
+    "card": "#FFFFFF",
+    "card_border": "#E5E8F6",
+    "title": "#303B5C",
+    "text": "#3C4767",
+    "muted": "#8A91AB",
+    "accent": "#7C8CE4",
+    "accent_hover": "#6C7BDB",
+    "accent_pressed": "#5F6ECD",
+    "accent_soft": "#F1F3FE",
+    "accent_soft_pressed": "#E6E9FC",
+    "accent_border": "#C7CFF3",
+    "accent_text": "#5A68C0",
+    "input_border": "#DCE0F0",
+    "button_text": "#5A67A8",
+    "danger_soft": "#FCE9EE",
+    "danger_soft_hover": "#F9DCE3",
+    "danger_text": "#C2556B",
+    "danger_border": "#F5D2DA",
+    "scroll": "#C9CFE6",
+    "scroll_hover": "#B3BBD9",
+    "disabled_bg": "#F4F5FB",
+    "disabled_text": "#AFB5CC",
+    "toggle_off": "#D9DDEC",
+    "toggle_off_hover": "#C9CFE6",
+    "toggle_off_disabled": "#E7E9F4",
+    "toggle_on_disabled": "#C3CAE8",
+}
+
+SETTINGS_QSS = Template(
+    """
+QDialog { background: $bg; }
+QLabel { font-family: 'Microsoft YaHei'; font-size: 13px; color: $text; }
+QLabel#dialogTitle { font-size: 20px; font-weight: 600; color: $title; }
+QLabel#dialogSubtitle { font-size: 12px; color: $muted; }
+QLabel#cardTitle { font-size: 15px; font-weight: 600; color: $title; }
+QLabel#rowLabel { font-size: 13px; font-weight: 600; color: $text; }
+QLabel#rowHint { font-size: 12px; color: $muted; }
+QLabel#footerNote { font-size: 12px; color: $muted; }
+QFrame#card { background: $card; border: 1px solid $card_border; border-radius: 14px; }
+QFrame#headerLine { border: none; border-top: 1px solid $card_border; max-height: 1px; }
+QScrollArea#settingsScroll { background: transparent; border: none; }
+QScrollArea#settingsScroll > QWidget > QWidget { background: transparent; }
+QWidget#settingsContent { background: transparent; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background: $card;
+    border: 1px solid $input_border;
+    border-radius: 8px;
+    padding: 4px 10px;
+    min-height: 22px;
+    font-family: 'Microsoft YaHei';
+    font-size: 13px;
+    color: $text;
+    selection-background-color: $accent;
+    selection-color: #FFFFFF;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: $accent; }
+/* 数字输入框右侧的加减按钮：默认分隔线偏硬，这里改成与输入框同色的细线。 */
+QSpinBox, QDoubleSpinBox { padding-right: 26px; }
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    height: 15px;
+    margin: 1px 1px 0 0;
+    border: none;
+    border-left: 1px solid $input_border;
+    border-top-right-radius: 7px;
+    background: transparent;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    height: 15px;
+    margin: 0 1px 1px 0;
+    border: none;
+    border-left: 1px solid $input_border;
+    border-bottom-right-radius: 7px;
+    background: transparent;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url("$spin_up");
+    width: 8px;
+    height: 5px;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url("$spin_down");
+    width: 8px;
+    height: 5px;
+}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {
+    image: none;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: $accent_soft;
+}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    background: $disabled_bg;
+    color: $disabled_text;
+}
+/* 下拉框：自定义 drop-down 后 Qt 不再绘制默认箭头，这里补上箭头图片。 */
+QComboBox { padding-right: 30px; }
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 26px;
+    border: none;
+    background: transparent;
+}
+QComboBox::down-arrow {
+    image: url("$spin_down");
+    width: 8px;
+    height: 5px;
+}
+QComboBox::down-arrow:disabled { image: none; }
+QComboBox QAbstractItemView {
+    background: $card;
+    border: 1px solid $card_border;
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+    selection-background-color: $accent_soft;
+    selection-color: $text;
+}
+QCheckBox { font-family: 'Microsoft YaHei'; font-size: 13px; color: $text; spacing: 8px; }
+QPushButton {
+    background: $card;
+    color: $button_text;
+    border: 1px solid $input_border;
+    border-radius: 9px;
+    padding: 6px 14px;
+    font-family: 'Microsoft YaHei';
+    font-size: 13px;
+}
+QPushButton:hover { background: $accent_soft; border-color: $accent_border; }
+QPushButton:pressed { background: $accent_soft_pressed; }
+QPushButton:disabled { background: $disabled_bg; color: $disabled_text; border-color: $card_border; }
+QPushButton:checked { background: $accent_soft; border-color: $accent; color: $accent_text; }
+QPushButton#primaryButton {
+    background: $accent;
+    color: #FFFFFF;
+    border: none;
+    padding: 7px 22px;
+    font-weight: 600;
+}
+QPushButton#primaryButton:hover { background: $accent_hover; }
+QPushButton#primaryButton:pressed { background: $accent_pressed; }
+QPushButton#primaryButton:disabled { background: #C7CEEB; color: #F4F5FB; }
+QPushButton#dangerButton { background: $danger_soft; color: $danger_text; border: 1px solid $danger_border; }
+QPushButton#dangerButton:hover { background: $danger_soft_hover; border-color: $danger_text; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: $scroll; border-radius: 4px; min-height: 32px; }
+QScrollBar::handle:vertical:hover { background: $scroll_hover; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+"""
+).substitute(
+    {
+        **SETTINGS_COLORS,
+        # 数字输入框的箭头：Qt 在自定义 QSpinBox 按钮后不再绘制默认箭头，
+        # 这里使用 tools/build_settings_ui_assets.py 生成的图片。
+        "spin_up": (UI_ASSET_DIR / "spin_up.png").as_posix(),
+        "spin_down": (UI_ASSET_DIR / "spin_down.png").as_posix(),
+    }
+)
 
 DEFAULT_SETTINGS = {
     **SEMANTIC_FLAG_DEFAULTS,
@@ -58,6 +232,7 @@ DEFAULT_SETTINGS = {
     "idle_nudge_enabled": True,
     "chat_history_enabled": True,
     "restore_last_session": True,
+    "first_use_hint_seen": False,
     "enable_memory_candidates": False,
     "active_persona_id": "roxy",
     "recent_context_messages": 16,
@@ -94,6 +269,79 @@ DEFAULT_SETTINGS = {
     "ollama_base_url": "http://localhost:11434/v1",
     "request_timeout_seconds": 120,
 }
+
+
+class ToggleSwitch(QCheckBox):
+    """iOS 风格开关；保留 QCheckBox 的 setChecked / isChecked / toggled 接口。"""
+
+    TRACK_WIDTH = 46
+    TRACK_HEIGHT = 26
+    KNOB_MARGIN = 3
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(self.TRACK_WIDTH, self.TRACK_HEIGHT)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def sizeHint(self):
+        return QSize(self.TRACK_WIDTH, self.TRACK_HEIGHT)
+
+    def hitButton(self, pos):
+        return self.contentsRect().contains(pos)
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        track = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        radius = track.height() / 2.0
+
+        if not self.isEnabled():
+            track_color = QColor(
+                SETTINGS_COLORS["toggle_on_disabled"]
+                if self.isChecked()
+                else SETTINGS_COLORS["toggle_off_disabled"]
+            )
+        elif self.isChecked():
+            track_color = QColor(SETTINGS_COLORS["accent"])
+        else:
+            track_color = QColor(
+                SETTINGS_COLORS["toggle_off_hover"]
+                if self.underMouse()
+                else SETTINGS_COLORS["toggle_off"]
+            )
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(track, radius, radius)
+
+        diameter = track.height() - 2.0 * self.KNOB_MARGIN
+        knob_x = (
+            track.right() - self.KNOB_MARGIN - diameter
+            if self.isChecked()
+            else track.left() + self.KNOB_MARGIN
+        )
+        knob = QRectF(knob_x, track.top() + self.KNOB_MARGIN, diameter, diameter)
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(knob)
+
+        if self.hasFocus():
+            focus_color = QColor(SETTINGS_COLORS["accent"])
+            focus_color.setAlpha(90)
+            pen = QPen(focus_color)
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(track, radius, radius)
+        painter.end()
 
 
 class ConnectionTestWorker(QObject):
@@ -139,9 +387,56 @@ def save_pet_settings(config, config_file=PET_CONFIG_FILE):
         file.write("\n")
 
 
+# 首次使用提示只看一次；标志位跟随各实例自己的 pet_config.json。
+FIRST_USE_HINT_SEEN_KEY = "first_use_hint_seen"
+
+
+def first_use_hint_seen(config_file=PET_CONFIG_FILE):
+    """读取实例配置里的“已看过”标志；缺失、损坏或非对象时按未看过处理。"""
+    try:
+        with Path(config_file).open("r", encoding="utf-8") as file:
+            loaded = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(loaded, dict) and bool(loaded.get(FIRST_USE_HINT_SEEN_KEY))
+
+
+def mark_first_use_hint_seen(config_file=PET_CONFIG_FILE):
+    """只追加“已看过”标志，保留其他已知、未知和隐藏配置。
+
+    配置损坏时返回 False 且不覆盖原文件；配置不存在时创建只含该标志的文件。
+    不读取、合并或迁移其他实例的配置。
+    """
+    path = Path(config_file)
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                loaded = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(loaded, dict):
+            return False
+        config = loaded
+    else:
+        config = {}
+    config[FIRST_USE_HINT_SEEN_KEY] = True
+    try:
+        save_pet_settings(config, path)
+    except OSError:
+        # 写不进去时本次运行仍由内存标志去重，下次启动重新提示。
+        return False
+    return True
+
+
 class SettingsDialog(QDialog):
     settings_saved = Signal(dict)
     history_cleared = Signal()
+    open_today_growth_requested = Signal()
+    feedback_exported = Signal(str)
+    # 帮助与退出入口只发信号，由调用方处理；设置窗口不自己打开帮助窗口，
+    # 也不自己退出程序，避免绕开桌宠窗口和聊天的退出流程。
+    usage_help_requested = Signal()
+    quit_requested = Signal()
 
     def __init__(
         self,
@@ -150,6 +445,8 @@ class SettingsDialog(QDialog):
         chat_history_manager=None,
         secret_store=None,
         usage_store=None,
+        knowledge_dir=None,
+        feedback_export=None,
     ):
         super().__init__(parent)
         self.config_file = Path(config_file)
@@ -157,187 +454,243 @@ class SettingsDialog(QDialog):
         self.chat_history_manager = chat_history_manager
         self.secret_store = secret_store or SecretStore(PROJECT_ROOT)
         self.usage_store = usage_store or ModelUsageStore(PROJECT_ROOT)
+        self.knowledge_dir = Path(knowledge_dir or KNOWLEDGE_DIR)
+        # 反馈导出服务由调用方注入（含 data_root 与运行元信息）。这里不推断路径，
+        # 未注入时入口明确不可用，而不是回退到项目目录。
+        self.feedback_export = feedback_export
+        self.feedback_dialog = None
         self.connection_thread = None
         self.connection_worker = None
 
         self.setWindowTitle("RoxyPlan 设置")
-        self.setMinimumWidth(390)
-        self.resize(450, 720)
+        self.setMinimumSize(430, 500)
+        self.resize(620, 660)
         self._build_ui()
         self._load_values()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
 
-        title = QLabel("桌宠设置")
-        title.setStyleSheet("font: 600 18px 'Microsoft YaHei'; color: #333333;")
-        layout.addWidget(title)
+        layout.addWidget(self._build_header())
 
-        form_container = QWidget()
-        form = QFormLayout(form_container)
-        form.setContentsMargins(4, 4, 10, 4)
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(12)
-
-        self.test_mode = QCheckBox("使用秒级测试间隔")
-        form.addRow("测试模式", self.test_mode)
-
-        self.always_on_top = QCheckBox("桌宠保持在窗口上方")
-        form.addRow("始终置顶", self.always_on_top)
-
-        self.auto_tips_enabled = QCheckBox("允许桌宠自动弹出提示")
-        form.addRow("自动提示", self.auto_tips_enabled)
-
-        self.auto_tips_min_minutes = self._spin_box(1, 1440, " 分钟")
-        form.addRow("提示最小间隔", self.auto_tips_min_minutes)
-
-        self.auto_tips_max_minutes = self._spin_box(1, 1440, " 分钟")
-        form.addRow("提示最大间隔", self.auto_tips_max_minutes)
-
-        self.proactive_enabled = QCheckBox("根据今日成长状态给出轻量提醒")
-        form.addRow("开启主动陪伴", self.proactive_enabled)
-
-        self.proactive_interval_minutes = self._spin_box(1, 1440, " 分钟")
-        form.addRow("主动提醒间隔", self.proactive_interval_minutes)
-
-        self.evening_review_enabled = QCheckBox("晚间提醒进行今日复盘")
-        form.addRow("晚间复盘提醒", self.evening_review_enabled)
-
-        self.auto_complete_yesterday_review = QCheckBox(
-            "启动桌面程序时自动补全昨日成长复盘"
+        # “打开今日成长面板”按钮已从可见布局移除（2026-10-12 设置界面整理）。
+        # 控件和信号保留，现有调用方（桌宠窗口、回归测试）仍可连接和点击。
+        self.open_today_growth_button = QPushButton("打开今日成长面板", self)
+        self.open_today_growth_button.clicked.connect(
+            self.open_today_growth_requested.emit
         )
-        form.addRow("昨日复盘补全", self.auto_complete_yesterday_review)
+        self.open_today_growth_button.setVisible(False)
 
-        self.idle_nudge_enabled = QCheckBox("长时间未互动时轻声提醒")
-        form.addRow("未互动提醒", self.idle_nudge_enabled)
+        self._build_hidden_parameters()
 
-        self.chat_history_enabled = QCheckBox("将新对话保存在本地私有目录")
-        form.addRow("保存聊天历史", self.chat_history_enabled)
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("settingsScroll")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        self.restore_last_session = QCheckBox("启动聊天窗口时恢复最近会话")
-        form.addRow("恢复最近对话", self.restore_last_session)
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(2, 2, 8, 2)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(self._build_appearance_card())
+        content_layout.addWidget(self._build_companion_card())
+        content_layout.addWidget(self._build_model_card())
+        content_layout.addWidget(self._build_privacy_card())
+        content_layout.addWidget(self._build_help_card())
+        content_layout.addStretch(1)
+        scroll_area.setWidget(content)
+        layout.addWidget(scroll_area, 1)
 
-        # Legacy compatibility state only.  Do not add this widget to the form:
-        # candidate memory is no longer a user-facing product option.
-        self.enable_memory_candidates = QCheckBox()
+        note = QLabel(
+            "计时、提示、缩放和置顶设置会尽量立即生效；"
+            "桌宠图片和模型名称建议重启 RoxyPlan 后生效。"
+        )
+        note.setObjectName("footerNote")
+        note.setWordWrap(True)
+        layout.addWidget(note)
 
-        self.recent_context_messages = self._spin_box(4, 40, " 条")
-        form.addRow("最近上下文", self.recent_context_messages)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        save_button.setText("保存")
+        save_button.setObjectName("primaryButton")
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_button.setText("取消")
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
-        self.smart_intent_enabled = QCheckBox("理解自然表达并调用现有功能")
-        form.addRow("智能意图理解", self.smart_intent_enabled)
+        self.setStyleSheet(SETTINGS_QSS)
 
-        self.llm_intent_assist_enabled = QCheckBox("在规则无法判断时请求当前模型辅助识别")
-        form.addRow("模型意图辅助", self.llm_intent_assist_enabled)
+    def _build_header(self):
+        header = QWidget()
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(2, 0, 2, 0)
+        header_layout.setSpacing(10)
 
-        self.intent_auto_execute_confidence = QDoubleSpinBox()
-        self.intent_auto_execute_confidence.setRange(0.5, 1.0)
-        self.intent_auto_execute_confidence.setSingleStep(0.05)
-        self.intent_auto_execute_confidence.setDecimals(2)
-        form.addRow("自动执行置信度", self.intent_auto_execute_confidence)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        emblem = QLabel()
+        emblem_pixmap = self._asset_pixmap("header_emblem.png", 44)
+        if emblem_pixmap is not None:
+            emblem.setPixmap(emblem_pixmap)
+        title_row.addWidget(emblem)
+        title_column = QVBoxLayout()
+        title_column.setSpacing(2)
+        title = QLabel("洛琪希设置")
+        title.setObjectName("dialogTitle")
+        version = getattr(getattr(self.feedback_export, "run_meta", None), "version", "")
+        subtitle = QLabel("让陪伴更符合你的习惯。" + (f" · 版本 {version}" if version else ""))
+        subtitle.setObjectName("dialogSubtitle")
+        title_column.addWidget(title)
+        title_column.addWidget(subtitle)
+        title_column.addStretch(1)
+        title_row.addLayout(title_column, 1)
+        header_layout.addLayout(title_row)
 
-        self.agent_core_enabled = QCheckBox("使用受限内部工具处理计划、记忆与动作")
-        form.addRow("启用 Agent Core", self.agent_core_enabled)
+        divider_row = QHBoxLayout()
+        divider_row.setSpacing(8)
+        divider = QFrame()
+        divider.setObjectName("headerLine")
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider_row.addWidget(divider, 1)
+        star = QLabel()
+        star_pixmap = self._asset_pixmap("title_star.png", 16)
+        if star_pixmap is not None:
+            star.setPixmap(star_pixmap)
+        divider_row.addWidget(star, 0, Qt.AlignmentFlag.AlignVCenter)
+        header_layout.addLayout(divider_row)
+        return header
 
-        self.agent_multi_step_enabled = QCheckBox("允许一次请求按顺序执行多个内部工具")
-        form.addRow("多步骤规划", self.agent_multi_step_enabled)
+    def _build_appearance_card(self):
+        self.always_on_top = ToggleSwitch()
+        self.pet_scale = QDoubleSpinBox()
+        self.pet_scale.setRange(0.65, 1.8)
+        self.pet_scale.setSingleStep(0.05)
+        self.pet_scale.setDecimals(2)
+        self.pet_scale.setSuffix(" 倍")
+        self._fix_control_width(self.pet_scale, 150)
 
-        self.llm_planner_assist_enabled = QCheckBox("规则无法规划时允许当前模型输出受限步骤")
-        form.addRow("模型规划辅助", self.llm_planner_assist_enabled)
+        self.asset_path = QLineEdit()
+        browse_button = QPushButton("浏览")
+        browse_button.clicked.connect(self._browse_asset)
+        asset_row = QWidget()
+        asset_layout = QHBoxLayout(asset_row)
+        asset_layout.setContentsMargins(0, 0, 0, 0)
+        asset_layout.setSpacing(8)
+        asset_layout.addWidget(self.asset_path, 1)
+        asset_layout.addWidget(browse_button)
 
-        self.agent_max_steps = self._spin_box(1, 3, " 步")
-        form.addRow("最大执行步骤", self.agent_max_steps)
+        return self._card(
+            "section_pet.png",
+            "桌宠外观",
+            [
+                self._row("始终置顶", "让桌宠始终显示在其他窗口之上", self.always_on_top),
+                self._row("桌宠缩放", "调整桌宠在桌面上的显示大小", self.pet_scale),
+                self._row(
+                    "桌宠图片",
+                    "更换桌宠显示的图片（支持透明背景 PNG）",
+                    asset_row,
+                    stretch_control=True,
+                ),
+            ],
+        )
 
-        self.agent_medium_confidence = QDoubleSpinBox()
-        self.agent_medium_confidence.setRange(0.5, 1.0)
-        self.agent_medium_confidence.setSingleStep(0.05)
-        self.agent_medium_confidence.setDecimals(2)
-        form.addRow("中风险置信度", self.agent_medium_confidence)
-
-        self.agent_confirm_high_risk = QCheckBox("删除和其他不可逆操作始终确认")
-        self.agent_confirm_high_risk.setChecked(True)
-        self.agent_confirm_high_risk.setEnabled(False)
-        form.addRow("高风险确认", self.agent_confirm_high_risk)
-
-        self.auto_summary_enabled = QCheckBox("对话过长时生成本地会话摘要")
-        form.addRow("自动会话摘要", self.auto_summary_enabled)
-
+    def _build_companion_card(self):
         self.active_persona_id = QComboBox()
         registry = PersonaRegistry(PROJECT_ROOT / "data" / "personas")
         for persona in registry.available_personas():
             self.active_persona_id.addItem(
                 str(persona["display_name"]), str(persona["persona_id"])
             )
-        form.addRow("当前人格", self.active_persona_id)
+        self._fix_control_width(self.active_persona_id, 150)
 
-        clear_history_button = QPushButton("清空本地聊天历史")
-        clear_history_button.clicked.connect(self._clear_chat_history)
-        form.addRow("聊天隐私", clear_history_button)
-
-        self.pet_scale = QDoubleSpinBox()
-        self.pet_scale.setRange(0.65, 1.8)
-        self.pet_scale.setSingleStep(0.05)
-        self.pet_scale.setDecimals(2)
-        self.pet_scale.setSuffix(" 倍")
-        form.addRow("桌宠缩放", self.pet_scale)
-
-        self.study_test_seconds = self._spin_box(1, 3600, " 秒")
-        form.addRow("测试学习提醒", self.study_test_seconds)
-
-        self.sleep_test_seconds = self._spin_box(1, 3600, " 秒")
-        form.addRow("测试睡眠时间", self.sleep_test_seconds)
-
+        self.smart_intent_enabled = ToggleSwitch()
+        self.auto_tips_enabled = ToggleSwitch()
+        self.auto_tips_min_minutes = self._spin_box(1, 1440, " 分钟")
+        self._fix_control_width(self.auto_tips_min_minutes, 150)
+        self.auto_tips_max_minutes = self._spin_box(1, 1440, " 分钟")
+        self._fix_control_width(self.auto_tips_max_minutes, 150)
+        self.proactive_enabled = ToggleSwitch()
+        self.proactive_interval_minutes = self._spin_box(1, 1440, " 分钟")
+        self._fix_control_width(self.proactive_interval_minutes, 150)
+        self.evening_review_enabled = ToggleSwitch()
+        self.auto_complete_yesterday_review = ToggleSwitch()
+        self.idle_nudge_enabled = ToggleSwitch()
         self.study_minutes = self._spin_box(1, 1440, " 分钟")
-        form.addRow("学习提醒时间", self.study_minutes)
-
+        self._fix_control_width(self.study_minutes, 150)
         self.sleep_minutes = self._spin_box(1, 1440, " 分钟")
-        form.addRow("睡眠时间", self.sleep_minutes)
+        self._fix_control_width(self.sleep_minutes, 150)
 
-        asset_row = QWidget()
-        asset_layout = QHBoxLayout(asset_row)
-        asset_layout.setContentsMargins(0, 0, 0, 0)
-        asset_layout.setSpacing(8)
-        self.asset_path = QLineEdit()
-        browse_button = QPushButton("浏览")
-        browse_button.clicked.connect(self._browse_asset)
-        asset_layout.addWidget(self.asset_path, 1)
-        asset_layout.addWidget(browse_button)
-        form.addRow("桌宠图片", asset_row)
+        return self._card(
+            "section_companion.png",
+            "陪伴与提醒",
+            [
+                self._row("当前人格", "选择陪伴你的角色人格", self.active_persona_id),
+                self._row(
+                    "智能意图理解", "理解自然表达并调用现有功能", self.smart_intent_enabled
+                ),
+                self._row("自动提示", "允许桌宠自动弹出提示", self.auto_tips_enabled),
+                self._row(
+                    "提示最小间隔",
+                    "两次自动提示之间的最小时间间隔",
+                    self.auto_tips_min_minutes,
+                ),
+                self._row(
+                    "提示最大间隔",
+                    "两次自动提示之间的最大时间间隔",
+                    self.auto_tips_max_minutes,
+                ),
+                self._row(
+                    "开启主动陪伴", "根据今日成长状态给出轻量提醒", self.proactive_enabled
+                ),
+                self._row(
+                    "主动提醒间隔",
+                    "主动提醒的时间间隔",
+                    self.proactive_interval_minutes,
+                    tooltip="主动陪伴开启时，每隔多久检查一次今日状态并考虑轻量提醒。",
+                ),
+                self._row(
+                    "晚间复盘提醒", "晚间提醒进行今日复盘", self.evening_review_enabled
+                ),
+                self._row(
+                    "昨日复盘补全",
+                    "启动桌面程序时自动补全昨日成长复盘",
+                    self.auto_complete_yesterday_review,
+                ),
+                self._row(
+                    "未互动提醒", "长时间未互动时轻声提醒", self.idle_nudge_enabled
+                ),
+                self._row("学习提醒时间", "学习提醒的计时长度", self.study_minutes),
+                self._row("睡眠时间", "睡眠提醒的计时长度", self.sleep_minutes),
+            ],
+        )
 
-        self.model_name = QLineEdit()
-        self.model_name.setPlaceholderText("例如 qwen3:4b")
-        form.addRow("模型名称", self.model_name)
-
-        model_section = QLabel("在线模型服务")
-        model_section.setStyleSheet("font: 600 15px 'Microsoft YaHei'; color: #4F5F91;")
-        form.addRow(model_section)
-
-        self.online_model_enabled = QCheckBox("优先使用 DeepSeek 在线模型")
-        form.addRow("在线模型", self.online_model_enabled)
-
+    def _build_model_card(self):
+        self.online_model_enabled = ToggleSwitch()
         self.model_mode = QComboBox()
         self.model_mode.addItem("省钱", "economy")
         self.model_mode.addItem("自动", "auto")
         self.model_mode.addItem("高质量", "quality")
-        form.addRow("模型模式", self.model_mode)
+        self._fix_control_width(self.model_mode, 150)
 
         self.default_model = QLineEdit()
         self.default_model.setPlaceholderText(DEFAULT_DEEPSEEK_MODEL)
-        form.addRow("默认模型", self.default_model)
-
+        self._fix_control_width(self.default_model, 200)
         self.complex_model = QLineEdit()
         self.complex_model.setPlaceholderText(DEFAULT_DEEPSEEK_COMPLEX_MODEL)
-        form.addRow("复杂模型", self.complex_model)
+        self._fix_control_width(self.complex_model, 200)
 
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText("留空则保留现有 Key")
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        key_layout.setSpacing(6)
         show_key_button = QPushButton("显示")
         show_key_button.setCheckable(True)
         show_key_button.toggled.connect(
@@ -347,85 +700,363 @@ class SettingsDialog(QDialog):
         )
         clear_key_button = QPushButton("清除")
         clear_key_button.clicked.connect(self._clear_api_key)
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(6)
         key_layout.addWidget(self.api_key, 1)
         key_layout.addWidget(show_key_button)
         key_layout.addWidget(clear_key_button)
-        form.addRow("DeepSeek API Key", key_row)
 
         self.api_key_status = QLabel()
-        form.addRow("Key 状态", self.api_key_status)
+        self.api_key_status.setObjectName("rowHint")
 
-        test_connection_button = QPushButton("测试 DeepSeek 连接")
+        test_connection_button = QPushButton("测试连接")
+        test_connection_button.setObjectName("primaryButton")
         test_connection_button.clicked.connect(self._test_connection)
         self.connection_status = QLabel("尚未测试")
+        self.connection_status.setObjectName("rowHint")
         connection_row = QWidget()
         connection_layout = QHBoxLayout(connection_row)
         connection_layout.setContentsMargins(0, 0, 0, 0)
         connection_layout.addWidget(test_connection_button)
         connection_layout.addWidget(self.connection_status, 1)
-        form.addRow("连接", connection_row)
 
-        self.enable_auto_escalation = QCheckBox("复杂任务自动使用复杂模型")
-        form.addRow("自动升级", self.enable_auto_escalation)
+        self.model_name = QLineEdit()
+        self.model_name.setPlaceholderText("例如 qwen3:4b")
+        self._fix_control_width(self.model_name, 200)
 
-        self.enable_thinking = QCheckBox("深度规划等复杂任务允许思考模式")
-        form.addRow("复杂任务思考", self.enable_thinking)
-
-        self.offline_fallback_enabled = QCheckBox("DeepSeek 不可用时使用本地 Ollama")
-        form.addRow("本地降级", self.offline_fallback_enabled)
-
+        self.enable_auto_escalation = ToggleSwitch()
+        self.enable_thinking = ToggleSwitch()
+        self.offline_fallback_enabled = ToggleSwitch()
         self.offline_model = QLineEdit()
         self.offline_model.setPlaceholderText("qwen3:4b")
-        form.addRow("Ollama 模型", self.offline_model)
+        self._fix_control_width(self.offline_model, 200)
 
         self.request_timeout_seconds = self._spin_box(5, 600, " 秒")
-        form.addRow("请求超时", self.request_timeout_seconds)
+        self._fix_control_width(self.request_timeout_seconds, 150)
 
-        usage_row = QWidget()
-        usage_layout = QHBoxLayout(usage_row)
-        usage_layout.setContentsMargins(0, 0, 0, 0)
+        self.llm_intent_assist_enabled = ToggleSwitch()
+
         self.usage_summary_label = QLabel()
         clear_usage_button = QPushButton("清空")
         clear_usage_button.clicked.connect(self._clear_usage)
+        usage_row = QWidget()
+        usage_layout = QHBoxLayout(usage_row)
+        usage_layout.setContentsMargins(0, 0, 0, 0)
         usage_layout.addWidget(self.usage_summary_label, 1)
         usage_layout.addWidget(clear_usage_button)
-        form.addRow("本地使用统计", usage_row)
+
+        return self._card(
+            "section_model.png",
+            "模型连接",
+            [
+                self._row(
+                    "在线模型", "优先使用 DeepSeek 在线模型", self.online_model_enabled
+                ),
+                self._row("模型模式", "模型调用模式", self.model_mode),
+                self._row("默认模型", "日常对话使用的默认模型", self.default_model),
+                self._row("复杂模型", "复杂任务使用的模型", self.complex_model),
+                self._row(
+                    "DeepSeek API Key",
+                    "仅保存在本地私有配置，留空则保留现有 Key",
+                    key_row,
+                    stretch_control=True,
+                ),
+                self._row("Key 状态", None, self.api_key_status, stretch_control=True),
+                self._row(
+                    "连接测试",
+                    "发送一次轻量请求，检查 DeepSeek 服务是否可用",
+                    connection_row,
+                    stretch_control=True,
+                    tooltip=(
+                        "用当前填入或已保存的 Key 发送一次轻量请求，只检查服务是否可用；"
+                        "不会开始对话或写入学习记录。"
+                    ),
+                ),
+                self._row(
+                    "模型名称", "本地模型名称（例如 qwen3:4b）", self.model_name
+                ),
+                self._row(
+                    "自动升级", "复杂任务自动使用复杂模型", self.enable_auto_escalation
+                ),
+                self._row(
+                    "复杂任务思考", "深度规划等复杂任务允许思考模式", self.enable_thinking
+                ),
+                self._row(
+                    "本地降级",
+                    "DeepSeek 不可用时使用本地 Ollama",
+                    self.offline_fallback_enabled,
+                ),
+                self._row("Ollama 模型", "本地降级使用的模型名称", self.offline_model),
+                self._row(
+                    "请求超时", "单次模型请求的最长等待时间", self.request_timeout_seconds
+                ),
+                self._row(
+                    "模型意图辅助",
+                    "在规则无法判断时请求当前模型辅助识别",
+                    self.llm_intent_assist_enabled,
+                ),
+                self._row(
+                    "本地使用统计",
+                    "记录在本地的模型调用次数与 tokens",
+                    usage_row,
+                    stretch_control=True,
+                ),
+            ],
+        )
+
+    def _build_privacy_card(self):
+        self.chat_history_enabled = ToggleSwitch()
+        self.recent_context_messages = self._spin_box(4, 40, " 条")
+        self._fix_control_width(self.recent_context_messages, 150)
+        self.auto_summary_enabled = ToggleSwitch()
+
+        clear_history_button = QPushButton("清空聊天历史")
+        clear_history_button.setObjectName("dangerButton")
+        clear_history_button.clicked.connect(self._clear_chat_history)
 
         open_knowledge_button = QPushButton("打开知识库文件夹")
         open_knowledge_button.clicked.connect(self._open_knowledge_folder)
-        form.addRow("本地知识库", open_knowledge_button)
-        scroll_area = QScrollArea()
-        scroll_area.setObjectName("settingsScroll")
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll_area.setWidget(form_container)
-        layout.addWidget(scroll_area, 1)
 
-        note = QLabel("计时、提示、缩放和置顶设置会尽量立即生效；桌宠图片和模型名称建议重启 RoxyPlan 后生效。")
-        note.setWordWrap(True)
-        note.setStyleSheet("font: 12px 'Microsoft YaHei'; color: #777777;")
-        layout.addWidget(note)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
+        feedback_button = QPushButton("导出内测反馈")
+        feedback_button.clicked.connect(self.open_feedback_export_dialog)
+        unavailable = getattr(self.feedback_export, "unavailable_reason", "")
+        feedback_available = bool(
+            self.feedback_export is not None
+            and getattr(self.feedback_export, "available", False)
         )
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        if feedback_available:
+            feedback_hint = "整理问题、预期与实际结果，连同所选数据打包成 ZIP；没有后台上传"
+        else:
+            feedback_button.setEnabled(False)
+            feedback_hint = unavailable or "未接入导出服务，导出不可用。"
 
-        self.setStyleSheet(
-            "QDialog { background: #F7F4FF; }"
-            "QScrollArea#settingsScroll, QScrollArea#settingsScroll > QWidget > QWidget { background: #F7F4FF; border: none; }"
-            "QLabel, QCheckBox { font: 13px 'Microsoft YaHei'; color: #333333; }"
-            "QLineEdit, QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #D8CCFF; "
-            "border-radius: 6px; padding: 6px; }"
-            "QPushButton { background: #8EA7FF; color: white; border: none; "
-            "border-radius: 6px; padding: 7px 12px; }"
-            "QPushButton:hover { background: #7894F8; }"
+        return self._card(
+            "section_privacy.png",
+            "隐私与数据",
+            [
+                self._row(
+                    "保存聊天历史",
+                    "保存每日学习会话，重启后可继续",
+                    self.chat_history_enabled,
+                    tooltip="关闭后不再保存新的聊天记录；已有本地历史不会自动删除。",
+                ),
+                self._row(
+                    "最近上下文", "对话中携带的最近消息条数", self.recent_context_messages
+                ),
+                self._row(
+                    "自动会话摘要", "对话过长时生成本地会话摘要", self.auto_summary_enabled
+                ),
+                self._row(
+                    "清空本地聊天历史",
+                    "删除本地全部聊天记录（不可撤销；长期记忆和成长数据不受影响）",
+                    clear_history_button,
+                ),
+                self._row(
+                    "本地知识库",
+                    "打开知识库文件夹，管理 RoxyPlan 可读取的资料",
+                    open_knowledge_button,
+                ),
+                self._row(
+                    "导出内测反馈",
+                    feedback_hint,
+                    feedback_button,
+                    tooltip="打开导出窗口，由你选择要包含的数据；只在本地打包成 ZIP，没有后台上传。",
+                ),
+            ],
         )
+
+    def open_feedback_export_dialog(self):
+        """打开反馈导出窗口；服务未注入时不做任何事，也不猜数据根。"""
+        if self.feedback_export is None or not getattr(self.feedback_export, "available", False):
+            return None
+        # 延迟导入：反馈窗口复用本模块的配色，模块级导入会形成循环。
+        from frontend.feedback_dialog import FeedbackExportDialog
+
+        dialog = FeedbackExportDialog(
+            self.feedback_export, self, display_info=self._display_environment()
+        )
+        dialog.feedback_exported.connect(self.feedback_exported.emit)
+        self.feedback_dialog = dialog
+        dialog.show()
+        return dialog
+
+    def _display_environment(self):
+        """只取屏幕逻辑尺寸与缩放比；不读取用户名、主机名等无关信息。"""
+        info = {}
+        screen = self.screen()
+        if screen is not None:
+            geometry = screen.geometry()
+            info["screen_logical"] = f"{geometry.width()}x{geometry.height()}"
+            info["device_pixel_ratio"] = round(screen.devicePixelRatio(), 3)
+        return info
+
+    def _build_help_card(self):
+        usage_button = QPushButton("打开操作说明")
+        usage_button.clicked.connect(self.usage_help_requested.emit)
+
+        quit_button = QPushButton("退出 Roxy")
+        quit_button.setObjectName("dangerButton")
+        quit_button.clicked.connect(self.request_quit)
+
+        return self._card(
+            "title_star.png",
+            "帮助与退出",
+            [
+                self._row(
+                    "操作说明",
+                    "只读查看常用表达和内测使用提示；不会读取私人数据，也不会调用模型",
+                    usage_button,
+                ),
+                self._row(
+                    "退出程序",
+                    "关闭桌宠并退出 RoxyPlan；聊天历史、长期记忆和成长数据都会保留",
+                    quit_button,
+                ),
+            ],
+        )
+
+    def request_quit(self):
+        """退出前简单确认，默认取消；这里不保存也不重置任何设置。"""
+        if not self._confirm_quit():
+            return
+        self.quit_requested.emit()
+
+    def _confirm_quit(self) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "退出 Roxy",
+            "确定要退出 RoxyPlan 吗？\n未保存的设置修改不会生效。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _build_hidden_parameters(self):
+        """内部实现与测试参数：保留控件和配置值，但不进入普通界面布局。"""
+        self.test_mode = QCheckBox("使用秒级测试间隔")
+        self.study_test_seconds = self._spin_box(1, 3600, " 秒")
+        self.sleep_test_seconds = self._spin_box(1, 3600, " 秒")
+
+        self.intent_auto_execute_confidence = QDoubleSpinBox()
+        self.intent_auto_execute_confidence.setRange(0.5, 1.0)
+        self.intent_auto_execute_confidence.setSingleStep(0.05)
+        self.intent_auto_execute_confidence.setDecimals(2)
+
+        self.agent_core_enabled = QCheckBox("使用受限内部工具处理计划、记忆与动作")
+        self.agent_multi_step_enabled = QCheckBox("允许一次请求按顺序执行多个内部工具")
+        self.llm_planner_assist_enabled = QCheckBox("规则无法规划时允许当前模型输出受限步骤")
+        self.agent_max_steps = self._spin_box(1, 3, " 步")
+
+        self.agent_medium_confidence = QDoubleSpinBox()
+        self.agent_medium_confidence.setRange(0.5, 1.0)
+        self.agent_medium_confidence.setSingleStep(0.05)
+        self.agent_medium_confidence.setDecimals(2)
+
+        self.agent_confirm_high_risk = QCheckBox("删除和其他不可逆操作始终确认")
+        self.agent_confirm_high_risk.setChecked(True)
+        self.agent_confirm_high_risk.setEnabled(False)
+
+        # Retain the legacy config values for compatibility; daily sessions
+        # always resume when chat history saving is enabled, and candidate
+        # memory is no longer a user-facing product option.
+        self.restore_last_session = QCheckBox()
+        self.enable_memory_candidates = QCheckBox()
+
+        for widget in (
+            self.test_mode,
+            self.study_test_seconds,
+            self.sleep_test_seconds,
+            self.intent_auto_execute_confidence,
+            self.agent_core_enabled,
+            self.agent_multi_step_enabled,
+            self.llm_planner_assist_enabled,
+            self.agent_max_steps,
+            self.agent_medium_confidence,
+            self.agent_confirm_high_risk,
+            self.restore_last_session,
+            self.enable_memory_candidates,
+        ):
+            widget.setParent(self)
+            widget.setVisible(False)
+
+    @staticmethod
+    def _fix_control_width(widget, width):
+        widget.setFixedWidth(width)
+
+    @staticmethod
+    def _asset_pixmap(name, size):
+        path = UI_ASSET_DIR / name
+        if not path.exists():
+            return None
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            return None
+        # 以 2 倍逻辑尺寸解码，Windows 150% 缩放下依旧清晰。
+        ratio = 2.0
+        scaled = pixmap.scaled(
+            int(size * ratio),
+            int(size * ratio),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(ratio)
+        return scaled
+
+    def _row(self, label_text, hint_text, control, stretch_control=False, tooltip=None):
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(14)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(2)
+        label = QLabel(label_text)
+        label.setObjectName("rowLabel")
+        label.setWordWrap(True)
+        if tooltip:
+            row.setToolTip(tooltip)
+            label.setToolTip(tooltip)
+        text_column.addWidget(label)
+        if hint_text:
+            hint = QLabel(hint_text)
+            hint.setObjectName("rowHint")
+            hint.setWordWrap(True)
+            text_column.addWidget(hint)
+        text_column.addStretch(1)
+        row_layout.addLayout(text_column, 2)
+
+        if control is not None:
+            if stretch_control:
+                row_layout.addWidget(control, 3)
+            else:
+                row_layout.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
+
+    def _card(self, icon_name, title_text, rows):
+        card = QFrame()
+        card.setObjectName("card")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 14, 18, 16)
+        card_layout.setSpacing(14)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        icon = QLabel()
+        icon_pixmap = self._asset_pixmap(icon_name, 22)
+        if icon_pixmap is not None:
+            icon.setPixmap(icon_pixmap)
+        title_row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        title = QLabel(title_text)
+        title.setObjectName("cardTitle")
+        title_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        card_layout.addLayout(title_row)
+
+        for row in rows:
+            card_layout.addWidget(row)
+        return card
 
     @staticmethod
     def _spin_box(minimum, maximum, suffix):
@@ -637,8 +1268,8 @@ class SettingsDialog(QDialog):
             self.asset_path.setText(selected_path.as_posix())
 
     def _open_knowledge_folder(self):
-        KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(KNOWLEDGE_DIR)))
+        self.knowledge_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.knowledge_dir)))
 
     def _clear_chat_history(self):
         if self.chat_history_manager is None:
@@ -727,6 +1358,11 @@ class SettingsDialog(QDialog):
                 **self._model_config_values(),
             }
         )
+        # 设置窗口打开期间聊天可能刚写入“已看过”标志；保存时不要覆盖回未看。
+        if not self.config.get(FIRST_USE_HINT_SEEN_KEY) and first_use_hint_seen(
+            self.config_file
+        ):
+            self.config[FIRST_USE_HINT_SEEN_KEY] = True
         try:
             save_pet_settings(self.config, self.config_file)
         except OSError as error:
@@ -738,8 +1374,7 @@ class SettingsDialog(QDialog):
         QMessageBox.information(
             self,
             "设置已保存",
-            "测试模式、主动陪伴、学习提醒、睡眠计时、自动提示、缩放和置顶设置已尽量立即生效。\n"
-            "模型服务、计时、主动陪伴、自动提示、缩放和置顶设置会尽量立即生效。\n"
-            "桌宠图片路径建议重启 RoxyPlan 后生效。",
+            "计时、提示、缩放和置顶设置会尽量立即生效。\n"
+            "模型服务设置会尽量立即生效；桌宠图片路径建议重启 RoxyPlan 后生效。",
         )
         self.accept()

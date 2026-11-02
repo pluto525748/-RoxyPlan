@@ -228,7 +228,7 @@ class AgentPlanner:
             # GrowthManager owns the authoritative meaning of "today". Passing an
             # ISO date produced by a separately-clocked parser can move a task to
             # the wrong day in tests or after a midnight boundary.
-            for key in ("time_slot", "duration_minutes"):
+            for key in ("time_slot", "duration_minutes", "note"):
                 if entities.get(key) not in (None, ""):
                     arguments[key] = entities[key]
             return arguments

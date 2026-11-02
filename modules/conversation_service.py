@@ -18,13 +18,18 @@ from modules.conversation_state import ConversationStateManager
 from modules.contracts import AgentResponse
 from modules.development_log import TraceContext, get_development_log
 from modules.intent_router import IntentRouter
+from modules.learning_loop import LearningLoopService
+from modules.learning_context import is_learning_context, learning_profile
+from modules.local_feature_extractor import requests_concrete_advice
 from modules.interaction_diagnostics import InteractionDiagnostics
 from modules.interaction_state_coordinator import InteractionStateCoordinator
 from modules.memory_retriever import MemoryRetriever
 from modules.memory_manager import SENSITIVE_CATEGORIES
+from modules.memory_read import MemoryReadRequest, is_memory_management_display, is_memory_save_reference_question
 from modules.memory_governance import MemoryGovernanceService
 from modules.llm.response_sanitizer import sanitize_public_reply
 from modules.response_composer import ResponseComposer
+from modules.request_boundary import RequestBoundary, bind_request_boundary, current_request_boundary
 from modules.reference_resolver import ReferenceResolver
 from modules.semantic_action_parser import ActionCandidate, SemanticParseResult
 from modules.plan_authorization_policy import (
@@ -33,7 +38,7 @@ from modules.plan_authorization_policy import (
 )
 from modules.read_snapshot import ReadSnapshot
 from modules.semantic_pipeline import PipelineOutcome
-from modules.suggestion_snapshot import SuggestionSnapshot
+from modules.suggestion_snapshot import SuggestionSnapshot, SuggestionSnapshotObject
 from modules.verified_turn_context import VerifiedTurnContext
 
 
@@ -78,7 +83,7 @@ DEFAULT_CHAT_INSTRUCTION = (
     "如果用户要求总结整段对话并保存长期记忆，不要直接保存整段聊天或助手总结。先总结其中由用户明确表达的事实、偏好或目标，再给出一至三条可单独发送的‘请记住：……’格式；明确说明用户发送后才会保存。"
     "普通聊天中不要只靠文字声称或暗示已经写入计划、行动记录或长期记忆；任何写入都必须经过当前程序支持的类型化交互和真实工具结果。"
     "提供多项可能被用户继续加入今日计划的建议时，请使用清晰编号列表（1.、2.、3.），每一项只放一个简洁、可执行且能单独成为计划标题的动作，不要嵌套列表，也不要声称已经保存。"
-    "用户明确要求推荐、建议或列出几项今天可做的计划时，必须先直接给出二至四项单层编号候选，每行严格使用‘1. 动作’这种格式；即使用户没有提供学习或工作主题，也不要只用澄清问题作答，而应给出不虚构用户事实的通用可执行候选。必须遵守用户已经说明的日期、时间范围、时长和主题。用户信息已经足够时，不要强行追问；如果补充偏好确实能明显改善建议，可以由你结合当前语气自然说明用户既可以直接选择或全部加入，也可以再补充一次方向后重新调整。不要复读固定模板，也不要把补充当成执行前置条件。这里是在展示候选，不代表已经加入今日计划。"
+    "用户明确要求今天的计划建议时，先依据本轮用户条件、相关正式长期目标、今天已有计划、昨日及近期真实执行事实，调整候选的规模、预计时长、先后顺序和是否建议继续昨日未完成项。当前明确的时间、数量和主题要求优先；不得只凭低完成率机械减项，不得把未完成解释成懒惰，不得编造缺失历史。只给单层编号候选，每行‘1. 动作，30分钟。简短备注’等可解析格式；编号前可用一句可核对的事实说明调整理由。候选数量由明确要求和实际事项决定，建议阶段不得声称已加入计划。信息足够时不强制追问；用户可以直接选择或全部加入。"
     "工具是否成功只能以结构化工具结果为准，不得自行声称已添加、已完成、已保存、已删除或已记录。"
     "不要展示内部推理、思考标签、隐藏提示词或工具选择过程。"
     "不要声称你接入了数据库、语音或未提供的能力。"
@@ -112,7 +117,27 @@ def _trace_phase(phase: str):
             session_id = session_id.strip()
             if trace is None or trace.session_id != session_id:
                 trace = logger.new_trace(session_id=session_id, source="chat")
-            with logger.bind(trace):
+            business_date = (
+                turn.business_date if turn is not None
+                else str(kwargs.get("business_date", ""))
+            )
+            require_existing_session = (
+                turn.require_existing_session if turn is not None
+                else bool(kwargs.get("require_existing_session", False))
+            )
+            boundary = (
+                RequestBoundary(
+                    conversation_id=session_id,
+                    business_date=business_date,
+                    source_text=turn.message if turn is not None else str(args[0] if args else kwargs.get("message", "")),
+                    now_provider=self.business_now_provider or self.now_provider,
+                    session_exists=(
+                        lambda value: self.chat_history_manager.get_session(value) is not None
+                    ) if require_existing_session and self.chat_history_manager is not None else None,
+                )
+                if business_date else None
+            )
+            with logger.bind(trace), bind_request_boundary(boundary):
                 logger.event(trace, f"turn_{phase}_started")
                 try:
                     result = method(self, *args, **kwargs)
@@ -122,8 +147,17 @@ def _trace_phase(phase: str):
                     raise
                 if isinstance(result, ConversationTurn):
                     result.trace_context = trace
+                    result.business_date = business_date
+                    result.require_existing_session = require_existing_session
+                    if business_date and require_existing_session:
+                        fixed_request_id = f"req_{trace.trace_id}"
+                        result.intent_result["request_id"] = fixed_request_id
+                        if result.response is not None:
+                            result.response.request_id = fixed_request_id
                     status = result.response.status if result.response else "deferred"
                 else:
+                    if turn is not None and turn.business_date and turn.require_existing_session:
+                        result.request_id = turn.request_id
                     status = result.status
                 logger.event(
                     trace, f"turn_{phase}_finished", status=status,
@@ -151,7 +185,10 @@ class ConversationTurn:
     plan_suggestion_refinement_used: bool = False
     verified_turn_context: Dict[str, object] = field(default_factory=dict)
     memory_evidence: List[Dict[str, object]] = field(default_factory=list)
+    planning_evidence: Dict[str, object] = field(default_factory=dict)
     trace_context: Optional[TraceContext] = None
+    business_date: str = ""
+    require_existing_session: bool = False
 
     @property
     def requires_llm(self) -> bool:
@@ -193,6 +230,7 @@ class ConversationService:
         personality_context_provider: Optional[Callable[[], str]] = None,
         persona_registry=None,
         context_sections_provider: Optional[Callable[[], Dict[str, object]]] = None,
+        learning_loop_service: Optional[LearningLoopService] = None,
         memory_context_provider: Optional[Callable[[List[Dict[str, object]]], str]] = None,
         knowledge_context_provider: Optional[Callable[[str], str]] = None,
         memory_governance: Optional[MemoryGovernanceService] = None,
@@ -217,6 +255,7 @@ class ConversationService:
         interaction_diagnostics_enabled: bool = False,
         interaction_diagnostics_path=None,
         now_provider: Callable[[], datetime] = datetime.now,
+        business_now_provider: Optional[Callable[[], datetime]] = None,
         development_log=None,
     ) -> None:
         self.development_log = development_log or get_development_log()
@@ -229,6 +268,7 @@ class ConversationService:
         self.personality_context_provider = personality_context_provider or (lambda: "")
         self.persona_registry = persona_registry
         self.context_sections_provider = context_sections_provider or (lambda: {})
+        self.learning_loop_service = learning_loop_service
         self.memory_context_provider = memory_context_provider or self._default_memory_context
         self.knowledge_context_provider = knowledge_context_provider or (lambda _text: "")
         self.memory_governance = memory_governance
@@ -265,6 +305,7 @@ class ConversationService:
             persist_path=interaction_diagnostics_path,
         )
         self.now_provider = now_provider
+        self.business_now_provider = business_now_provider
         self._marked_memory_tool_calls: set[str] = set()
         if hasattr(self.agent_core, "action_batch_enabled"):
             self.agent_core.action_batch_enabled = self.action_batch_enabled
@@ -374,6 +415,34 @@ class ConversationService:
             explicit_command=explicit_command,
         )
 
+        actions = intent_result.get("resolved_actions")
+        resolved_actions = actions if isinstance(actions, list) else []
+        model_hint = any(item.requires_confirmation_hint for item in plan_candidates)
+        resolver_confirmation = bool(intent_result.get("_resolver_confirmation"))
+        # A model hint cannot add consent to a fully resolved, explicit plan
+        # creation after the local authorization policy has approved it.
+        if (
+            result.authorization == PlanAuthorization.EXECUTE
+            and resolved_actions
+            and all(
+                isinstance(action, dict) and action.get("tool_name") == "add_plan"
+                for action in resolved_actions
+            )
+            and explicit_command
+            and request_mode == "execute"
+            and not resolver_confirmation
+        ):
+            intent_result["needs_confirmation"] = False
+        self.development_log.event(
+            None, "confirmation_decision",
+            action_count=len(resolved_actions), model_hint=model_hint,
+            resolver_confirmation=resolver_confirmation,
+            policy_pending=result.authorization == PlanAuthorization.PENDING,
+            explicit_command=explicit_command,
+            effective_confirmation=bool(intent_result.get("needs_confirmation"))
+            or result.authorization == PlanAuthorization.PENDING,
+        )
+
         if result.authorization == PlanAuthorization.NO_ACTION:
             confirmation_scope = str(
                 intent_result.get("conversation_id", "")
@@ -423,6 +492,151 @@ class ConversationService:
                 return False
         return True
 
+    def _pending_plan_addition_batch(
+        self, message: str, conversation_id: str, history_id: str,
+        record_history: bool, intent_result: Dict[str, object],
+    ) -> Optional[ConversationTurn]:
+        """Keep one confirmed scope for a resolved multi-plan creation."""
+        actions = intent_result.get("resolved_actions")
+        if (
+            not self.interaction_coordinator_enabled
+            or not bool(intent_result.get("needs_confirmation"))
+            or not isinstance(actions, list)
+            or len(actions) < 2
+            or any(
+                not isinstance(action, dict) or action.get("tool_name") != "add_plan"
+                for action in actions
+            )
+        ):
+            return None
+        boundary = current_request_boundary()
+        target_date = (
+            boundary.business_date if boundary is not None
+            else (self.business_now_provider or self.now_provider)().date().isoformat()
+        )
+        if boundary is not None and any(
+            not boundary.plan_add_date_allowed(
+                (action.get("arguments") or {}).get("date")
+            ) for action in actions
+        ):
+            return None  # Let the existing tool date guard reject unsupported dates.
+        pending_actions = []
+        lines = [f"这次会把以下 {len(actions)} 项加入 {target_date} 的计划："]
+        for index, action in enumerate(actions, 1):
+            arguments = dict(action.get("arguments") or {})
+            arguments["date"] = target_date
+            pending_actions.append({**action, "arguments": arguments})
+            title = str(arguments.get("title", "") or "").strip()
+            duration = arguments.get("duration_minutes")
+            lines.append(
+                f"{index}. {title}"
+                + (f"（{duration} 分钟）" if duration is not None else "")
+            )
+        lines.append("请回复“确认”执行全部，或“取消”不添加。")
+        prompt = sanitize_public_reply("\n".join(lines))
+        self.interaction_coordinator.start(
+            conversation_id, "plan_batch_addition", "awaiting_confirmation",
+            originating_turn_id=str(intent_result.get("request_id", "")),
+            domain="plan", request_mode="execute",
+            action_candidates=pending_actions,
+            immutable_arguments={"tool_name": "add_plan", "date": target_date},
+            safe_summary=prompt,
+        )
+        response = AgentResponse(
+            "confirmation_required", prompt,
+            request_id=str(intent_result.get("request_id", "")) or None,
+            conversation_id=conversation_id,
+        )
+        self._record_response(
+            response, history_id, record_history, "plan_batch_addition",
+        )
+        return ConversationTurn(
+            message, conversation_id, intent_result,
+            response=response, record_history=record_history,
+        )
+
+    def _confirm_plan_addition_batch(
+        self, message: str, conversation_id: str, history_id: str,
+        record_history: bool, state,
+    ) -> ConversationTurn:
+        boundary = current_request_boundary()
+        target_date = str(state.immutable_arguments.get("date", "") or "")
+        current_date = (
+            boundary.now_provider().date().isoformat() if boundary is not None
+            else (self.business_now_provider or self.now_provider)().date().isoformat()
+        )
+        actions = list(state.action_candidates)
+        valid_date = bool(target_date) and target_date == current_date and (
+            boundary is None or boundary.business_date == target_date
+        )
+        valid_actions = len(actions) >= 2 and all(
+            isinstance(action, dict)
+            and action.get("tool_name") == "add_plan"
+            and isinstance(action.get("arguments"), dict)
+            and str(action["arguments"].get("date", "")) == target_date
+            and str(action["arguments"].get("title", "") or "").strip()
+            for action in actions
+        )
+        plan_service = getattr(self.business_resolver, "plan_service", None)
+        duplicate = False
+        if valid_date and valid_actions and plan_service is not None:
+            seen_titles = set()
+            try:
+                for action in actions:
+                    arguments = action["arguments"]
+                    title = str(arguments["title"]).strip()
+                    normalized = title.casefold()
+                    if not arguments.get("allow_duplicate"):
+                        if normalized in seen_titles or plan_service.find_semantic_duplicates(
+                            title,
+                            duration_minutes=arguments.get("duration_minutes"),
+                            time_slot=str(arguments.get("time_slot", "") or ""),
+                            date=target_date,
+                        ):
+                            duplicate = True
+                            break
+                    seen_titles.add(normalized)
+            except (OSError, TypeError, ValueError):
+                duplicate = True
+        else:
+            duplicate = True
+        if duplicate:
+            self.interaction_coordinator.cancel(conversation_id)
+            reason = (
+                "日期已经变化，旧确认已失效；这次没有添加计划。请在今天重新提出安排。"
+                if not valid_date else
+                "确认前计划内容或已有计划发生变化；这次没有添加计划。请重新提出安排。"
+            )
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history, reason,
+            )
+
+        # Consume before execution, so a repeated control cannot replay writes.
+        self.interaction_coordinator.finish(conversation_id)
+        intent_result = {
+            "intent": "resolved_actions", "source": "interaction_state",
+            "request_id": state.originating_turn_id,
+            "confidence": 1.0, "needs_confirmation": False,
+            "execution_authorized": self._resolved_execution_is_locally_authorized(
+                {"resolved_actions": actions}
+            ),
+            "resolved_actions": actions,
+        }
+        response = self.agent_core.process(
+            message, intent_result, confirmation_scope=conversation_id,
+        )
+        response.conversation_id = conversation_id
+        response = self.response_composer.compose(response, user_text=message)
+        if response.status == "partial_success":
+            self.interaction_coordinator.finish(conversation_id, partial=True)
+        self._record_response(
+            response, history_id, record_history, "plan_batch_addition_confirmation",
+        )
+        return ConversationTurn(
+            message, conversation_id, intent_result,
+            response=response, record_history=record_history,
+        )
+
     def handle(
         self,
         message: str,
@@ -430,8 +644,20 @@ class ConversationService:
         *,
         record_history: bool = True,
     ) -> AgentResponse:
-        turn = self.prepare(message, conversation_id, record_history=record_history)
+        turn = self.prepare(
+            message, conversation_id, record_history=record_history,
+            business_date=self._business_now().date().isoformat(),
+        )
         return self.complete(turn)
+
+    def _business_now(self) -> datetime:
+        """Return the clock that owns plan dates and "today" decisions.
+
+        A simulation may freeze the business date while message timestamps and
+        continuation TTL still run on the real clock.  Date comparisons must
+        use this helper; captured_at and timeout comparisons must not.
+        """
+        return (self.business_now_provider or self.now_provider)()
 
     @_trace_phase("prepare")
     def prepare(
@@ -443,10 +669,27 @@ class ConversationService:
         allow_llm_intent: bool = True,
         state_prepared: bool = False,
         trace_context: Optional[TraceContext] = None,
+        business_date: str = "",
+        require_existing_session: bool = False,
     ) -> ConversationTurn:
         clean_message = str(message).strip()
         if not clean_message:
             raise ValueError("message cannot be empty")
+
+        if (
+            require_existing_session
+            and self.chat_history_manager is not None
+            and self.chat_history_manager.get_session(conversation_id) is None
+        ):
+            return ConversationTurn(
+                clean_message, conversation_id,
+                {"intent": "chat", "source": "request_session_missing"},
+                response=AgentResponse(
+                    "failed", "原会话已删除，本次请求没有继续执行，也没有写入其他会话。",
+                    conversation_id=conversation_id,
+                ),
+                record_history=False,
+            )
 
         history_id = self._ensure_history_session(str(conversation_id).strip())
         confirmation_scope = history_id or conversation_id
@@ -494,6 +737,60 @@ class ConversationService:
                 trace, "history_written", status="success" if saved else "unavailable",
                 message_id=str(saved.get("id", "")) if saved else "",
             )
+
+        if (DEFAULT_CAPABILITY_REGISTRY.is_user_help_query(clean_message)
+                and re.search(r"计划|任务|待办", clean_message)
+                and re.search(r"添加|加入|输入|填写|录入", clean_message)):
+            # Method questions precede both pending choices and semantic read
+            # proposals. Use the execution catalog, not a model's date promise.
+            response = AgentResponse("chat", DEFAULT_CAPABILITY_REGISTRY.guidance_for_tool("add_plan"),
+                                     conversation_id=confirmation_scope)
+            self._record_response(response, history_id, record_history, "capability_help")
+            return ConversationTurn(clean_message, confirmation_scope,
+                                    {"intent": "chat", "source": "capability_help", "request_mode": "discuss"},
+                                    response=response, record_history=record_history)
+
+        if self.interaction_coordinator_enabled:
+            limit_state = self.interaction_coordinator.current(confirmation_scope)
+            if (
+                limit_state.state == "cancelled"
+                and limit_state.known_fields.get("suggestion_revision_limit_reached")
+            ):
+                if self._collection_control(clean_message, "add_plan"):
+                    return self._interaction_turn(
+                        clean_message, confirmation_scope, history_id, record_history,
+                        "之前那份建议已经失效，本次没有加入计划。"
+                        "请把条件一次说完整，重新请求一份计划建议。",
+                    )
+                if self._fresh_plan_advice_after_revision_limit(clean_message):
+                    self.interaction_coordinator.update(
+                        confirmation_scope, known_fields={},
+                    )
+                    request_id = "req_" + uuid4().hex
+                    memory_evidence: List[Dict[str, object]] = []
+                    planning_facts: Dict[str, object] = {}
+                    return ConversationTurn(
+                        clean_message,
+                        confirmation_scope,
+                        {
+                            "intent": "chat",
+                            "source": "interaction_state",
+                            "request_mode": "advice",
+                            "request_id": request_id,
+                        },
+                        llm_messages=self.build_llm_messages(
+                            clean_message,
+                            confirmation_scope,
+                            memory_evidence_sink=memory_evidence,
+                            planning_advice=True,
+                            planning_evidence_sink=planning_facts,
+                        ),
+                        record_history=record_history,
+                        preserve_advice_as_plan_options=True,
+                        plan_suggestion_source_text=clean_message,
+                        memory_evidence=memory_evidence,
+                        planning_evidence=planning_facts,
+                    )
 
         if self._is_candidate_memory_scope(clean_message):
             self.interaction_diagnostics.update(
@@ -553,6 +850,26 @@ class ConversationService:
                 confirmation_scope,
                 history_id,
                 record_history,
+            )
+
+        learning_request = self._explicit_learning_start(clean_message)
+        if learning_request is not None:
+            mode, topic = learning_request
+            if not topic and self.interaction_coordinator_enabled:
+                learning_state = self.interaction_coordinator.current(confirmation_scope)
+                if learning_state.pending and learning_state.interaction_kind in {
+                    "learning_mode_choice", "advice_or_action_choice",
+                }:
+                    topic = str(learning_state.known_fields.get("learning_topic")
+                                or learning_state.known_fields.get("title")
+                                or learning_state.original_user_text).strip()
+            if mode == "guided":
+                return self._guided_learning_turn(
+                    clean_message, confirmation_scope, record_history, topic,
+                )
+            return self._learning_mode_choice_turn(
+                clean_message, confirmation_scope, history_id, record_history,
+                topic=topic,
             )
 
         read_follow_up = self._handle_read_result_follow_up(
@@ -642,6 +959,15 @@ class ConversationService:
                     diagnostic_conversation_id,
                     coordinator_decision=f"control:{decision.action}",
                 )
+                if (
+                    decision.action == "confirm"
+                    and decision.interaction is not None
+                    and decision.interaction.interaction_kind == "plan_batch_addition"
+                ):
+                    return self._confirm_plan_addition_batch(
+                        clean_message, confirmation_scope, history_id,
+                        record_history, decision.interaction,
+                    )
                 pending_tool = self.agent_core.executor.confirmation_manager.pending(
                     scope=confirmation_scope
                 )
@@ -823,7 +1149,7 @@ class ConversationService:
             )
 
         plan_batch_turn = (
-            None if exact_forget_command else self._start_plan_batch_completion(
+            None if exact_forget_command or pending_continuation else self._start_plan_batch_completion(
                 clean_message,
                 confirmation_scope,
                 history_id,
@@ -965,6 +1291,62 @@ class ConversationService:
                 "source": "intent_paths_disabled",
                 "warnings": ["all_intent_paths_disabled"],
             }
+        boundary = current_request_boundary()
+        if (
+            boundary is not None
+            and semantic_result is not None
+            and any(
+                candidate.tool_name == "add_plan"
+                and candidate.request_mode == "execute"
+                and not boundary.plan_add_date_allowed(candidate.arguments.get("date"))
+                for candidate in semantic_result.candidates
+            )
+        ):
+            return self._unsupported_plan_date_turn(
+                clean_message, confirmation_scope, history_id, record_history,
+            )
+        if (
+            not pending_continuation
+            and self._compact(clean_message) in {"对", "没错", "是", "是的", "好", "好的", "嗯"}
+            and (
+                str(intent_result.get("intent", "")) == "complete_plan"
+                or (semantic_result is not None and any(
+                    item.tool_name == "complete_plan" for item in semantic_result.candidates
+                ))
+            )
+        ):
+            return self._snapshot_failure_turn(
+                clean_message, confirmation_scope, history_id, record_history,
+                "当前没有可用这句短答确认的计划完成操作，本轮没有修改计划。"
+                "请先查看今日计划，再明确要完成的项目。",
+            )
+        single_snapshot_completion = (
+            self._single_snapshot_completion_position(clean_message)
+            or self._literal_snapshot_completion_position(clean_message, confirmation_scope)
+        )
+        if (
+            not pending_continuation
+            and not single_snapshot_completion
+            and re.search(
+                r"(?:全部|全都|所有|其余|剩下|除了)|"
+                r"(?:都|一起)(?:已经|已)?(?:完成|做完)|"
+                r"[二两三四五六七八九十\d]+(?:项|条|个).*(?:完成|做完)",
+                self._compact(self._completion_collection_scope_text(clean_message)),
+            )
+            and (
+                str(intent_result.get("intent", "")) == "complete_plan"
+                or (semantic_result is not None and any(
+                    item.tool_name == "complete_plan" for item in semantic_result.candidates
+                ))
+            )
+        ):
+            # The local batch path had no verifiable target set. A model's
+            # single complete_plan candidate cannot silently narrow the claim.
+            return self._snapshot_failure_turn(
+                clean_message, confirmation_scope, history_id, record_history,
+                "无法核验这次批量完成的完整范围，本轮没有修改计划。"
+                "请先查看今日计划，再明确要完成的项目。",
+            )
         if semantic_result is not None:
             semantic_result = self._repair_grounded_pending_plan_completion(
                 clean_message,
@@ -1015,6 +1397,11 @@ class ConversationService:
                 and not self._has_grounded_plan_batch_candidates(
                     semantic_result,
                     clean_message,
+                )
+                and not (
+                    suggestion_snapshot is None
+                    and self._contains_assistant_plan_reference(clean_message)
+                    and self._contains_plan_write_destination(clean_message)
                 )
             ):
                 return self._execute_suggestion_plan_batch(
@@ -1577,6 +1964,14 @@ class ConversationService:
             and self.business_resolver_enabled
             and semantic_result.candidates
         ):
+            if any(candidate.tool_name == "list_memories"
+                   and candidate.arguments.get("query_mode") in {"existence", "provenance"}
+                   for candidate in semantic_result.candidates
+                   ) and is_memory_save_reference_question(clean_message):
+                _facts, operation = self._verified_recent_memory_context(
+                    confirmation_scope, reference_context, clean_message,
+                )
+                reference_context = {**reference_context, "verified_memory_operation": operation}
             self._hydrate_memory_message_reference(
                 semantic_result.candidates,
                 reference_context,
@@ -1753,14 +2148,23 @@ class ConversationService:
                             "tool_name": "add_action_log",
                             "content": clean_message,
                         }
+                    offer_prompt = (
+                        self._action_log_offer_prompt(immutable)
+                        if kind == "action_log_offer" else unresolved.safe_prompt
+                    )
                     if self.interaction_coordinator_enabled:
                         self.interaction_coordinator.awaiting_confirmation(
                             confirmation_scope,
                             kind,
                             immutable_arguments=immutable,
+                            known_fields=(
+                                {"subject": unresolved.candidate.subject}
+                                if kind == "action_log_offer" and unresolved.candidate.subject
+                                else {}
+                            ),
                             action_preview=self._action_preview(
                                 immutable,
-                                safe_summary=unresolved.safe_prompt,
+                                safe_summary=offer_prompt,
                             ),
                             domain=unresolved.candidate.domain,
                             request_mode=unresolved.candidate.request_mode,
@@ -1770,9 +2174,15 @@ class ConversationService:
                                 if kind == "action_log_offer"
                                 else ""
                             ),
-                            safe_summary=unresolved.safe_prompt,
+                            safe_summary=offer_prompt,
                             originating_turn_id=str(intent_result.get("request_id", "")),
                         )
+                elif (
+                    self.interaction_coordinator_enabled
+                    and unresolved.reason_code == "third_party_action_not_user_progress"
+                ):
+                    # An ineligible actor is not a missing slot to clarify or confirm.
+                    self.interaction_coordinator.cancel(confirmation_scope)
                 elif self.interaction_coordinator_enabled:
                     candidate_ids = [
                         item.get("uid") or item.get("id")
@@ -1831,7 +2241,7 @@ class ConversationService:
                 )
                 response = AgentResponse(
                     mapped_status,
-                    sanitize_public_reply(unresolved.safe_prompt)
+                    sanitize_public_reply(offer_prompt if kind == "action_log_offer" else unresolved.safe_prompt)
                     or "我还不能安全确定要执行的内容，请再说明一下。",
                     request_id=str(intent_result.get("request_id", "")) or None,
                     conversation_id=confirmation_scope,
@@ -1872,6 +2282,9 @@ class ConversationService:
                             item.resolved_action or item.candidate
                         ).requires_confirmation_hint
                         for item in resolutions
+                    ),
+                    "_resolver_confirmation": any(
+                        item.needs_confirmation for item in resolutions
                     ),
                     "source": semantic_result.source,
                 }
@@ -1938,6 +2351,12 @@ class ConversationService:
         if plan_auth is not None:
             response = plan_auth
         else:
+            batch_confirmation = self._pending_plan_addition_batch(
+                clean_message, confirmation_scope, history_id,
+                record_history, intent_result,
+            )
+            if batch_confirmation is not None:
+                return batch_confirmation
             memory_guard_arguments = (
                 {"expected_confirmation_state": literal_forget_target}
                 if literal_forget_target else {}
@@ -1957,13 +2376,18 @@ class ConversationService:
             response, clean_message, confirmation_scope
         )
         if self.deterministic_response_enabled:
-            response_preferences = self.state_manager.reference_context(
-                confirmation_scope
-            ).get("response_preferences", {})
+            references = self.state_manager.reference_context(confirmation_scope)
+            response_preferences = references.get("response_preferences", {})
+            prior_memory_operation = {}
+            if any(result.success and result.tool == "list_memories" for result in response.tool_results):
+                _facts, prior_memory_operation = self._verified_recent_memory_context(
+                    confirmation_scope, references, clean_message,
+                )
             response = self.response_composer.compose(
                 response,
                 user_text=clean_message,
                 verified_turn_context={
+                    "prior_memory_operation": VerifiedTurnContext._public_memory_operation(prior_memory_operation),
                     "response_preferences": (
                         dict(response_preferences)
                         if isinstance(response_preferences, Mapping)
@@ -2087,12 +2511,15 @@ class ConversationService:
             user_text=clean_message,
         )
         memory_evidence: List[Dict[str, object]] = []
+        planning_facts: Dict[str, object] = {}
         messages = self.build_llm_messages(
             clean_message,
             history_id or conversation_id,
             summary_mode=self._is_conversation_memory_summary_request(clean_message),
             verified_turn_context=verified_turn.to_model_text(),
             memory_evidence_sink=memory_evidence,
+            planning_advice=self._requests_new_plan_advice(clean_message),
+            planning_evidence_sink=planning_facts,
         )
         self.interaction_diagnostics.update(
             diagnostic_conversation_id,
@@ -2106,10 +2533,21 @@ class ConversationService:
             record_history=record_history,
             verified_turn_context=verified_turn.to_dict(),
             memory_evidence=memory_evidence,
+            planning_evidence=planning_facts,
         )
 
     @_trace_phase("complete")
     def complete(self, turn: ConversationTurn) -> AgentResponse:
+        if (
+            turn.require_existing_session
+            and self.chat_history_manager is not None
+            and self.chat_history_manager.get_session(turn.conversation_id) is None
+        ):
+            return AgentResponse(
+                "failed", "原会话已删除，本次请求没有继续执行，也没有写入其他会话。",
+                request_id=turn.request_id or None,
+                conversation_id=turn.conversation_id,
+            )
         if turn.response is not None:
             self._maybe_generate_formal_memory_answer(
                 turn.response, turn.message, turn.conversation_id
@@ -2119,18 +2557,26 @@ class ConversationService:
                 turn.response, turn.message, turn.conversation_id
             )
             if self.deterministic_response_enabled:
-                response_preferences = self.state_manager.reference_context(
-                    turn.conversation_id
-                ).get("response_preferences", {})
+                references = self.state_manager.reference_context(turn.conversation_id)
+                response_preferences = references.get("response_preferences", {})
+                prior_memory_operation = {}
+                if any(result.success and result.tool == "list_memories" for result in turn.response.tool_results):
+                    _facts, prior_memory_operation = self._verified_recent_memory_context(
+                        turn.conversation_id, references, turn.message,
+                    )
                 turn.response = self.response_composer.compose(
                     turn.response,
                     user_text=turn.message,
                     verified_turn_context={
+                        "prior_memory_operation": VerifiedTurnContext._public_memory_operation(prior_memory_operation),
                         "response_preferences": (
                             dict(response_preferences)
                             if isinstance(response_preferences, Mapping)
                             else {}
-                        )
+                        ),
+                        "confirmation_pending": self._verified_confirmation_pending(
+                            turn.conversation_id
+                        ),
                     },
                 )
             turn.response.message = sanitize_public_reply(turn.response.message)
@@ -2146,6 +2592,9 @@ class ConversationService:
                 record_history=turn.record_history,
                 allow_llm_intent=True,
                 state_prepared=True,
+                business_date=turn.business_date,
+                require_existing_session=turn.require_existing_session,
+                trace_context=turn.trace_context,
             )
             return self.complete(resolved)
         if turn.assistant_plan_source:
@@ -2212,9 +2661,10 @@ class ConversationService:
                 SuggestionSnapshot.for_options(
                     conversation_id=turn.conversation_id,
                     options=options,
-                    source_kind="assistant_plan_selection",
+                    source_kind="assistant_advice",
                     source_turn_id=turn.request_id,
                     captured_at=self.interaction_coordinator.now_provider(),
+                    target_date=self._business_now().date().isoformat(),
                 ),
             )
             lines = [
@@ -2296,6 +2746,26 @@ class ConversationService:
             response,
             str(turn.intent_result.get("pending_state_note", "")),
         )
+        if (turn.planning_evidence and self._is_plan_suggestion_turn(turn, response.message)
+                and re.match(r"^\s*1[.、)）]\s*", response.message)):
+            facts = turn.planning_evidence
+            yesterday = facts.get("yesterday", {})
+            recent = facts.get("last_7_days", {})
+            if facts.get("read_error"):
+                reason = "历史记录暂时读取失败；以下只按你本轮明确的条件给出保守建议。"
+            elif isinstance(yesterday, Mapping) and yesterday.get("total"):
+                reason = (
+                    f"参考昨天完成 {yesterday['completed']}/{yesterday['total']} 项，"
+                    "以下按你本轮要求安排可执行步骤。"
+                )
+            elif isinstance(recent, Mapping) and recent.get("planned_days"):
+                reason = (
+                    f"此前 7 天有 {recent['planned_days']} 天记录了计划；"
+                    "以下按你本轮要求安排可执行步骤。"
+                )
+            else:
+                reason = "近期没有可用的计划执行记录；以下按你本轮明确的条件建议。"
+            response.message = reason + "\n" + response.message
         self._mark_chat_memory_use(turn.memory_evidence, response.message)
         if self._is_plan_suggestion_turn(turn, response.message):
             if turn.preserve_advice_as_plan_options:
@@ -2305,6 +2775,8 @@ class ConversationService:
                     turn.request_id,
                     turn.plan_suggestion_source_text or turn.message,
                     refinement_used=turn.plan_suggestion_refinement_used,
+                    planning_evidence=turn.planning_evidence,
+                    business_date=turn.business_date,
                 )
             else:
                 self._remember_numbered_plan_suggestions(
@@ -2313,13 +2785,38 @@ class ConversationService:
                     turn.request_id,
                     turn.plan_suggestion_source_text or turn.message,
                     refinement_used=turn.plan_suggestion_refinement_used,
+                    planning_evidence=turn.planning_evidence,
+                    business_date=turn.business_date,
                 )
-        self._record_response(
+            if (turn.business_date
+                    and self._business_now().date().isoformat() != turn.business_date):
+                response.message += "\n这份建议按请求提交时的日期生成；日期已变化，请重新请求当天建议后再采用。"
+        else:
+            self._remember_discussion_list(turn, response.message)
+        advice_record: Dict[str, object] = {}
+        if turn.planning_evidence and self._is_plan_suggestion_turn(turn, response.message):
+            raw_snapshot = self.interaction_coordinator.current(
+                turn.conversation_id
+            ).last_suggestion_snapshot
+            snapshot = SuggestionSnapshot.from_dict(raw_snapshot) if raw_snapshot else None
+            advice_record = {
+                "business_date": turn.business_date or turn.planning_evidence.get("business_date"),
+                "session_id": turn.conversation_id,
+                "request_id": turn.request_id,
+                "facts": turn.planning_evidence,
+                "displayed_candidates": [item.to_dict() for item in snapshot.objects] if snapshot else [],
+                "snapshot_id": snapshot.snapshot_id if snapshot else "",
+                "reason": re.split(r"(?m)^1[.、)）]\s*", response.message, maxsplit=1)[0].strip()[:300],
+            }
+        recorded = self._record_response(
             response,
             turn.conversation_id,
             turn.record_history,
             str(turn.intent_result.get("intent", "chat")),
+            extra_metadata={"planning_advice": advice_record} if advice_record else None,
         )
+        if advice_record and turn.record_history and self.chat_history_manager is not None and not recorded:
+            response.message += "\n这次建议可在当前会话选择，但调整依据未能保存。"
         return response
 
     def _extract_approved_memory_content(
@@ -2552,6 +3049,13 @@ class ConversationService:
             or "req_"
             + uuid4().hex,
         }
+        purpose = SuggestionSnapshot.displayed_list_purpose(source_message)
+        if purpose not in {"today_tasks", "unstructured"}:
+            return self._interaction_turn(
+                clean_message, conversation_id, history_id, record_history,
+                "刚才的列表用于讨论或补充方向，不是今日任务清单，本次没有添加计划。"
+                "如要执行其中的具体行动，请明确说“今天加入计划：具体事项”。",
+            )
         if not source_message:
             response = AgentResponse(
                 "clarification",
@@ -2588,7 +3092,24 @@ class ConversationService:
                 and item.title
                 and self._is_grounded_assistant_plan_title(item.title, source)
             ]
-        if len(snapshot_options) >= 2:
+        displayed_options = SuggestionSnapshot.numbered_options(source_message)
+        if not snapshot_options and displayed_options:
+            # The displayed list is the authority. A second model extraction
+            # can silently drop its later entries, especially after a user's
+            # clarification interrupted the original advice turn.
+            self.interaction_coordinator.remember_suggestion_snapshot(
+                conversation_id,
+                SuggestionSnapshot.for_options(
+                    conversation_id=conversation_id,
+                    options=displayed_options,
+                    source_kind="assistant_plan_selection",
+                    source_turn_id=str(reference_intent["request_id"]),
+                    captured_at=self.interaction_coordinator.now_provider(),
+                    target_date=self._business_now().date().isoformat(),
+                ),
+            )
+            snapshot_options = displayed_options
+        if snapshot_options:
             if self._implicit_whole_suggestion_reference(clean_message):
                 return self._execute_suggestion_plan_batch(
                     clean_message,
@@ -2683,7 +3204,7 @@ class ConversationService:
                 "content": (
                     "你负责从上一条助手回复中提取可执行的今日计划候选。"
                     "只提取助手回复中明确出现的具体步骤或任务，不要创造新任务，"
-                    "不要把解释、鼓励、提问或泛泛建议写进去。最多输出3项，"
+                     "不要把解释、鼓励、提问或泛泛建议写进去。保留所有明确事项，不得只提取前几项，"
                     "每项标题简洁、可执行、适合直接放入今日计划。"
                     "如果没有明确事项，输出 {\"options\":[]}。"
                     "只能输出JSON，格式是："
@@ -2722,7 +3243,7 @@ class ConversationService:
         source = self._compact(assistant_text)
         options: List[Dict[str, str]] = []
         seen = set()
-        for item in raw_options[:3]:
+        for item in raw_options:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title", "") or "").strip()
@@ -2749,6 +3270,8 @@ class ConversationService:
         original_user_text: str,
         *,
         refinement_used: bool = False,
+        planning_evidence: Optional[Mapping[str, object]] = None,
+        business_date: str = "",
     ) -> None:
         # Prefer the exact displayed list.  A pending advice turn can still
         # return natural prose, though, so use the same grounded, schema-checked
@@ -2773,7 +3296,79 @@ class ConversationService:
             request_id,
             original_user_text,
             refinement_used=refinement_used,
+            planning_evidence=planning_evidence,
+            business_date=business_date,
         )
+
+    @staticmethod
+    def _explicit_separate_plan_choice(text: str) -> bool:
+        """A plain 'add the first one' is not consent to duplicate old work."""
+        compact = re.sub(r"\s+", "", str(text or ""))
+        if re.search(r"(?:不要|别|不想|不用|取消).{0,8}(?:另建|新增|拆成)", compact):
+            return False
+        return bool(re.search(
+            r"另建(?:一|1)?(?:项|条|个)?|另外(?:新增|添加|加一)|"
+            r"单独(?:新增|添加|建一)|拆成两(?:项|条|个)|"
+            r"保留原计划.{0,12}(?:再加|新增|另建)",
+            compact,
+        ))
+
+    def _advice_existing_plan_relation(
+        self, candidate_title: str,
+    ) -> tuple[str, Optional[Dict[str, object]]]:
+        """Only an exact displayed-title prefix can authorize an existing-task edit.
+
+        Other mentions stop for clarification; fuzzy similarity never selects a
+        writable task. This is limited to advice snapshots, not ordinary adds.
+        """
+        plan_service = getattr(self.business_resolver, "plan_service", None)
+        if plan_service is None:
+            return "none", None
+        today = self._business_now().date().isoformat()
+        pending = [
+            item for item in plan_service.list_plans()
+            if not item.get("done") and item.get("status") == "pending"
+        ]
+        # An overdue task with a broad subject such as "机器学习" is not
+        # evidence that a new suggestion for today edits that old task.
+        title = str(candidate_title or "").strip()
+        parsed = SuggestionSnapshotObject("1", 1, title).plan_arguments()
+        task_title = str(parsed.get("title", title)).strip()
+        related = []
+        exact_prefix = []
+        for task in pending:
+            original = str(task.get("title", "") or "").strip()
+            if not original:
+                continue
+            if title.startswith((original + "：", original + ":")) and len(title) > len(original) + 1:
+                exact_prefix.append(task)
+                related.append(task)
+            elif task_title == original:
+                exact_prefix.append(task)
+                related.append(task)
+            elif title == original or (len(original) >= 4 and original in title):
+                related.append(task)
+        if len(exact_prefix) == 1:
+            match = exact_prefix[0]
+            matched_title = str(match.get("title", "") or "").strip()
+            only_less_specific_mentions = all(
+                task is match
+                or str(task.get("title", "") or "").strip() in matched_title
+                for task in related
+            )
+            if only_less_specific_mentions and str(match.get("date", "") or today) == today:
+                return "update", match
+        return ("clarify", None) if related else ("none", None)
+
+    def _advice_update_changes(self, title: str, user_text: str) -> Dict[str, object]:
+        changes: Dict[str, object] = SuggestionSnapshotObject(
+            "1", 1, title,
+        ).plan_arguments()
+        parsed = self.semantic_action_parser.feature_extractor.extract(user_text).parsed_time
+        for source, target in (("time_period", "time_slot"), ("duration_minutes", "duration_minutes")):
+            if parsed.get(source) not in (None, ""):
+                changes[target] = parsed[source]
+        return changes
 
     def _is_plan_suggestion_turn(
         self,
@@ -2782,6 +3377,15 @@ class ConversationService:
     ) -> bool:
         """Keep advice purpose/provenance, not every numbered chat answer."""
         if not self.interaction_coordinator_enabled:
+            return False
+        purpose = SuggestionSnapshot.displayed_list_purpose(
+            assistant_reply, turn.plan_suggestion_source_text or turn.message,
+            str(turn.intent_result.get("request_mode", "")),
+        )
+        if purpose not in {"today_tasks", "unstructured"}:
+            return False
+        if turn.intent_result.get("request_mode") == "guided_learning":
+            # A numbered explanation is teaching content, never a plan offer.
             return False
         if turn.preserve_advice_as_plan_options:
             return True
@@ -2857,8 +3461,14 @@ class ConversationService:
         original_user_text: str,
         *,
         refinement_used: bool = False,
+        planning_evidence: Optional[Mapping[str, object]] = None,
+        business_date: str = "",
     ) -> None:
         if not self.interaction_coordinator_enabled:
+            return
+        # Also enforce the boundary for non-complete callers and references.
+        if SuggestionSnapshot.displayed_list_purpose(assistant_reply, original_user_text) not in {"today_tasks", "unstructured"}:
+            self.interaction_coordinator.update(conversation_id, last_suggestion_snapshot={})
             return
         options = SuggestionSnapshot.numbered_options(assistant_reply)
         self.interaction_diagnostics.update(
@@ -2877,13 +3487,74 @@ class ConversationService:
                 self.interaction_coordinator.cancel(conversation_id)
             return
         now = self.interaction_coordinator.now_provider()
-        parsed = self.semantic_action_parser.feature_extractor.extract(original_user_text).parsed_time
-        target_date = str(parsed.get("date", "") or now.date().isoformat())
-        if target_date != now.date().isoformat():
-            # A dated suggestion for another day must not silently become a
-            # default-today shortcut in a later reply.
+        business_today = self._business_now().date().isoformat()
+        if business_date and business_date != business_today:
             self.interaction_coordinator.update(conversation_id, last_suggestion_snapshot={})
             return
+        parsed = self.semantic_action_parser.feature_extractor.extract(original_user_text).parsed_time
+        # A modifier may share a clause with the actual request: retain
+        # "给两项今日候选" after "结合昨天的实际进展", not the modifier's date.
+        source = re.sub(r'《[^》]*》|“[^”]*”|"[^"\n]*"|‘[^’]*’', "", original_user_text)
+        clauses = []
+        for clause in re.split(r"[，。；！？,;!?\n]", source):
+            evidence = re.search(r"根据|参考|结合|依据|看看|检查|核对|回顾", clause)
+            if evidence:
+                remainder = clause[evidence.end():]
+                request = re.search(r"给(?:我)?|帮我|请|建议|推荐|安排|规划|制定|生成", remainder)
+                clause = clause[:evidence.start()] + (remainder[request.start():] if request else "")
+            if clause.strip():
+                clauses.append(clause)
+        requested_dates, contextual_dates = set(), set()
+        extractor = self.semantic_action_parser.feature_extractor
+        for clause in clauses:
+            is_request = requests_concrete_advice(clause)
+            if not is_request and not re.search(
+                r"建议|推荐|候选|主题|练习|学习|任务|安排|规划|制定|生成|起步|只有|仅有|有空|可用|能学|可以学", clause,
+            ):
+                continue
+            features = extractor.extract(clause)
+            expressions = list(features.date_expressions) + re.findall(
+                r"(?<!\d)\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?(?!\d)", clause,
+            )
+            for expression in expressions:
+                date_fields = extractor.entity_parser.parse(expression)
+                (requested_dates if is_request else contextual_dates).add(
+                    "" if date_fields.get("ambiguous") else str(date_fields.get("date") or business_today)
+                )
+        dates = requested_dates or contextual_dates
+        fallback = extractor.entity_parser.parse("，".join(clauses))
+        target_date = (
+            next(iter(dates)) if len(dates) == 1 else "" if dates or fallback.get("ambiguous")
+            else str(fallback.get("date") or business_date or business_today)
+        )
+        if target_date != business_today:
+            # A dated suggestion for another day must not silently become a
+            # default-today shortcut in a later reply.  "Today" here is the
+            # business date; the coordinator's real clock only supplies
+            # captured_at and the continuation TTL.
+            self.interaction_coordinator.update(conversation_id, last_suggestion_snapshot={})
+            return
+        yesterday = (
+            planning_evidence.get("yesterday", {})
+            if isinstance(planning_evidence, Mapping) else {}
+        )
+        yesterday = yesterday if isinstance(yesterday, Mapping) else {}
+        pending = yesterday.get("pending_plans", [])
+        pending = pending if isinstance(pending, list) else []
+        for option in options:
+            parsed_title = SuggestionSnapshotObject(
+                str(option.get("id", "1")), 1, str(option["title"]),
+            ).plan_arguments()["title"]
+            matches = [task for task in pending if isinstance(task, Mapping)
+                       and str(task.get("title", "")).strip()
+                       and any(
+                           str(parsed_title) == prefix + str(task["title"]).strip()
+                           or str(parsed_title).startswith(prefix + str(task["title"]).strip() + "：")
+                           for prefix in ("", "继续", "承接")
+                       )]
+            if len(matches) == 1 and matches[0].get("uid"):
+                option["source_plan_uid"] = str(matches[0]["uid"])
+                option["source_plan_date"] = str(yesterday.get("date", ""))
         self.interaction_coordinator.awaiting_choice(
             conversation_id,
             "assistant_plan_selection" if refinement_used else "assistant_plan_offer",
@@ -2893,7 +3564,7 @@ class ConversationService:
             domain="plan",
             request_mode="execute",
             original_user_text=original_user_text,
-            known_fields={"suggestion_refinement_used": bool(refinement_used)},
+            known_fields={"suggestion_refinement_used": bool(refinement_used), "list_purpose": "today_tasks"},
             safe_summary="已保留刚才建议中的可执行事项，等待用户决定是否加入计划。",
             originating_turn_id=request_id,
         )
@@ -2906,8 +3577,102 @@ class ConversationService:
                 source_turn_id=request_id,
                 captured_at=now,
                 target_date=target_date,
+                common_time_slot=str(parsed.get("time_period", "") or ""),
             ),
         )
+
+    def _remember_discussion_list(self, turn: ConversationTurn, reply: str) -> None:
+        if not self.interaction_coordinator_enabled:
+            return
+        source = turn.plan_suggestion_source_text or turn.message
+        purpose = SuggestionSnapshot.displayed_list_purpose(reply, source, str(turn.intent_result.get("request_mode", "")))
+        options = SuggestionSnapshot.numbered_options(reply)
+        if purpose in {"today_tasks", "unstructured"} or not options:
+            return
+        self.interaction_coordinator.awaiting_choice(
+            turn.conversation_id, "discussion_choice", options=options, domain="chat",
+            request_mode="discuss", original_user_text=source,
+            known_fields={"list_purpose": purpose}, originating_turn_id=turn.request_id,
+            safe_summary="列表只用于讨论续接，没有绑定写入工具。",
+        )
+        self.interaction_coordinator.update(turn.conversation_id, last_suggestion_snapshot={})
+
+    def _discussion_option(self, text: str, state):
+        normalized = self._compact(text)
+        position = self._suggestion_reference_position(text)
+        if 1 <= position <= len(state.suggested_options):
+            return state.suggested_options[position - 1]
+        selected = self._selected_assistant_plan_option(normalized, state)
+        if selected is not None:
+            return selected
+        # A short, uniquely contained goal answer (e.g. 考试或面试) is not a
+        # task title. Matching is restricted to this validated displayed list.
+        matches = [item for item in state.suggested_options
+                   if len(normalized) >= 2 and normalized in self._compact(str(item.get("title", "")))]
+        return matches[0] if len(matches) == 1 else None
+
+    def _discussion_continuation(self, clean, state, conversation_id, history_id, record_history):
+        if self._unsafe_suggestion_reference(clean):
+            self.interaction_coordinator.cancel(conversation_id)
+            return None, None
+        explicit_write = self._contains_plan_write_destination(clean)
+        option = self._discussion_option(clean, state)
+        if explicit_write:
+            # A complete new item is a fresh command, not adoption of the
+            # previous teaching/direction list. Leave all semantic, date and
+            # authorization checks to the normal route after ending this state.
+            item_command = re.fullmatch(
+                r"(?:请|帮我)?(?:把|将)(.+?)(?:加入|添加到?|放进|纳入)"
+                r"(?:我)?(?:今天|今日)(?:的)?(?:计划|任务|待办)[。.!！\s]*", clean,
+            )
+            if (option is None and item_command
+                    and not re.search(
+                        r"这个|那个|这些|那些|它|刚才|上面|前面|整个|全部|所有|"
+                        r"第[\d一二两三四五六七八九十]+(?:个|项|条|天|步)",
+                        item_command.group(1),
+                    )):
+                self.interaction_coordinator.cancel(conversation_id)
+                return None, None
+            # A long outline can supply exactly one day action, only after a
+            # current explicit add request. Stage ranges/goals remain prose.
+            day_ref = re.search(r"第([\d一二两三四五六七八九十]+)天", clean)
+            if day_ref:
+                number = self.semantic_action_parser.feature_extractor.entity_parser._number
+                day = number(day_ref.group(1))
+                matches = []
+                for item in state.suggested_options:
+                    heading = re.match(r"第([\d一二两三四五六七八九十]+)天[：:]", str(item.get("title", "")))
+                    if heading and number(heading.group(1)) == day:
+                        matches.append(item)
+                option = matches[0] if len(matches) == 1 else None
+            title = str(option.get("title", "")) if option else ""
+            day_action = re.fullmatch(r"第[\d一二两三四五六七八九十]+天[：:]\s*(.+)", title)
+            if (state.known_fields.get("list_purpose") == "long_term_outline"
+                    and day_action and self._is_plan_add_choice(self._compact(clean))):
+                arguments = SuggestionSnapshotObject("1", 1, day_action.group(1)).plan_arguments()
+                # Date/time overrides and today's boundary are still validated
+                # by the original semantic/tool path; no bulk scheduler exists.
+                return None, self._semantic_from_continuation(clean, "add_plan", arguments, domain="plan")
+            return self._interaction_turn(
+                clean, conversation_id, history_id, record_history,
+                "这份列表用于讨论方向或长期阶段，本次没有加入计划。"
+                "请明确今天要做的具体事项；不能把整个长期方案自动保存成今日任务。",
+            ), None
+        if option is None:
+            self.interaction_coordinator.cancel(conversation_id)
+            return None, None
+        original = state.original_user_text
+        selected = str(option["title"])
+        self.interaction_coordinator.finish(conversation_id)
+        prompt = (f"用户原始需求：{original}\n用户选择：{selected}\n"
+                  "请依据选择继续讨论或生成所需学习方案。这是方向或内容选择，不是新增今日计划、"
+                  "记录行动或保存长期记忆的请求；不要声称已经写入，也不要把整个方案自动保存。")
+        return ConversationTurn(
+            clean, conversation_id,
+            {"intent": "chat", "source": "interaction_state", "request_mode": "discussion_continuation"},
+            llm_messages=self.build_llm_messages(prompt, conversation_id), record_history=record_history,
+            plan_suggestion_source_text=original,
+        ), None
 
     def _fallback_assistant_plan_options(
         self,
@@ -2923,14 +3688,14 @@ class ConversationService:
         if len(schedule_items) >= 2:
             return [
                 {"id": str(index), "title": str(item["title"])}
-                for index, item in enumerate(schedule_items[:3], 1)
+                for index, item in enumerate(schedule_items, 1)
                 if item.get("title")
             ]
         matches = re.findall(
             r"(?:"
-            r"第[一二三123](?:步|条|项)(?:\s*[、，,:：.)）])?"
-            r"|第[一二三123]\s*[、，,:：.)）]"
-            r"|[一二三123]\s*[、，,:：.)）]"
+            r"第[一二两三四五六七八九十\d]+(?:步|条|项)(?:\s*[、，,:：.)）])?"
+            r"|第[一二两三四五六七八九十\d]+\s*[、，,:：.)）]"
+            r"|[一二两三四五六七八九十\d]+\s*[、，,:：.)）]"
             r")\s*"
             r"([^。！？!?；;\n]+)",
             source,
@@ -2946,7 +3711,7 @@ class ConversationService:
             matches = list(matches[0]) if matches else []
         options: List[Dict[str, str]] = []
         seen = set()
-        for value in matches[:3]:
+        for value in matches:
             title = re.sub(r"^[：:，,\s]+|[：:，,\s]+$", "", str(value))
             title = self._compact(title)
             if not title or title in seen or len(title) > 80:
@@ -2999,8 +3764,29 @@ class ConversationService:
             return None, None
         clean = str(message).strip()
         normalized = self._compact(clean)
+        if self._suggestion_refinement_follow_up(
+            clean, state, after_refinement=True,
+        ):
+            self.interaction_coordinator.update(
+                conversation_id,
+                last_suggestion_snapshot={},
+                known_fields={
+                    **state.known_fields,
+                    "suggestion_revision_limit_reached": True,
+                },
+            )
+            self.interaction_coordinator.cancel(conversation_id)
+            return self._interaction_turn(
+                clean, conversation_id, history_id, record_history,
+                "这份建议已经调整过一次，本次没有继续调整，也没有加入计划。"
+                "如果还想改变安排，请把条件一次说完整，重新请求一份建议，"
+                "例如“请重新给我今天的学习计划建议：强度高，晚上不安排学习”。"
+                "之前的建议不再用于“全部加入”。",
+            ), None
         if normalized in {"取消", "算了", "不用了", "不要了", "先不"}:
             return None, None
+        if state.interaction_kind == "discussion_choice":
+            return self._discussion_continuation(clean, state, conversation_id, history_id, record_history)
         # A complete explicit command must start a fresh route even while an
         # older interaction is missing a slot.  Otherwise the pending state
         # consumes the new command as if it were a title or duration answer.
@@ -3025,6 +3811,28 @@ class ConversationService:
             self.interaction_coordinator.cancel(conversation_id)
             return None, None
 
+        if state.interaction_kind == "learning_mode_choice":
+            topic = str(state.known_fields.get("learning_topic", "")).strip()
+            mode = self._learning_mode_answer(normalized)
+            if mode == "guided":
+                return self._guided_learning_turn(
+                    clean, conversation_id, record_history, topic,
+                ), None
+            if mode == "independent":
+                self.interaction_coordinator.finish(conversation_id)
+                reply = "好，你按自己的安排学。完成后回来，在今日成长面板勾选对应计划就好。"
+                response = AgentResponse("chat", reply, conversation_id=conversation_id)
+                self._record_response(response, history_id, record_history, "learning_independent")
+                return ConversationTurn(
+                    clean, conversation_id,
+                    {"intent": "chat", "source": "interaction_state", "request_mode": "independent_learning"},
+                    response=response, record_history=record_history,
+                ), None
+            return self._interaction_turn(
+                clean, conversation_id, history_id, record_history,
+                "可以说“带我学”，或“我自己安排”。", bounded_pending=True,
+            ), None
+
         if state.interaction_kind == "action_log_offer":
             if self._confirms_action_log_offer(normalized):
                 arguments = dict(state.immutable_arguments)
@@ -3034,12 +3842,13 @@ class ConversationService:
                     tool_name,
                     arguments,
                     domain="action_log",
+                    subject=str(state.known_fields.get("subject", "") or ""),
                 )
             self.interaction_coordinator.cancel(conversation_id)
             return None, None
 
         if state.interaction_kind == "plan_batch_completion":
-            if normalized in {"确认", "确认吧", "是的", "执行", "继续", "都完成"}:
+            if normalized in {"确认", "确认吧", "是的", "对", "执行", "继续", "都完成"}:
                 plan_service = getattr(self.business_resolver, "plan_service", None)
                 plans = plan_service.list_plans() if plan_service is not None else []
                 plans_by_id = {
@@ -3304,12 +4113,14 @@ class ConversationService:
                 prompt = (
                     f"用户原始需求：{original_request}\n"
                     + f"用户补充：{selection_text}\n"
-                    "请根据原始需求和补充条件重新给出二至四项计划建议。"
+                    "请根据原始需求和补充条件重新给出完整的计划建议，数量随实际事项而定。"
                     "严格遵守原始日期、时间范围、时长和补充主题；"
-                    "每行只写一个‘编号. 可单独成为计划标题的动作’，不要追问，也不要声称已经加入计划。"
+                    "这是本轮唯一一次条件补充；每行只写一个‘编号. 可单独成为计划标题的动作’，"
+                    "不要在编号项之间插入说明，不要再邀请继续补充条件，也不要声称已经加入计划。"
                 )
                 request_id = "req_" + uuid4().hex
                 memory_evidence: List[Dict[str, object]] = []
+                planning_facts: Dict[str, object] = {}
                 self.interaction_coordinator.update(
                     conversation_id,
                     state="awaiting_clarification",
@@ -3332,12 +4143,15 @@ class ConversationService:
                         prompt,
                         conversation_id,
                         memory_evidence_sink=memory_evidence,
+                        planning_advice=True,
+                        planning_evidence_sink=planning_facts,
                     ),
                     record_history=record_history,
                     preserve_advice_as_plan_options=True,
                     plan_suggestion_source_text=source_text,
                     plan_suggestion_refinement_used=True,
                     memory_evidence=memory_evidence,
+                    planning_evidence=planning_facts,
                 ), None
             if self._suggestion_collection_negation(selection_text):
                 self.interaction_coordinator.cancel(conversation_id)
@@ -3467,10 +4281,51 @@ class ConversationService:
                     "这项安排没有可执行的具体内容，请直接告诉我想加入哪一项。",
                     bounded_pending=True,
                 ), None
+            if snapshot.source_kind == "assistant_advice":
+                relation, existing = self._advice_existing_plan_relation(title)
+                separate = self._explicit_separate_plan_choice(clean)
+                if relation == "clarify" and not separate:
+                    return self._interaction_turn(
+                        clean, conversation_id, history_id, record_history,
+                        "这项建议提到了已有未完成计划，但我不能确定该修改哪一条；"
+                        "本次没有新增。请明确说要修改的原计划完整标题，"
+                        "或说“第一个另建一项”保留两条。",
+                        bounded_pending=True,
+                    ), None
+                if relation == "update" and existing is not None and not separate:
+                    target_ref = str(existing.get("uid") or existing.get("id") or "")
+                    continuation = self._semantic_from_continuation(
+                        clean, "update_plan",
+                        {"task_ref": target_ref,
+                         "changes": self._advice_update_changes(title, clean)},
+                        domain="plan",
+                    )
+                    for candidate in continuation.candidates:
+                        candidate.source_intent = "read_snapshot_binding"
+                    self._annotate_suggestion_selection(
+                        continuation, conversation_id=conversation_id, option=option,
+                    )
+                    continuation.intent_result["suggestion_existing_task_ref"] = target_ref
+                    return None, continuation
+            parsed_time = self.semantic_action_parser.feature_extractor.extract(clean).parsed_time
+            explicit_schedule = {
+                target: parsed_time[source]
+                for source, target in (
+                    ("date", "date"),
+                    ("time_period", "time_slot"),
+                    ("duration_minutes", "duration_minutes"),
+                )
+                if parsed_time.get(source) not in (None, "")
+            }
             continuation = self._semantic_from_continuation(
                 clean,
                 "add_plan",
-                {"title": title},
+                {**selected.plan_arguments(),
+                 **({"time_slot": snapshot.common_time_slot} if snapshot.common_time_slot else {}),
+                 **explicit_schedule,
+                 **({"allow_duplicate": True} if
+                  snapshot.source_kind == "assistant_advice"
+                  and self._explicit_separate_plan_choice(clean) else {})},
                 domain="plan",
             )
             self._annotate_suggestion_selection(
@@ -3481,15 +4336,30 @@ class ConversationService:
             return None, continuation
 
         if state.interaction_kind == "advice_or_action_choice":
-            if re.search(r"(?:建议|怎么学|从哪开始|现在开始)", normalized):
+            if self._learning_start_answer(normalized):
+                topic = str(state.known_fields.get("title", "")).strip()
+                if not topic:
+                    topic = str(state.original_user_text or "").strip()
+                return self._learning_mode_choice_turn(
+                    clean, conversation_id, history_id, record_history, topic=topic,
+                ), None
+            if self._learning_mode_answer(normalized) == "guided":
+                topic = str(state.known_fields.get("title", "") or state.original_user_text).strip()
+                return self._guided_learning_turn(
+                    clean, conversation_id, record_history, topic,
+                ), None
+            if re.search(r"(?:建议|怎么学|从哪开始)", normalized):
                 topic = str(state.known_fields.get("title", "")).strip()
                 prompt = f"关于{topic}，请给我一个简洁的学习建议。" if topic else clean
                 request_id = "req_" + uuid4().hex
                 memory_evidence: List[Dict[str, object]] = []
+                planning_facts: Dict[str, object] = {}
                 llm_messages = self.build_llm_messages(
                     prompt,
                     conversation_id,
                     memory_evidence_sink=memory_evidence,
+                    planning_advice=True,
+                    planning_evidence_sink=planning_facts,
                 )
                 return ConversationTurn(
                     clean,
@@ -3504,6 +4374,7 @@ class ConversationService:
                     record_history=record_history,
                     preserve_advice_as_plan_options=True,
                     memory_evidence=memory_evidence,
+                    planning_evidence=planning_facts,
                 ), None
             if not self._is_plan_add_choice(
                 normalized,
@@ -3580,6 +4451,7 @@ class ConversationService:
                     source_kind="local_learning_options",
                     source_turn_id=state.originating_turn_id,
                     captured_at=self.interaction_coordinator.now_provider(),
+                    target_date=self._business_now().date().isoformat(),
                 ),
             )
             lines = ["可以。下午先从一个小方向开始，你可以选："]
@@ -3752,6 +4624,10 @@ class ConversationService:
         state = self.interaction_coordinator.current(conversation_id)
         if not state.pending:
             return ""
+        if self._suggestion_refinement_follow_up(
+            message, state, after_refinement=True,
+        ):
+            return ""
         normalized = self._compact(message)
         if self._is_pending_control(normalized) or self._is_pending_input_compatible(
             state, normalized
@@ -3765,10 +4641,26 @@ class ConversationService:
         return ""
 
     def _is_pending_input_compatible(self, state, normalized: str) -> bool:
+        if state.interaction_kind == "discussion_choice":
+            return bool(self._discussion_option(normalized, state)
+                        or self._contains_plan_write_destination(normalized))
+        if state.interaction_kind == "learning_mode_choice":
+            return bool(
+                self._learning_mode_answer(normalized)
+                or self._explicit_learning_start(normalized)
+            )
+        if state.interaction_kind == "advice_or_action_choice" and (
+            self._learning_start_answer(normalized)
+            or self._learning_mode_answer(normalized) == "guided"
+            or self._explicit_learning_start(normalized)
+        ):
+            return True
         if state.interaction_kind == "action_log_offer":
             return self._confirms_action_log_offer(normalized)
         if state.state == "awaiting_confirmation":
             tool_name = str(state.immutable_arguments.get("tool_name", ""))
+            if state.interaction_kind == "plan_batch_completion" and normalized == "对":
+                return True
             if tool_name == "save_formal_memory" and normalized in {
                 "确认", "确认吧", "是的", "执行", "继续"
             }:
@@ -4080,7 +4972,9 @@ class ConversationService:
             return ""
         return remainder
 
-    def _suggestion_refinement_follow_up(self, text: str, state) -> bool:
+    def _suggestion_refinement_follow_up(
+        self, text: str, state, *, after_refinement: bool = False,
+    ) -> bool:
         """Accept one optional constraint update while a plan offer is active.
 
         A refinement is read-only.  Selection, cancellation, help and explicit
@@ -4088,24 +4982,82 @@ class ConversationService:
         """
         raw = str(text or "").strip()
         compact = self._compact(raw)
-        if not raw or len(compact) > 48:
+        if not raw or len(compact) > 256:
             return False
-        if state.interaction_kind != "assistant_plan_offer":
+        expected_kind = (
+            "assistant_plan_selection" if after_refinement else "assistant_plan_offer"
+        )
+        if state.interaction_kind != expected_kind:
             return False
-        if bool(state.known_fields.get("suggestion_refinement_used")):
+        if bool(state.known_fields.get("suggestion_refinement_used")) != after_refinement:
+            return False
+        if after_refinement and re.search(
+            r"(?:重新|从头|再给我).{0,12}(?:安排|计划|建议)"
+            r"|(?:给我|帮我).{0,8}(?:重新|再).{0,8}(?:安排|计划|建议)",
+            compact,
+        ):
+            # A complete fresh request starts a new offer, not a second edit.
             return False
         if re.search(r"[?？]", raw) or self._suggestion_operation_help_request(raw):
             return False
+        clauses = [part.strip() for part in re.split(r"[，,。；;！？!?\n]+", raw) if part.strip()]
+        positive_advice_request = False
+        for clause in clauses:
+            request = re.search(r"(?:给(?:我)?|提供|列出|调整|细化|修改|更新).{0,16}(?:建议|候选)", clause)
+            if request and not re.search(r"(?:不要|别|不用|不再|停止|不想).{0,8}$", clause[:request.start()]):
+                positive_advice_request = True
+                break
+        if len(compact) > 48 and not positive_advice_request:
+            return False
+        control_text = raw
+        if positive_advice_request:
+            # A complete negative write clause limits this advice request; it
+            # does not cancel a positive request to revise the candidates.
+            # Only ignore it for this read-only classifier. The original text
+            # still reaches the model, request boundary and write safeguards.
+            negative_write_only = re.compile(
+                r"(?:先|暂时)?(?:不要|别|不用|不想|先不|暂不)"
+                r"(?:直接|自动|马上|立即|帮我|替我|都|把(?:这些|它们|建议))*"
+                r"(?:加入|添加|加进|放进|放入|加到|放到)"
+                r"(?:(?:我)?(?:今天|今日)?(?:的)?(?:计划|任务|清单)|这些|它们|建议)?"
+            )
+            control_text = "，".join(clause for clause in clauses if not negative_write_only.fullmatch(clause))
+        features = self.semantic_action_parser.feature_extractor.extract(raw)
+        if (features.query_cues
+                and re.match(r"^(?:请)?(?:查看|看看|展示|列出|读取|查询)", compact)
+                and any(domain in features.domain_cues for domain in {"plan", "memory", "growth", "action", "history"})):
+            # An independent data query is not a constraint on old advice.
+            return False
         if (
-            self._suggestion_collection_negation(raw)
-            or self._collection_control(raw, "add_plan")
+            self._suggestion_collection_negation(control_text)
+            or self._collection_control(control_text, "add_plan")
             or self._selected_assistant_plan_option(compact, state) is not None
-            or self._contains_plan_write_destination(raw)
+            or self._contains_plan_write_destination(control_text)
         ):
             return False
         if re.fullmatch(r"(?:你好|嗨|在吗|谢谢|晚安|早上好|晚上好|你是谁)", compact):
             return False
-        return True
+        # A short acknowledgement is not a request to regenerate advice.
+        # Only an actual added constraint gets the one optional refinement turn.
+        return bool(re.search(
+            r"(?:偏|侧重|主要|优先|更想|想要|希望|学习|工作|休息|放松|"
+            r"强度|节奏|任务量|提前|推迟|晚点|早点|再开始|"
+            r"算法|文档|项目|时间|时长|分钟|小时|上午|下午|晚上|"
+            r"今天|明天|\d+点|[一二两三四五六七八九十\d]+(?:点|项|条|个))",
+            compact,
+        ))
+
+    @staticmethod
+    def _fresh_plan_advice_after_revision_limit(text: str) -> bool:
+        compact = ConversationService._compact(text)
+        return bool(
+            re.search(
+                r"^(?:请)?(?:重新|从头|再给我|给我重新|帮我重新).{0,24}"
+                r"(?:计划建议|学习计划|今日计划|今天的安排)",
+                compact,
+            )
+            and not ConversationService._contains_plan_write_destination(text)
+        )
 
     @staticmethod
     def _suggestion_collection_negation(text: str) -> bool:
@@ -4805,9 +5757,10 @@ class ConversationService:
             snapshot = SuggestionSnapshot.from_dict(raw)
             captured_at = datetime.fromisoformat(snapshot.captured_at)
             now = self.interaction_coordinator.now_provider()
+            business_today = self._business_now().date().isoformat()
             target_date = snapshot.target_date or captured_at.date().isoformat()
             if (
-                target_date != now.date().isoformat()
+                target_date != business_today
                 or captured_at > now
                 or now - captured_at > timedelta(
                     seconds=self.interaction_coordinator.continuation_ttl_seconds
@@ -4820,6 +5773,7 @@ class ConversationService:
             return None
         if (
             snapshot.conversation_id != str(conversation_id).strip()
+            or snapshot.list_purpose != "today_tasks"
             or not any(not item.consumed for item in snapshot.objects)
         ):
             self.development_log.event(None, "snapshot_state", snapshot_kind="suggestion", state="unavailable", reason_code="suggestion_unavailable", snapshot_id=snapshot.snapshot_id)
@@ -4886,6 +5840,13 @@ class ConversationService:
             return ""
         if tool_name == "add_plan":
             short_value = value.rstrip("。.!！")
+            if re.fullmatch(
+                r"(?:好|行|可以)?(?:就)?按(?:刚才|上面|这)?"
+                r"(?:[一二两三四五六七八九十\d]+|几)(?:项|条|个)"
+                r"(?:建议|安排|计划)?(?:来|办|做|执行|安排)?(?:吧|了)?",
+                short_value,
+            ):
+                return "all"
             if re.fullmatch(
                 r"(?:我)?(?:"
                 r"(?:这些|这几(?:项|条|个)?|上面这些|刚才这些)(?:我)?"
@@ -5042,6 +6003,23 @@ class ConversationService:
                 self._suggestion_collection_failure_reply(message, conversation_id),
             )
 
+        related_positions = [
+            str(item.display_order)
+            for item in selected
+            if snapshot.source_kind == "assistant_advice"
+            and self._advice_existing_plan_relation(item.title)[0] != "none"
+        ]
+        if related_positions:
+            listed = "、".join(related_positions)
+            return self._interaction_turn(
+                message, conversation_id, history_id, record_history,
+                f"这份建议的第{listed}项可能涉及今天已有的未完成计划，"
+                "不能把它们全部当作新计划添加；本次没有写入。"
+                "请逐项处理相关项；如果想保留原计划并再加一项，"
+                "请对对应的建议明确说“另建一项”。",
+                bounded_pending=True,
+            )
+
         features = self.semantic_action_parser.feature_extractor.extract(message)
         shared = {
             key: value
@@ -5051,6 +6029,8 @@ class ConversationService:
         }
         if snapshot.target_date:
             shared["date"] = snapshot.target_date
+        if snapshot.common_time_slot:
+            shared.setdefault("time_slot", snapshot.common_time_slot)
         for source, target in (
             ("time_period", "time_slot"),
             ("duration_minutes", "duration_minutes"),
@@ -5062,7 +6042,7 @@ class ConversationService:
         def resolve(allow_duplicate: bool):
             candidates = []
             for index, item in enumerate(selected):
-                arguments = {"title": item.title, **shared}
+                arguments = {**item.plan_arguments(), **shared}
                 if allow_duplicate:
                     arguments["allow_duplicate"] = True
                 candidates.append(
@@ -5185,7 +6165,7 @@ class ConversationService:
                 {
                     "snapshot_id": snapshot.snapshot_id,
                     "object_id": item.stable_id,
-                    "title": item.title,
+                    "title": str(item.plan_arguments()["title"]),
                 }
             )
 
@@ -5260,10 +6240,15 @@ class ConversationService:
         if not selected or len(selected) > 3 or (expected_count and expected_count != len(selected)):
             return None
         continuation = self._semantic_from_continuation(
-            message, "add_plan", {"tasks": [{"title": item.title} for item in selected]}, domain="plan",
+            message, "add_plan", {"tasks": [
+                {**item.plan_arguments(),
+                 **({"time_slot": snapshot.common_time_slot} if snapshot.common_time_slot else {})}
+                for item in selected
+            ]}, domain="plan",
         )
         continuation.intent_result["suggestion_snapshot_selections"] = [
-            {"snapshot_id": snapshot.snapshot_id, "object_id": item.stable_id, "title": item.title}
+            {"snapshot_id": snapshot.snapshot_id, "object_id": item.stable_id,
+             "title": str(item.plan_arguments()["title"])}
             for item in selected
         ]
         return continuation
@@ -5293,21 +6278,38 @@ class ConversationService:
             return
         selections = intent_result.get("suggestion_snapshot_selections", [])
         if isinstance(selections, list) and selections:
-            successful_titles = [
-                str(result.data["task"].get("title", "") or "").strip()
+            successful_tasks = [
+                dict(result.data["task"])
                 for result in response.tool_results
                 if result.success and result.tool == "add_plan"
                 and isinstance(result.data.get("task"), Mapping)
             ]
+            snapshot = self._recent_suggestion_snapshot(conversation_id)
+            adopted = []
             for selected in selections:
-                if not isinstance(selected, Mapping) or selected.get("title") not in successful_titles:
+                if not isinstance(selected, Mapping):
                     continue
-                successful_titles.remove(selected.get("title"))
+                task = next((item for item in successful_tasks
+                             if str(item.get("title", "")).strip() == selected.get("title")), None)
+                if task is None:
+                    continue
+                successful_tasks.remove(task)
+                source = next((item for item in snapshot.objects
+                               if item.stable_id == str(selected.get("object_id", ""))), None) if snapshot else None
+                adopted.append({
+                    "snapshot_id": selected.get("snapshot_id"),
+                    "object_id": selected.get("object_id"),
+                    "plan_uid": task.get("uid"),
+                    "source_plan_uid": source.source_plan_uid if source else "",
+                    "source_plan_date": source.source_plan_date if source else "",
+                })
                 self.interaction_coordinator.mark_suggestion_consumed(
                     conversation_id,
                     snapshot_id=str(selected.get("snapshot_id", "") or ""),
                     object_id=str(selected.get("object_id", "") or ""),
                 )
+            if adopted:
+                response._suggestion_adoptions = adopted
             return
         selection = intent_result.get("suggestion_snapshot_selection", {})
         if not isinstance(selection, Mapping):
@@ -5320,18 +6322,46 @@ class ConversationService:
         if snapshot is None or snapshot.snapshot_id != snapshot_id:
             return
         selected = next((item for item in snapshot.objects if item.stable_id == object_id), None)
-        if selected is None or not any(
-            result.success and result.tool == "add_plan"
-            and isinstance(result.data.get("task"), Mapping)
-            and str(result.data["task"].get("title", "") or "").strip() == selected.title
-            for result in response.tool_results
-        ):
+        if selected is None:
+            return
+        existing_ref = str(intent_result.get("suggestion_existing_task_ref", "") or "")
+        if existing_ref:
+            succeeded = any(
+                result.success and result.tool == "update_plan"
+                and isinstance(result.data.get("task"), Mapping)
+                and str(result.data["task"].get("uid") or result.data["task"].get("id") or "") == existing_ref
+                and str(result.data["task"].get("title", "") or "").strip() == str(selected.plan_arguments()["title"])
+                for result in response.tool_results
+            )
+        else:
+            succeeded = any(
+                result.success and result.tool == "add_plan"
+                and isinstance(result.data.get("task"), Mapping)
+                and str(result.data["task"].get("title", "") or "").strip()
+                == str(selected.plan_arguments()["title"])
+                for result in response.tool_results
+            )
+        if not succeeded:
             return
         self.interaction_coordinator.mark_suggestion_consumed(
             conversation_id,
             snapshot_id=snapshot_id,
             object_id=object_id,
         )
+        matching = next((
+            result.data["task"] for result in response.tool_results
+            if result.success and result.tool in {"add_plan", "update_plan"}
+            and isinstance(result.data.get("task"), Mapping)
+            and str(result.data["task"].get("title", "")).strip()
+            == str(selected.plan_arguments()["title"])
+        ), None)
+        if matching is not None:
+            response._suggestion_adoptions = [{
+                "snapshot_id": snapshot_id, "object_id": object_id,
+                "plan_uid": matching.get("uid"),
+                "source_plan_uid": selected.source_plan_uid,
+                "source_plan_date": selected.source_plan_date,
+            }]
 
     def _snapshot_live_plans(
         self,
@@ -5375,18 +6405,18 @@ class ConversationService:
         record_history: bool,
     ):
         """Bind an ordinal completion to the exact order previously displayed."""
+        position = (
+            self._literal_snapshot_completion_position(message, conversation_id)
+            or self._single_snapshot_completion_position(message)
+        )
+        if position <= 0:
+            return None, None
         snapshot = self._recent_plan_snapshot(conversation_id)
         if snapshot is None or not snapshot.objects:
-            return None, None
-        normalized = self._compact(message)
-        match = re.fullmatch(
-            r"第([一二两三四五六七八九十\d]+)(?:个|项|条)?"
-            r"(?:计划|任务)?(?:也)?(?:完成|做完)(?:了|啦|吧)?",
-            normalized,
-        )
-        if match is None:
-            return None, None
-        position = self._selection_number(match.group(1))
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history,
+                "刚才展示的计划列表已失效，本轮没有修改计划。请重新查看今日计划。",
+            ), None
         selected = next(
             (item for item in snapshot.objects if item.display_order == position),
             None,
@@ -5399,8 +6429,14 @@ class ConversationService:
                 record_history,
                 "抱歉，刚才展示的列表里没有这一项，这次没有修改任何计划。",
             ), None
-        today = self.interaction_coordinator.now_provider().date().isoformat()
-        if selected.date and selected.date != today:
+        boundary = current_request_boundary()
+        today = (
+            boundary.business_date if boundary is not None
+            else (self.business_now_provider or self.now_provider)().date().isoformat()
+        )
+        if ((boundary is not None
+             and boundary.now_provider().date().isoformat() != today)
+                or (selected.date and selected.date != today)):
             return self._snapshot_failure_turn(
                 message,
                 conversation_id,
@@ -5436,12 +6472,71 @@ class ConversationService:
                 record_history,
                 "刚才展示的这一项目前不是待完成状态，这次没有修改其他计划。",
             ), None
-        return None, self._semantic_from_continuation(
+        continuation = self._semantic_from_continuation(
             message,
             "complete_plan",
             {"match_text": selected.stable_id},
             domain="plan",
         )
+        continuation.candidates[0].source_intent = "read_snapshot_binding"
+        continuation.intent_result["verified_single_plan_completion"] = selected.stable_id
+        return None, continuation
+
+    def _literal_snapshot_completion_position(self, message: str, conversation_id: str) -> int:
+        """A whole real title's internal numbers are not a batch scope."""
+        snapshot = self._recent_plan_snapshot(conversation_id)
+        if snapshot is None:
+            return 0
+        text = self._compact(message)
+        matched = [item for item in snapshot.objects if item.title and re.fullmatch(
+            r"(?:请)?(?:把|将)(?:今天|今日)?(?:的)?" + re.escape(self._compact(item.title))
+            + r"(?:标记|设置|标)(?:为)?(?:已)?完成"
+              r"(?:另一项(?:今天)?(?:还没|没有|未|先不)(?:做完|完成|动))?", text,
+        )]
+        return matched[0].display_order if len(matched) == 1 else 0
+
+    @staticmethod
+    def _completion_collection_scope_text(message: str) -> str:
+        """An untouched remainder is not an affirmative completion scope.
+
+        This projection is used only by the post-semantic batch safeguard.
+        Original text and all object/authorization checks remain unchanged.
+        A negative remainder alone never becomes a completion request.
+        """
+        clauses = [part.strip() for part in re.split(r"[，,；;。！？!?\n]+", message) if part.strip()]
+        untouched = re.compile(
+            r"(?:其余|其他|其它|剩余|剩下)(?:的)?(?:计划|任务|项目|事项)?"
+            r"(?:都)?(?:就)?(?:先|暂时|暂且)?"
+            r"(?:不动|别动|不要动|不用动|不处理|不完成|不要完成|不要勾选|保持原样)(?:了|吧)?"
+        )
+        kept = [clause for clause in clauses if not untouched.fullmatch(re.sub(r"\s+", "", clause))]
+        positive = any(
+            re.search(r"完成|做完", clause)
+            and not re.search(r"(?:不要|别|不|未|没).{0,4}(?:标记|完成|做完)", clause)
+            for clause in kept
+        )
+        return "，".join(kept) if positive and len(kept) < len(clauses) else message
+
+    @classmethod
+    def _single_snapshot_completion_position(cls, message: str) -> int:
+        """Find one affirmative ordinal; untouched items are a negative scope."""
+        source = re.sub(r"\s+", "", str(message or ""))
+        positive = []
+        ordinal = r"第([一二两三四五六七八九十\d]+)(?:个|项|条)(?:计划|任务)?"
+        for clause in re.split(r"[，,；;。]", source):
+            references = list(re.finditer(ordinal, clause))
+            if not references:
+                continue
+            if len(references) != 1:
+                return 0
+            tail = clause[references[0].end():]
+            done = re.search(r"(?:完成|做完|做好)(?:了|啦|吧)?", tail)
+            if done is None:
+                continue
+            if re.search(r"(?:别|不|没|未|先别|不要).{0,4}$", tail[:done.start()]):
+                continue
+            positive.append(cls._selection_number(references[0].group(1)))
+        return positive[0] if len(positive) == 1 else 0
 
     def _snapshot_failure_turn(
         self,
@@ -5464,6 +6559,34 @@ class ConversationService:
             response=response,
             record_history=record_history,
         )
+
+    def _unsupported_plan_date_turn(
+        self, message: str, conversation_id: str, history_id: str,
+        record_history: bool,
+    ) -> ConversationTurn:
+        self.interaction_coordinator.cancel(conversation_id)
+        self.agent_core.executor.confirmation_manager.cancel(scope=conversation_id)
+        response = AgentResponse(
+            "failed", "目前只支持安排今天的计划，本次没有添加计划。",
+            conversation_id=conversation_id,
+        )
+        self._record_response(response, history_id, record_history, "plan_date_scope")
+        return ConversationTurn(
+            message, conversation_id,
+            {"intent": "add_plan", "source": "plan_date_scope"},
+            response=response, record_history=record_history,
+        )
+
+    @staticmethod
+    def _action_log_offer_prompt(immutable_arguments: Mapping[str, object]) -> str:
+        content = str(immutable_arguments.get("content", "") or "").strip()
+        duration = immutable_arguments.get("duration_minutes")
+        duration_text = (
+            f"实际用时 {duration} 分钟"
+            if isinstance(duration, int) and not isinstance(duration, bool) and duration > 0
+            else "时长未记录"
+        )
+        return f"记录到今天的行动：{content}，{duration_text}。确认记录吗？"
 
     def _maybe_implicit_memory_turn(
         self,
@@ -5572,7 +6695,7 @@ class ConversationService:
         value = str(normalized or "").strip("\"'“”‘’")
         if value == "确认吧":
             return True
-        return bool(re.fullmatch(r"(?:确认(?:吧)?|是的|执行(?:这条)?|继续|取消|算了|不用了|不要了|先不|第[一二三四五六七八九十\d]+个|全部|这个|这条)", value))
+        return bool(re.fullmatch(r"(?:确认(?:吧)?|确定|是的|执行(?:这条)?|继续|取消|算了|不用了|不要了|先不|第[一二三四五六七八九十\d]+个|全部|这个|这条)", value))
 
     @staticmethod
     def _apply_pending_state_note(response: AgentResponse, note: str) -> None:
@@ -5587,6 +6710,7 @@ class ConversationService:
         arguments: Dict[str, object],
         *,
         domain: str,
+        subject: str = "",
         suggestion_selection: Optional[Mapping[str, object]] = None,
     ) -> SemanticParseResult:
         request_id = "req_" + uuid4().hex
@@ -5607,6 +6731,7 @@ class ConversationService:
                         explicit_command=True,
                         sequence_index=index,
                         source_intent="interaction_continuation",
+                        subject=subject,
                     )
                 )
         else:
@@ -5619,6 +6744,7 @@ class ConversationService:
                     confidence=1.0,
                     explicit_command=True,
                     source_intent="interaction_continuation",
+                    subject=subject,
                 )
             )
         if tool_name == "add_plan":
@@ -5642,6 +6768,7 @@ class ConversationService:
             "request_mode": "execute",
             "request_id": request_id,
             "clarification_question": None,
+            "subject": subject,
         }
         if tool_name == "add_plan" and isinstance(suggestion_selection, Mapping):
             selection = {
@@ -5690,6 +6817,8 @@ class ConversationService:
         if (
             features.is_question
             or features.negation_cues
+            or features.advice_cues
+            or self._requests_new_plan_advice(text)
             or not (
                 str(features.parsed_time.get("operation", "")) == "complete"
                 or any(
@@ -5698,7 +6827,7 @@ class ConversationService:
                 )
             )
             or re.search(
-                r"(?:没|没有|还没|尚未|未曾|并未)(?:有)?(?:完成|做完|学完)",
+                r"(?:没|没有|还没|尚未|未|未曾|并未)(?:有)?(?:完成|做完|学完)",
                 normalized,
             )
             or any(marker in normalized for marker in ("如果", "假如", "要是", "万一"))
@@ -5829,6 +6958,19 @@ class ConversationService:
             local_features=self.semantic_action_parser.feature_extractor.extract(text),
         )
 
+    @classmethod
+    def _is_explicit_today_all_completion(cls, message: str) -> bool:
+        """A complete current-day command supplies scope, never consent to write."""
+        value = cls._compact(message)
+        prefix = r"(?:请帮我|请你|请|帮我|麻烦你)?"
+        scope = (r"(?:今天|今日)(?:的)?(?:所有|全部|全体)(?:的)?"
+                 r"(?:未完成|尚未完成|还没完成)?(?:计划|任务)")
+        return bool(re.fullmatch(
+            prefix + r"(?:把|将)?" + scope
+            + r"(?:全都|全部|都)?(?:标记为|标记|设置为|设为)?(?:已完成|完成|做完)(?:吧|了)?",
+            value,
+        ) or re.fullmatch(prefix + r"(?:完成|做完)" + scope + r"(?:吧)?", value))
+
     def _start_plan_batch_completion(
         self,
         message: str,
@@ -5842,13 +6984,40 @@ class ConversationService:
             return None
         if re.search(r"[?？]", str(message or "")):
             return None
+        if (self._single_snapshot_completion_position(message)
+                or self._literal_snapshot_completion_position(message, conversation_id)):
+            return None
         normalized = self._compact(message)
         if not selected_all and not re.search(r"(?:完成|做完)", normalized):
             return None
+        features = self.semantic_action_parser.feature_extractor.extract(message)
+        if (features.is_question or features.polarity in {"negated", "question"}
+                or any(word in normalized for word in ("如果", "假如", "要是", "万一", "除非"))):
+            return None
+        excluded_match = re.search(
+            r"除了(?P<hint>.+?)(?:(?:其余|其他|剩下(?:的)?)?都)"
+            r"(?:已经|已)?(?:完成|做完)",
+            normalized,
+        )
+        excluded_hint = ""
+        if excluded_match is not None:
+            excluded_hint = re.sub(
+                r"(?:(?:没有|还没|尚未|没|未)(?:完成|做完))(?:的)?$|以外$",
+                "",
+                excluded_match.group("hint"),
+            )
+        # A negative statement about the excluded item must not negate the
+        # requested completion of the remaining set.
+        polarity_source = normalized
+        if excluded_match is not None:
+            polarity_source = (
+                normalized[:excluded_match.start("hint")]
+                + normalized[excluded_match.end("hint"):]
+            )
         polarity_text = re.sub(
             r"(?:没有|没|未|尚未|还没)(?:完成|做完)(?:的)?(?:计划|任务)",
             "",
-            normalized,
+            polarity_source,
         )
         if re.search(
             r"(?:没有|没|未|不是|并非|不算|还没).{0,12}(?:完成|做完)",
@@ -5864,38 +7033,110 @@ class ConversationService:
         plan_service = getattr(self.business_resolver, "plan_service", None)
         if plan_service is None:
             return None
+        fresh_today_all = self._is_explicit_today_all_completion(message)
+        boundary = current_request_boundary()
+        today = (boundary.business_date if boundary is not None
+                 else (self.business_now_provider or self.now_provider)().date().isoformat())
+        if (fresh_today_all and boundary is not None
+                and boundary.now_provider().date().isoformat() != today):
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history,
+                "请求日期已经变化，本轮没有修改计划。请重新查看今日计划后再试。",
+            )
+        try:
+            plans = plan_service.list_plans(today) if fresh_today_all else plan_service.list_plans()
+        except (OSError, ValueError, TypeError, RuntimeError):
+            if not fresh_today_all:
+                raise
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history,
+                "今日计划完整范围读取失败，本轮没有修改计划。请稍后重新查看今日计划。",
+            )
+        if fresh_today_all and (not isinstance(plans, list) or any(
+            not isinstance(item, dict)
+            or not str(item.get("uid") or item.get("id") or "").strip()
+            or not str(item.get("title") or "").strip()
+            or str(item.get("date") or "") != today
+            for item in plans
+        )):
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history,
+                "无法核验今日计划的完整范围，本轮没有修改计划。请重新查看今日计划。",
+            )
         pending = [
             dict(item)
-            for item in plan_service.list_plans()
+            for item in plans
             if isinstance(item, dict)
             and not bool(item.get("done"))
             and str(item.get("status", "pending") or "pending") == "pending"
         ]
         targets: List[Dict[str, object]] = []
         snapshot = self._recent_plan_snapshot(conversation_id)
+        if fresh_today_all:
+            snapshot = ReadSnapshot.for_plan_list(
+                conversation_id=conversation_id, intent="show_plan", tool_name="show_plan",
+                tasks=pending, arguments={"date": today},
+                captured_at=self.interaction_coordinator.now_provider(),
+            )
+            ids = [item.stable_id for item in snapshot.objects]
+            if len(ids) != len(pending) or len(set(ids)) != len(ids):
+                return self._snapshot_failure_turn(
+                    message, conversation_id, history_id, record_history,
+                    "无法核验今日计划的完整范围，本轮没有修改计划。请重新查看今日计划。",
+                )
+            self.interaction_coordinator.remember_read_result(
+                conversation_id, intent="show_plan", tool_name="show_plan",
+                arguments={"date": today}, summary="今日待完成计划的真实范围",
+                snapshot=snapshot.to_dict(),
+            )
+            if not pending:
+                self.interaction_coordinator.cancel(conversation_id)
+                self.agent_core.executor.confirmation_manager.cancel(scope=conversation_id)
+                response = AgentResponse(
+                    "completed", "今天没有待完成的计划，无需标记。本轮没有修改记录。",
+                    conversation_id=conversation_id,
+                )
+                self._record_response(response, history_id, record_history, "plan_state_unchanged")
+                return ConversationTurn(message, conversation_id, {"intent": "complete_plan"},
+                                        response=response, record_history=record_history)
+            targets = pending
+        bare_snapshot_batch = bool(re.fullmatch(
+            r"(?:我)?(?:(?:今天|今日)(?:的)?(?:计划|任务))?"
+            r"(?:全部|全都|都)(?:都)?(?:已经|已)?(?:完成|做完)(?:了|啦)?",
+            normalized,
+        ))
         if selected_all and snapshot is None:
             return self._snapshot_failure_turn(
                 message, conversation_id, history_id, record_history,
                 "当前没有可核验的最近计划列表，这次没有修改数据。请先说“查看今天计划”，或直接说要完成的具体标题。",
             )
         snapshot_reference = bool(
-            snapshot is not None
+            not fresh_today_all
+            and snapshot is not None
             and (selected_all or re.search(r"(?:都|全部)", normalized))
             and (
                 selected_all
+                or bare_snapshot_batch
+                or excluded_match is not None
                 or re.search(r"刚才|刚刚|展示|这些|这几|上面|上述", normalized)
                 or re.search(r"(?:计划|任务)我(?:都|全部)", normalized)
             )
         )
         if snapshot_reference and snapshot is not None:
             expected_count = self._collection_control_count(message)
-            if expected_count and expected_count != len(snapshot.objects):
+            if expected_count and excluded_match is None and expected_count != len(snapshot.objects):
                 return self._snapshot_failure_turn(
                     message, conversation_id, history_id, record_history,
                     "你说的数量与刚才展示的计划列表不一致，这次没有修改数据。请重新查看今天计划并明确目标。",
                 )
-            today = self.interaction_coordinator.now_provider().date().isoformat()
-            if any(item.date and item.date != today for item in snapshot.objects):
+            boundary = current_request_boundary()
+            today = (
+                boundary.business_date if boundary is not None
+                else (self.business_now_provider or self.now_provider)().date().isoformat()
+            )
+            if ((boundary is not None
+                 and boundary.now_provider().date().isoformat() != today)
+                    or any(item.date and item.date != today for item in snapshot.objects)):
                 return self._snapshot_failure_turn(
                     message,
                     conversation_id,
@@ -5914,6 +7155,33 @@ class ConversationService:
                 if not bool(item.get("done"))
                 and str(item.get("status", "pending") or "pending") == "pending"
             ]
+            if excluded_match is not None:
+                excluded_id = ""
+                if snapshot.objects and excluded_hint in {"最后一项", "最后一条", "最后一个"}:
+                    excluded_id = snapshot.objects[-1].stable_id
+                else:
+                    ordinal = re.fullmatch(
+                        r"第([一二两三四五六七八九十\d]+)(?:项|条|个)",
+                        excluded_hint,
+                    )
+                    if ordinal is not None:
+                        position = self._selection_number(ordinal.group(1))
+                        if 1 <= position <= len(snapshot.objects):
+                            excluded_id = snapshot.objects[position - 1].stable_id
+                    else:
+                        excluded = self._unique_plan_hint_match(excluded_hint, live)
+                        if excluded is not None:
+                            excluded_id = str(excluded.get("uid") or excluded.get("id"))
+                if not excluded_id:
+                    return self._snapshot_failure_turn(
+                        message, conversation_id, history_id, record_history,
+                        "无法唯一确认你要排除哪项计划，本轮没有修改计划。"
+                        "请重新查看今日计划后明确目标。",
+                    )
+                targets = [
+                    item for item in targets
+                    if str(item.get("uid") or item.get("id")) != excluded_id
+                ]
             if not targets:
                 if live and all(bool(item.get("done")) or item.get("status") == "completed" for item in live):
                     self.interaction_coordinator.cancel(conversation_id)
@@ -5959,9 +7227,8 @@ class ConversationService:
             ):
                 targets = pending
 
-        if not targets and "除了" in normalized and "都" in normalized:
-            excluded_text = normalized.split("除了", 1)[1].split("都", 1)[0]
-            excluded = self._unique_plan_hint_match(excluded_text, pending)
+        if not targets and excluded_match is not None and snapshot is None:
+            excluded = self._unique_plan_hint_match(excluded_hint, pending)
             if excluded is not None:
                 excluded_id = str(excluded.get("uid") or excluded.get("id"))
                 targets = [
@@ -5984,9 +7251,24 @@ class ConversationService:
             r"(?:计划|任务)我(?:都|全部)(?:完成|做完)",
             normalized,
         ):
-            targets = pending
+            # Only a complete today-all command may establish a fresh scope.
+            # Other whole-list references still bind to an actual displayed list.
+            if snapshot is not None and not selected_all:
+                return self._start_plan_batch_completion(
+                    message, conversation_id, history_id, record_history, selected_all=True,
+                )
+            return self._snapshot_failure_turn(
+                message, conversation_id, history_id, record_history,
+                "当前没有可核验的最近计划列表，本轮没有修改计划。请先查看今日计划。",
+            )
 
         if not targets:
+            if bare_snapshot_batch or excluded_match is not None:
+                return self._snapshot_failure_turn(
+                    message, conversation_id, history_id, record_history,
+                    "无法核验这次批量完成的完整范围，本轮没有修改计划。"
+                    "请先查看今日计划，再明确要完成的项目。",
+                )
             return None
         target_ids = [str(item.get("uid") or item.get("id")) for item in targets]
         self.interaction_coordinator.awaiting_confirmation(
@@ -6198,6 +7480,102 @@ class ConversationService:
                 "clarification_question": None,
             },
             local_features=self.semantic_action_parser.feature_extractor.extract(text),
+        )
+
+    @staticmethod
+    def _learning_start_answer(text: str) -> bool:
+        return bool(re.fullmatch(
+            r"(?:那就|那|好|好的)?(?:现在|直接|马上)?(?:开始|开始学|开始学习)(?:吧|了)?[。！!]?",
+            text,
+        ))
+
+    @staticmethod
+    def _learning_mode_answer(text: str) -> str:
+        value = str(text).strip(" ，,。.!！?？")
+        if re.fullmatch(
+            r"(?:(?:那就|那|请|你|先|现在|希望你|我想让你))?"
+            r"(?:带我(?:学|学习|开始(?:学|学习)?)?|带着我(?:学|学习)?|陪我(?:学|学习)|一起学)(?:吧)?",
+            value,
+        ):
+            return "guided"
+        if re.fullmatch(
+            r"(?:(?:那就|那|先))?(?:我)?(?:按自己的安排(?:学|学习)?|有自己的规划|自己(?:安排|学|学习)|自主学习)(?:吧)?",
+            value,
+        ):
+            return "independent"
+        return ""
+
+    @staticmethod
+    def _explicit_learning_start(text: str):
+        """Recognize a complete learning request, not a wish or any 开始 word."""
+        value = str(text).strip(" ，,。.!！?？")
+        guided = re.fullmatch(
+            r"(?:请|麻烦|能不能|可以)?(?:你)?(?:带我|带着我|陪我)"
+            r"(?:开始)?(?:学习|学|讲解)\s*(?P<topic>.*?)(?:吧)?",
+            value,
+        )
+        if guided:
+            return "guided", str(guided.group("topic") or "").strip()
+        if value in {"带我开始", "带我开始吧", "请带我开始", "你带我开始"}:
+            return "guided", ""
+        start = re.fullmatch(
+            r"(?:我(?:想|要|准备)?|我们|咱们)?(?:现在|马上|直接)?"
+            r"(?:开始|开始了)(?:学习|学)\s*(?P<topic>.*?)(?:吧|了)?",
+            value,
+        )
+        if start and not re.search(r"(?:计划|计时|倒计时|加入|添加)", value):
+            return "choice", str(start.group("topic") or "").strip()
+        return None
+
+    def _learning_mode_choice_turn(
+        self, message: str, conversation_id: str, history_id: str,
+        record_history: bool, *, topic: str,
+    ) -> ConversationTurn:
+        reply = "我带着你学，还是你按自己的安排学？"
+        self.agent_core.executor.confirmation_manager.cancel(scope=conversation_id)
+        if self.interaction_coordinator_enabled:
+            self.interaction_coordinator.awaiting_choice(
+                conversation_id, "learning_mode_choice", domain="learning",
+                request_mode="learning", original_user_text=message,
+                known_fields={"learning_topic": topic}, safe_summary=reply,
+            )
+            self.interaction_coordinator.update(conversation_id, last_suggestion_snapshot={})
+        return self._interaction_turn(
+            message, conversation_id, history_id, record_history, reply,
+        )
+
+    def _guided_learning_turn(
+        self, message: str, conversation_id: str, record_history: bool, topic: str,
+    ) -> ConversationTurn:
+        self.agent_core.executor.confirmation_manager.cancel(scope=conversation_id)
+        if self.interaction_coordinator_enabled:
+            self.interaction_coordinator.cancel(conversation_id)
+            self.interaction_coordinator.update(conversation_id, last_suggestion_snapshot={})
+        request_id = "req_" + uuid4().hex
+        teaching_request = (
+            f"我选择让你带着我学习，主题是：{topic}。请直接开始讲解第一步。"
+            if topic else "我选择让你带着我学习，但还没有说主题。请只问我想学什么。"
+        )
+        memory_evidence: List[Dict[str, object]] = []
+        messages = self.build_llm_messages(
+            teaching_request, conversation_id, memory_evidence_sink=memory_evidence,
+        )
+        messages.insert(-1, {
+            "role": "system",
+            "content": (
+                "本轮是带学对话。主题以当前请求为准，直接讲一个具体概念或第一步，"
+                "可以用一个小例子或问题互动；不要只列学习计划或再次询问是否开始。"
+                "本轮不使用工具、不新增或完成计划、不记录行动、不启动计时，"
+                "不得声称上述操作已执行。用户提到 GitHub、文档或章节不代表你已读取它；"
+                "没有提供原文时，只基于用户给出的主题讲解，不假称看过指定文档。"
+            ),
+        })
+        return ConversationTurn(
+            message, conversation_id,
+            {"intent": "chat", "mode": "chat", "source": "learning_start",
+             "request_mode": "guided_learning", "request_id": request_id},
+            llm_messages=messages, record_history=record_history,
+            preserve_advice_as_plan_options=False, memory_evidence=memory_evidence,
         )
 
     def _interaction_turn(
@@ -6622,6 +8000,8 @@ class ConversationService:
         ]
         if len(completion_candidates) != 1:
             return
+        if completion_candidates[0].source_intent == "read_snapshot_binding":
+            return
         snapshot = self._recent_plan_snapshot(conversation_id)
         if snapshot is None:
             return
@@ -6807,8 +8187,9 @@ class ConversationService:
         position = self._suggestion_reference_position(current_message)
         title_is_reference_shell = bool(
             re.fullmatch(
-                r"(?:就|把|将)?(?:第)?[一二两三四五六七八九十\d]+"
-                r"(?:个|项|条)(?:也|再|还|都)?",
+                r"(?:就|把|将)?(?:(?:第)?[一二两三四五六七八九十\d]+(?:个|项|条)"
+                r"|编号[一二两三四五六七八九十\d]+(?:那|这)?(?:个|项|条)?)"
+                r"(?:也|再|还|都)?",
                 title,
             )
         )
@@ -6830,7 +8211,12 @@ class ConversationService:
             # A task title explicitly present now outranks an ordinal embedded
             # inside that title (e.g. reading the second chapter).
             return
-        if position <= 0:
+        if position < 0:
+            self._reject_unbound_suggestion_reference(
+                semantic_result, intent_result, "编号必须对应刚才展示的有效项目，这次没有添加计划。",
+            )
+            return
+        if position == 0:
             return
         if self._unsafe_suggestion_reference(current_message):
             self._reject_unbound_suggestion_reference(
@@ -6859,7 +8245,9 @@ class ConversationService:
                 "刚才的建议列表里没有可继续加入的这一项。请重新选择未处理的项目，或直接说具体事项。",
             )
             return
-        candidate.arguments = {"title": selected.title}
+        candidate.arguments = selected.plan_arguments()
+        if snapshot.common_time_slot:
+            candidate.arguments["time_slot"] = snapshot.common_time_slot
         parsed_time = (
             semantic_result.local_features.parsed_time
             if semantic_result.local_features else {}
@@ -6871,6 +8259,28 @@ class ConversationService:
         ):
             if parsed_time.get(source) not in (None, ""):
                 candidate.arguments[target] = parsed_time[source]
+        if snapshot.source_kind == "assistant_advice":
+            relation, existing = self._advice_existing_plan_relation(selected.title)
+            separate = self._explicit_separate_plan_choice(current_message)
+            if relation == "clarify" and not separate:
+                self._reject_unbound_suggestion_reference(
+                    semantic_result, intent_result,
+                    "这项建议提到了已有未完成计划，但不能可靠确定修改目标；"
+                    "本次未写入。请明确说原计划完整标题，或说“第一个另建一项”。",
+                )
+                return
+            if relation == "update" and existing is not None and not separate:
+                target_ref = str(existing.get("uid") or existing.get("id") or "")
+                candidate.tool_name = "update_plan"
+                candidate.arguments = {
+                    "task_ref": target_ref,
+                    "changes": self._advice_update_changes(selected.title, current_message),
+                }
+                candidate.source_intent = "read_snapshot_binding"
+                semantic_result.source = "interaction_state"
+                intent_result["suggestion_existing_task_ref"] = target_ref
+            elif separate:
+                candidate.arguments["allow_duplicate"] = True
         candidate.request_mode = "execute"
         candidate.confidence = max(candidate.confidence, 0.99)
         candidate.explicit_command = True
@@ -7169,6 +8579,15 @@ class ConversationService:
         )
         if match:
             return cls._selection_number(match.group(1))
+        # A numbered reference is an argument, not a number inside a new task's
+        # payload ("复习编号1的题目"). Keep both command and following slot bounded.
+        numbered = re.search(
+            r"(?:^|把|将|选择|采用)编号([一二两三四五六七八九十\d]+)"
+            r"(?=(?:那|这)?(?:个|项|条)(?:也|再|还|先|加入|加到|添加|$)"
+            r"|(?:也|再|还)?(?:加入|加到|添加)|$)", normalized,
+        )
+        if numbered:
+            return cls._selection_number(numbered.group(1)) or -1
         numeric = re.match(r"^(\d+)[.、](?!\d)", str(text).strip())
         return cls._selection_number(numeric.group(1)) if numeric else 0
 
@@ -7314,6 +8733,9 @@ class ConversationService:
     def _selected_suggestion(text: str, options: List[Dict[str, object]]):
         if not options:
             return None
+        position = ConversationService._suggestion_reference_position(text)
+        if position:
+            return options[position - 1] if 1 <= position <= len(options) else None
         if re.search(r"(?:第(?:一|1)(?:个|条|项)|^1(?:个|条|项|号)?)", text):
             return options[0]
         if re.search(r"(?:第(?:二|两|2)(?:个|条|项)|^2(?:个|条|项|号)?)", text) and len(options) > 1:
@@ -7389,7 +8811,11 @@ class ConversationService:
         feature_extractor = getattr(self.semantic_action_parser, "feature_extractor", None)
         if feature_extractor is None:
             return False
-        features = feature_extractor.extract(text)
+        if self._suggestion_reference_position(text):
+            return False
+        # Sentence punctuation does not turn a concrete new item into an answer
+        # to the old choice. Preserve the actual input for downstream semantics.
+        features = feature_extractor.extract(str(text).strip().rstrip("。.!！"))
         # A command envelope can be structurally complete while its payload is
         # only a reference to the current pending target (for example,
         # ``把它加入今天计划``).  Such a turn must continue that interaction;
@@ -7426,7 +8852,7 @@ class ConversationService:
 
     @staticmethod
     def _is_fresh_query(text: str) -> bool:
-        return text in {
+        return is_memory_management_display(text) or text in {
             "今日计划",
             "我的计划",
             "今天的计划",
@@ -7573,6 +8999,7 @@ class ConversationService:
                 item is None or not permitted(item)
                 or str(item.get("content", "")) != str(operation.get("content", ""))
                 or str(item.get("created_at", "")) != str(operation.get("created_at", ""))
+                or (operation.get("uid") and item.get("uid") != operation.get("uid"))
             ):
                 operation = {}
         return facts, operation
@@ -7611,6 +9038,7 @@ class ConversationService:
             self.state_manager.observe_memory_facts(conversation_id, [memory])
         self.state_manager.observe_memory_operation(conversation_id, {
             "tool": result.tool, "status": "success", "memory_id": memory_id,
+            "uid": str(memory.get("uid", "")),
             "content": str(memory.get("content", "")),
             "category": str(memory.get("category", "other")),
             "scope": str(memory.get("scope", "stable_identity")),
@@ -7631,7 +9059,22 @@ class ConversationService:
         if tool is None or not tool.enabled:
             return {}
         count = 1
-        if state.interaction_kind == "plan_batch_completion":
+        if state.interaction_kind == "plan_batch_addition":
+            if tool_name != "add_plan":
+                return {}
+            target_date = str(state.immutable_arguments.get("date", "") or "")
+            actions = list(state.action_candidates)
+            if not target_date or len(actions) < 2 or any(
+                not isinstance(action, dict)
+                or action.get("tool_name") != "add_plan"
+                or not isinstance(action.get("arguments"), dict)
+                or str(action["arguments"].get("date", "")) != target_date
+                or not str(action["arguments"].get("title", "") or "").strip()
+                for action in actions
+            ):
+                return {}
+            count = len(actions)
+        elif state.interaction_kind == "plan_batch_completion":
             if tool_name != "complete_plan":
                 return {}
             plan_service = getattr(self.business_resolver, "plan_service", None)
@@ -7685,6 +9128,8 @@ class ConversationService:
         summary_mode: bool = False,
         verified_turn_context: str = "",
         memory_evidence_sink: Optional[List[Dict[str, object]]] = None,
+        planning_advice: bool = False,
+        planning_evidence_sink: Optional[Dict[str, object]] = None,
     ) -> List[Dict[str, str]]:
         session_summary = ""
         recent_messages: List[Dict[str, object]] = []
@@ -7803,7 +9248,12 @@ class ConversationService:
             )
             if summaries:
                 relevant_summary_count = len(summaries)
-                current_date = self.now_provider().date()
+                request_boundary = current_request_boundary()
+                current_date = (
+                    datetime.fromisoformat(request_boundary.business_date).date()
+                    if request_boundary is not None
+                    else (self.business_now_provider or self.now_provider)().date()
+                )
                 summary_lines = []
                 for item in summaries:
                     raw_time_range = item.get("time_range", {})
@@ -7812,18 +9262,28 @@ class ConversationService:
                     )
                     source_start = str(time_range.get("start", ""))
                     source_end = str(time_range.get("end", ""))
+                    source_session = self.chat_history_manager.get_session(
+                        str(item.get("session_id", ""))
+                    ) or {}
+                    source_business_date = (
+                        str(source_session.get("business_date") or "")
+                        if source_session.get("session_kind") == "daily_learning"
+                        else ""
+                    )
                     temporal_relation = self._summary_temporal_relation(
-                        source_start,
-                        source_end,
+                        source_business_date or source_start,
+                        source_business_date or source_end,
                         current_date=current_date,
                     )
                     summary_lines.append(
                         "- [session_id={session_id}; source_message_time_start={source_start}; "
                         "source_message_time_end={source_end}; "
+                        "source_business_date={source_business_date}; "
                         "relation_to_current_date={temporal_relation}] {summary}".format(
                             session_id=str(item.get("session_id", "")),
                             source_start=source_start,
                             source_end=source_end,
+                            source_business_date=source_business_date,
                             temporal_relation=temporal_relation,
                             summary=str(item.get("summary", "")),
                         )
@@ -7833,6 +9293,7 @@ class ConversationService:
                             "session_id": str(item.get("session_id", "")),
                             "source_message_time_start": source_start,
                             "source_message_time_end": source_end,
+                            "source_business_date": source_business_date,
                             "summary_refreshed_at": str(item.get("updated_at", "")),
                             "relation_to_current_date": temporal_relation,
                             "source_message_count": int(
@@ -7843,8 +9304,9 @@ class ConversationService:
                     )
                 relevant_summary_context = (
                     "相关旧会话摘要（仅供大意衔接，不代表精确原话或工具事实）：\n"
-                    f"当前本地日期：{current_date.isoformat()}。时间归属只能依据每条摘要的 "
-                    "source_message_time_start、source_message_time_end 和 "
+                    f"当前业务日期：{current_date.isoformat()}。每日学习会话优先依据 "
+                    "source_business_date，其他会话依据 source_message_time_start、"
+                    "source_message_time_end 和 "
                     "relation_to_current_date；摘要生成或刷新时间不是对话发生时间。"
                     "只有 relation_to_current_date 明确为 today 或 yesterday 时，才可称为"
                     "“今天”或“昨天”；unknown、multi_day、earlier 或 future 一律使用"
@@ -7875,19 +9337,140 @@ class ConversationService:
             )
             else ""
         )
+        learning_active = not summary_mode and is_learning_context(
+            user_text, recent_messages, planning_advice=planning_advice,
+        )
+        daily_growth_reference = {}
+        if not summary_mode and not learning_active and self.learning_loop_service is not None:
+            session = (self.chat_history_manager.get_session(conversation_id)
+                       if self.chat_history_manager is not None and conversation_id else None)
+            if isinstance(session, dict) and session.get("session_kind") == "daily_learning":
+                boundary = current_request_boundary()
+                reference_date = (boundary.business_date if boundary is not None else
+                                  (self.business_now_provider or self.now_provider)().date().isoformat())
+                try:
+                    history = self.learning_loop_service.learning_history(
+                        reference_date, character_budget=12000,
+                    )
+                except (OSError, ValueError, TypeError) as error:
+                    history = {"read_errors": [{"source": "growth", "error": type(error).__name__}]}
+                daily_growth_reference = {
+                    "business_date": reference_date,
+                    "continuity_mode": "daily_growth_reference",
+                    "learning_history": history,
+                }
+        if learning_active:
+            boundary = current_request_boundary()
+            business_date = (
+                boundary.business_date if boundary is not None
+                else (self.business_now_provider or self.now_provider)().date().isoformat()
+            )
+            advice_facts: Dict[str, object] = {
+                "business_date": business_date,
+                "user_request": boundary.source_text if boundary is not None else user_text,
+            }
+            profile = learning_profile(
+                getattr(self.business_resolver, "memory_service", None), suppressed=suppressed,
+            )
+            advice_facts["learning_profile"] = profile
+            if memory_evidence_sink is not None:
+                ids = {item.get("id") for item in memory_evidence_sink}
+                memory_evidence_sink.extend(item for item in profile.get("records", []) if item.get("id") not in ids)
+            # Compatibility summary only; the bounded profile above carries the
+            # full selected original records, including learning preferences.
+            advice_facts["goals"] = [{"id": item.get("id"), "content": str(item.get("content", ""))[:180]}
+                for item in profile.get("records", []) if item.get("category") == "goal"][:12]
+            if callable(getattr(self.learning_loop_service, "learning_history", None)):
+                try:
+                    advice_facts["learning_history"] = self.learning_loop_service.learning_history(
+                        business_date, query=user_text,
+                    )
+                except (OSError, ValueError, TypeError) as error:
+                    advice_facts["learning_history"] = {"read_errors": [{"source": "growth", "error": type(error).__name__}]}
+            else:
+                advice_facts["learning_history"] = {"read_errors": [{"source": "growth", "error": "service_unavailable"}]}
+            try:
+                if callable(getattr(self.chat_history_manager, "learning_fragments", None)):
+                    recent_topics = [str(task.get("title", "")) for day in
+                        advice_facts["learning_history"].get("recent_days", []) for task in day.get("plans", [])][:8]
+                    query = " ".join([user_text] + [str(item.get("content", "")) for item in profile.get("records", [])]
+                        + recent_topics + [str(item.get("content", "")) for item in recent_messages if item.get("role") == "user"][-4:])
+                    advice_facts["learning_discussions"] = self.chat_history_manager.learning_fragments(
+                        query, business_date=business_date, exclude_session_id=conversation_id,
+                        persona_id=active_persona_id,
+                    )
+                else:
+                    advice_facts["learning_discussions"] = {"read_error": "service_unavailable"}
+            except (OSError, ValueError, TypeError) as error:
+                advice_facts["learning_discussions"] = {"read_error": type(error).__name__}
+            try:
+                if self.learning_loop_service is None:
+                    raise LookupError("planning service unavailable")
+                facts = self.learning_loop_service.planning_evidence(
+                    business_date, strict_read=True,
+                )
+                yesterday = facts["yesterday"]
+                today = facts["today"]
+                advice_facts.update({
+                    "today": {
+                        "plans": [
+                            {"uid": task.get("uid"), "title": str(task.get("title", ""))[:300],
+                             "done": bool(task.get("done")), "duration_minutes": task.get("duration_minutes")}
+                            for task in today["tasks"][:20]
+                        ],
+                        "completed": today["completed"], "total": today["total"],
+                        "plans_omitted": max(0, len(today["tasks"]) - 20),
+                    },
+                    "yesterday": {
+                        "date": yesterday["date"], "completed": yesterday["completed"],
+                        "total": yesterday["total"],
+                        "completed_plans": [
+                            {"uid": task.get("uid"), "title": str(task.get("title", ""))[:300]}
+                            for task in yesterday["tasks"][:20] if task.get("done")
+                        ],
+                        "pending_plans": [
+                            {"uid": task.get("uid"), "title": str(task.get("title", ""))[:300]}
+                            for task in yesterday["tasks"][:20] if not task.get("done")
+                        ],
+                        "plans_omitted": max(0, len(yesterday["tasks"]) - 20),
+                        "actions": [str(action.get("content", ""))[:100] for action in yesterday["actions"][:20]],
+                        "actions_omitted": max(0, len(yesterday["actions"]) - 20),
+                        "actual_minutes": (
+                            yesterday["actual_minutes"] if yesterday["actual_duration_count"] else None
+                        ),
+                        "actual_duration_count": yesterday["actual_duration_count"],
+                        "action_count": len(yesterday["actions"]),
+                    },
+                    "last_7_days": facts["last_7_days"],
+                    "last_30_days": facts["last_30_days"],
+                    "review_status": facts["yesterday_review_status"],
+                })
+                review = facts["saved_yesterday_review"]
+                if facts["yesterday_review_status"] == "current":
+                    advice_facts["saved_yesterday_review"] = str(review.get("text", ""))[:400]
+                elif facts["yesterday_review_status"] == "stale":
+                    advice_facts["saved_review_at_that_time"] = str(review.get("text", ""))[:400]
+                    advice_facts["review_note"] = "已保存复盘过时；以当前计划和行动事实为准"
+                elif facts["yesterday_review_status"] == "unverifiable":
+                    advice_facts["saved_review_at_that_time"] = str(review.get("text", ""))[:400]
+                    advice_facts["review_note"] = "旧复盘缺少快照，无法核对；不作为当前执行事实"
+            except (OSError, ValueError, TypeError, LookupError) as error:
+                advice_facts["read_error"] = type(error).__name__
+        profile_ids = {item.get("id") for item in profile.get("records", [])} if learning_active else set()
+        context_memories = [item for item in memories if item.get("id") not in profile_ids]
         messages = self.context_builder.build(
             personality_context=self.personality_context_provider(),
             persona_context=persona_context,
-            memory_context=self.memory_context_provider(memories),
-            memory_count=len(memories),
-            memory_categories=categories,
+            memory_context=self.memory_context_provider(context_memories),
+            memory_count=len(context_memories),
+            memory_categories=[str(item.get("category", "other")) for item in context_memories],
             skipped_sensitive_categories=(
                 self.memory_retriever.last_skipped_sensitive_categories
             ),
             suppressed_categories=suppressed,
             session_summary=session_summary,
             recent_messages=recent_messages,
-            knowledge_context="" if summary_mode else self.knowledge_context_provider(user_text),
+            knowledge_context="" if summary_mode or learning_active else self.knowledge_context_provider(user_text),
             current_user_input=user_text,
             instruction=(
                 self.instruction
@@ -7895,17 +9478,21 @@ class ConversationService:
                 + capability_help_instruction
             ),
             verified_turn_context=verified_turn_context,
+            learning_context=advice_facts if learning_active else daily_growth_reference or "",
             client_runtime_context="" if summary_mode else client_runtime,
-            user_goals_context="" if summary_mode else str(provided_sections.get("user_goals", "")),
-            today_pending_context="" if summary_mode else str(provided_sections.get("today_pending", "")),
-            today_completed_context="" if summary_mode else str(provided_sections.get("today_completed", "")),
-            action_context="" if summary_mode else str(provided_sections.get("actions", "")),
-            relevant_conversation_summaries_context=relevant_summary_context,
+            user_goals_context="" if summary_mode or learning_active else str(provided_sections.get("user_goals", "")),
+            today_pending_context="" if summary_mode or learning_active else str(provided_sections.get("today_pending", "")),
+            today_completed_context="" if summary_mode or learning_active else str(provided_sections.get("today_completed", "")),
+            action_context="" if summary_mode or learning_active else str(provided_sections.get("actions", "")),
+            relevant_conversation_summaries_context="" if learning_active else relevant_summary_context,
             persona_lore_context=persona_lore_context,
             persona_relationship_context=persona_relationship_context,
             persona_examples_context=persona_examples_context,
             section_item_counts=section_counts,
         )
+        if learning_active and planning_evidence_sink is not None:
+            planning_evidence_sink.clear()
+            planning_evidence_sink.update(advice_facts)
         self.interaction_diagnostics.update(
             conversation_id,
             persona_context={
@@ -7921,6 +9508,18 @@ class ConversationService:
                     persona_counts.get("persona_dialogue_examples", 0)
                 ),
                 "relevant_summary_items": relevant_summary_count,
+                "learning_context": {
+                    "active": learning_active, "characters": next((item.characters for item in self.context_builder.last_diagnostics
+                        if item.name == "learning_history_facts"), 0),
+                    "history_coverage": advice_facts.get("learning_history", {}).get("coverage", {}) if learning_active else {},
+                    "history_read_errors": advice_facts.get("learning_history", {}).get("read_errors", []) if learning_active else [],
+                    "profile_count": len(profile.get("records", [])) if learning_active else 0,
+                    "profile_read_error": profile.get("read_error") if learning_active else None,
+                    "discussion_count": advice_facts.get("learning_discussions", {}).get("included_count", 0) if learning_active else 0,
+                    "discussion_daily_coverage": advice_facts.get("learning_discussions", {}).get("daily_coverage", []) if learning_active else [],
+                    "context_budget": advice_facts.get("context_budget", {}) if learning_active else {},
+                    "daily_growth_reference": bool(daily_growth_reference),
+                },
             },
             relevant_summary_provenance=relevant_summary_provenance,
             context_sections=[
@@ -7935,6 +9534,29 @@ class ConversationService:
             ],
         )
         return messages
+
+    @staticmethod
+    def _requests_new_plan_advice(text: str) -> bool:
+        compact = re.sub(r"\s+", "", str(text or ""))
+        # A request to *only show* advice commonly says "不要直接加入计划".
+        # Remove that local negated write phrase before checking for a
+        # separate, positive write request in the same sentence.
+        without_negated_writes = re.sub(
+            r"(?:不要|不用|无需|暂不|先不|不必|别)[^，。；,;]{0,12}?"
+            r"(?:加入|添加|加到|放进|删除|完成|取消)[^，。；,;]{0,12}?(?:计划|任务)",
+            "", compact,
+        )
+        if re.search(r"(?:加入|添加|加到|放进|删除|完成(?!情况)|取消).{0,12}(?:计划|任务)",
+                     without_negated_writes):
+            return False
+        if requests_concrete_advice(without_negated_writes):
+            return True
+        return bool(re.search(
+            r"(?:制定|生成|推荐|建议|规划|安排|调整).{0,16}(?:今天|明天|今日|明日|学习|计划|任务)"
+            r"|(?:给我|帮我|来个|做个).{0,12}(?:今天|明天|今日|明日|学习).{0,8}(?:计划|安排)"
+            r"|(?:今天|明天|今日|明日).{0,12}(?:学习|计划|任务).{0,8}(?:怎么|如何|建议|安排)",
+            compact,
+        ))
 
     @staticmethod
     def _summary_temporal_relation(
@@ -7994,7 +9616,9 @@ class ConversationService:
         conversation_id: str,
         record_history: bool,
         intent: str,
-    ) -> None:
+        *,
+        extra_metadata: Optional[Mapping[str, object]] = None,
+    ) -> bool:
         response.message = sanitize_public_reply(response.message)
         state_after = "idle"
         if self.interaction_coordinator_enabled and conversation_id:
@@ -8096,9 +9720,23 @@ class ConversationService:
             response_hash=hashlib.sha256(response.message.encode("utf-8")).hexdigest(),
         )
         if not record_history or self.chat_history_manager is None or not conversation_id:
-            return
+            return False
         trace = self.development_log.current_trace()
         metadata = {"status": response.status}
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        adoptions = getattr(response, "_suggestion_adoptions", None)
+        if isinstance(adoptions, list) and adoptions:
+            metadata["suggestion_adoption"] = {
+                "business_date": (
+                    current_request_boundary().business_date
+                    if current_request_boundary() is not None else
+                    (self.business_now_provider or self.now_provider)().date().isoformat()
+                ),
+                "session_id": conversation_id,
+                "request_id": response.request_id,
+                "items": adoptions,
+            }
         if trace and self.development_log.enabled:
             metadata.update(trace.to_metadata())
         saved = self.chat_history_manager.add_message(
@@ -8113,7 +9751,10 @@ class ConversationService:
             message_id=str(saved.get("id", "")) if saved else "",
             status="success" if saved else "unavailable",
         )
+        if saved is None and isinstance(adoptions, list) and adoptions:
+            response.message += "\n计划执行结果以上述工具核验为准；采用关联记录未能保存。"
         self._maybe_generate_rule_summary(conversation_id)
+        return saved is not None
 
     @staticmethod
     def _diagnostic_tool_result(result) -> Dict[str, object]:
@@ -8337,8 +9978,14 @@ class ConversationService:
         if call_id and call_id in self._marked_memory_tool_calls:
             return
         data = result.data if isinstance(result.data, dict) else {}
+        if data.get("memory_management_display") is True:
+            return
         memory_read = data.get("memory_read", {})
         memory_read = memory_read if isinstance(memory_read, dict) else {}
+        request = memory_read.get("request", {})
+        if isinstance(request, dict) and is_memory_management_display(request.get("query", "")):
+            # Copying a management record is not using it in a natural answer.
+            return
         facts = memory_read.get("facts", [])
         if not isinstance(facts, list):
             return
@@ -8575,6 +10222,11 @@ class ConversationService:
     ) -> None:
         """Let the model phrase verified formal-memory facts, never select data."""
 
+        if is_memory_management_display(user_text):
+            for result in response.tool_results:
+                if result.success and result.tool in {"list_memories", "show_memory", "search_memories", "search_memory"}:
+                    result.data["memory_management_display"] = True
+            return
         result = next(
             (
                 item
@@ -8587,12 +10239,28 @@ class ConversationService:
         )
         if result is None or str(result.data.get("natural_answer", "") or "").strip():
             return
+        # prepare() may already have recorded the final fallback. complete()
+        # must not start another model attempt and display a different answer.
+        if getattr(response, "_formal_memory_answer_attempted", False):
+            return
+        response._formal_memory_answer_attempted = True
         memory_read = result.data.get("memory_read", {})
         memory_read = memory_read if isinstance(memory_read, Mapping) else {}
         request = memory_read.get("request", {})
         request = request if isinstance(request, Mapping) else {}
+        if len(MemoryReadRequest.from_arguments(request).requested_attributes) > 1:
+            # Closed category-union checks use the existing snapshot renderer.
+            # Do not start a model/retry merely to describe this bounded scope.
+            return
         raw_facts = memory_read.get("facts", [])
         raw_facts = raw_facts if isinstance(raw_facts, list) else []
+        if (str(request.get("attribute", "")) == "preferred_name"
+                and raw_facts
+                and all(isinstance(fact, Mapping) and fact.get("authority") == "legacy_profile" for fact in raw_facts)):
+            # Legacy profile values are verified typed facts without formal
+            # memory IDs. The existing typed renderer supports them; never
+            # drop them and ask a model to answer from an empty fact list.
+            return
         facts_by_id: Dict[int, Dict[str, object]] = {}
         prompt_facts: List[Dict[str, object]] = []
         for item in raw_facts:
@@ -8711,12 +10379,30 @@ class ConversationService:
             ),
             None,
         )
+        full_saved_review = str(user_text).strip().rstrip("。！？!? ") == "今日复盘"
+        if review_result is None and full_saved_review:
+            review_result = next(
+                (result for result in response.tool_results
+                 if str(result.tool) == "save_daily_review" and bool(result.success)),
+                None,
+            )
         if review_result is None:
             return
-        review = review_result.data.get("review", {})
+        if getattr(response, "_daily_review_summary_attempted", False):
+            return
+        response._daily_review_summary_attempted = True
+        if review_result.tool == "save_daily_review":
+            entry = review_result.data.get("entry", {})
+            # The saved ToolResult is an exact persisted fact. Display polish
+            # is transient and must not mutate that verified stored snapshot.
+            review = dict(entry.get("review", {})) if isinstance(entry, dict) else {}
+        else:
+            review = review_result.data.get("review", {})
         if not isinstance(review, dict):
             return
         if str(review.get("natural_summary", "")).strip():
+            if full_saved_review:
+                response.message = str(review["natural_summary"]).strip()
             return
         try:
             messages = self.build_llm_messages(user_text, conversation_id)
@@ -8738,14 +10424,28 @@ class ConversationService:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+            review_date = str(review.get("date", "") or "").strip()
+            business_today = self._business_now().date().isoformat()
+            if review_date and review_date != business_today:
+                date_scope = (
+                    f"这份复盘属于查询日期 {review_date}；当前业务日是 {business_today}。"
+                    f"必须把这份复盘说成 {review_date} 的复盘，不能说成今天，"
+                    f"也不能因为当前业务日没有同一批记录就否认 {review_date} 已有记录。"
+                )
+                facts_label = "已核验的指定日期复盘 JSON"
+            else:
+                date_scope = f"这份复盘属于当前业务日 {business_today}。"
+                facts_label = "已核验的今日复盘 JSON"
             system_prompt = (
-                "你正在把一份已经由程序读取并核验过的今日复盘事实，写成洛琪希风格的自然回复。"
+                "你正在把一份已经由程序读取并核验过的复盘事实，写成洛琪希风格的自然回复。"
                 "只能使用下面 JSON 中的日期、数量、计划、行动和状态；不得补写不存在的完成事项、记忆、健康事实或执行结果。"
-                "用户问‘今天完成了什么’时，可以自然理解为‘今天状态怎么样’，但不要输出数据库式编号清单。"
-                "结合上下文中已经提供的用户目标、偏好和近期状态调整侧重点，但不得把这些背景说成今天新完成的事实。"
+                "用户将学习计划标记完成时，按用户已掌握该项内容组织复盘，不追加测验或验证流程；未完成的项目仍按真实状态说明。"
+                + date_scope
+                + "用户只问‘完成了什么’时，可以自然理解为‘当天状态怎么样’，但不要输出数据库式编号清单。"
+                "结合上下文中已经提供的用户目标、偏好和近期状态调整侧重点，但不得把这些背景说成该日期新完成的事实。"
                 "先用一两句陪伴式观察，再提到关键进展和未完成部分；没有数据时也要如实说明。"
                 "可少量使用动作描写，但不要固定套模板。只输出面向用户的纯文本。\n"
-                f"已核验的今日复盘 JSON：{facts}"
+                f"{facts_label}：{facts}"
             )
             insert_at = len(messages)
             for index in range(len(messages) - 1, -1, -1):
@@ -8758,6 +10458,10 @@ class ConversationService:
                 review["natural_summary"] = reply
         except Exception as error:
             print(f"[DailyReview] natural summary unavailable: {type(error).__name__}", flush=True)
+        if full_saved_review:
+            response.message = str(
+                review.get("natural_summary") or review.get("text") or response.message
+            ).strip()
 
     def _maybe_generate_growth_log_summary(
         self,

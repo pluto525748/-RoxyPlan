@@ -1,0 +1,95 @@
+{
+  "source": "Engineering synthetic real DeepSeek first responses, 2026-10-25; not real user data",
+  "cases": [
+    {
+      "case_id": "bt_d30_02",
+      "user": "帮我规划一下未来30天怎么学机器学习。请先列出两个学习方向供我讨论，不要加入今天计划。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.95,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"discuss\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2633,
+            "completion_tokens": 86,
+            "total_tokens": 2719,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 201
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "（认真想了想）好，先不急着排日程，我们先定方向。给你两个适合30天切入的路线：\n\n1. 应用实践路线：以“能跑通、能解释”为目标，用 Python 和 scikit-learn 做几个小项目，比如分类、回归、简单特征处理。重点是理解流程和评估指标，不追求推导。适合想尽快做出东西、边做边学的人。\n\n2. 原理理解路线：以“知道模型为什么这样工作”为目标，从线性回归、逻辑回归、梯度下降、过拟合这些基础概念入手，配少量代码验证。适合不满足于调包、希望后面学得更扎实的人。\n\n这两条不是互斥的，30天里也可以七三开。你更想偏向哪一边？或者告诉我你现在的编程和数学基础，我能把方向收得更准一些。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2240,
+            "completion_tokens": 180,
+            "total_tokens": 2420,
+            "prompt_cache_hit_tokens": 1792,
+            "prompt_cache_miss_tokens": 448
+          }
+        }
+      ],
+      "source_sha256": "105f7632f9096d1e9b06c0a07f4a38b1fdec55ce6872b0fff5aac09fb1ce0811"
+    },
+    {
+      "case_id": "btm_03",
+      "user": "请给我2项今天的学习计划建议，依次围绕花25分钟看完一小节机器学习内容、完成两道练习题；按单层编号列出，每项一个具体行动，先不要加入计划。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.95,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"advice\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2649,
+            "completion_tokens": 86,
+            "total_tokens": 2735,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 217
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "今天已经有一项“花25分钟看完一小节机器学习内容”的计划还待完成，所以第一项就以它为基础，不另建重复任务；第二项再安排练习题。\n\n1. 继续完成今天已有的“花25分钟看完一小节机器学习内容”，25分钟。看完后停一下，用自己的话记下一句这节的核心结论。\n2. 完成两道练习题，20分钟。先做第一道，做完后对照思路检查，再开始第二道。\n\n这两项只是建议，还没有加入今天的计划。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2353,
+            "completion_tokens": 109,
+            "total_tokens": 2462,
+            "prompt_cache_hit_tokens": 1920,
+            "prompt_cache_miss_tokens": 433
+          }
+        }
+      ],
+      "source_sha256": "31256d61abb1c56b58d09274648dc32e1ca14d8905cf7f767992e82d09cb15b2"
+    }
+  ]
+}

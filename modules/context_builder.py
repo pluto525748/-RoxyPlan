@@ -48,6 +48,7 @@ class ContextBuilder:
         current_user_input: str,
         instruction: str = "",
         verified_turn_context: str = "",
+        learning_context: object = "",
         client_runtime_context: str = "",
         persona_context: str = "",
         user_goals_context: str = "",
@@ -100,6 +101,7 @@ class ContextBuilder:
                 True,
             ),
             ("user_important_goals", "memory_profile", user_goals_context, True),
+            ("learning_history_facts", "shared_read_only_learning_projection", "", True),
             ("today_unfinished_plan", "plan_service", today_pending_context, True),
             ("today_completed_summary", "plan_service", today_completed_context, False),
             ("today_action_records", "plan_service", action_context, False),
@@ -133,9 +135,30 @@ class ContextBuilder:
             ),
             ("relevant_knowledge", "knowledge_manager", knowledge_context, False),
         ]
+        learning_trimmed = False
+        if isinstance(learning_context, dict):
+            from modules.learning_context import learning_guidance
+            hard_size = sum(len(str(content or "").strip()) for _name, _source, content, required in sections if required)
+            available = max(0, max(self.character_budget, 48000) - hard_size
+                - len(current_user_input.strip()) - sum(len(item["content"]) for item in recent))
+            learning_text = learning_guidance(learning_context, character_budget=available)
+            learning_trimmed = learning_context.get("context_budget", {}).get("truncated", False) or not learning_text
+        else:
+            learning_text = str(learning_context or "")
+        sections = [(name, source, learning_text if name == "learning_history_facts" else content, required)
+                    for name, source, content, required in sections]
         system_sections = self._bounded_sections(
             sections, counts, current_user_input, recent
         )
+        if learning_trimmed:
+            self.last_diagnostics = [ContextSectionDiagnostic(item.name, item.source, item.characters,
+                item.item_count, True if item.name == "learning_history_facts" else item.trimmed)
+                for item in self.last_diagnostics]
+        if isinstance(learning_context, dict) and hard_size + len(current_user_input.strip()) + sum(
+                len(item["content"]) for item in recent) > max(self.character_budget, 48000):
+            self.last_diagnostics.append(ContextSectionDiagnostic(
+                "hard_context_overflow", "required_system_and_live_turns", hard_size,
+                len(recent), True))
         messages = [
             {"role": "system", "content": content}
             for _name, content in system_sections
@@ -204,8 +227,13 @@ class ContextBuilder:
             if required
         )
         # Preserve required system sections and the latest conversation turns.
-        recent_reserve = sum(len(item["content"]) for item in recent[-2:])
-        remaining = max(0, self.character_budget - reserved - required_size - recent_reserve)
+        recent_reserve = sum(len(item["content"]) for item in self._bounded_recent_for_budget(recent))
+        # Learning projection is bounded before serialization; never cut a JSON
+        # fact in half or discard safety/current input to fit older defaults.
+        budget = max(self.character_budget, 48000) if any(
+            name == "learning_history_facts" and content for name, _source, content, _required in sections
+        ) else self.character_budget
+        remaining = max(0, budget - reserved - required_size - recent_reserve)
         raw_optional = {
             name: str(content or "").strip()
             for name, _source, content, required in sections

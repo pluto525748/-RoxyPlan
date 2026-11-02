@@ -8,6 +8,7 @@ from modules.chinese_entity_parser import ChineseEntityParser
 from modules.interaction_state_coordinator import InteractionStateCoordinator
 from modules.local_feature_extractor import LocalFeatures
 from modules.memory_service import MemoryService
+from modules.memory_read import is_memory_save_reference_question
 from modules.plan_service import PlanService
 from modules.reference_resolver import ReferenceResolver
 from modules.semantic_action_parser import ActionCandidate
@@ -134,7 +135,7 @@ class BusinessResolver:
                 safe_prompt="查询请求不会修改数据。",
             )
         if candidate.domain == "memory":
-            return self._resolve_memory(candidate, conversation_id, features)
+            return self._resolve_memory(candidate, conversation_id, features, dict(structured_references or {}))
         if candidate.domain == "plan":
             return self._resolve_plan(
                 candidate,
@@ -162,8 +163,14 @@ class BusinessResolver:
         candidate: ActionCandidate,
         conversation_id: str,
         features: Optional[LocalFeatures],
+        references: Optional[Mapping[str, object]] = None,
     ) -> BusinessResolution:
         tool = candidate.tool_name
+        if (tool == "list_memories" and candidate.request_mode == "query"
+                and candidate.arguments.get("query_mode") in {"existence", "provenance"}
+                and features is not None
+                and is_memory_save_reference_question(features.normalized_text)):
+            return self._resolve_saved_memory_read(candidate, references or {})
         if tool in self.MEMORY_READ_TOOLS or tool in {
             "create_memory_candidate",
             "request_add_memory",
@@ -328,6 +335,30 @@ class BusinessResolver:
         resolved.arguments[key] = int(value)
         return BusinessResolution("resolved", candidate, resolved)
 
+    @staticmethod
+    def _prose_title_duration_is_unresolved(title: str) -> bool:
+        """Never promote a sub-activity length from a displayed prose body.
+
+        A normal cleaned task title may end in one explicit duration and keeps
+        the legacy title-derived fallback.  A displayed suggestion keeps its
+        complete prose body, including sentence punctuation.  When that body
+        mentions several durations or only a non-terminal material length, the
+        first parser match is not the task's total; adoption passes an explicit
+        total when the displayed body has one.
+        """
+        text = str(title or "").strip()
+        if not re.search(r"[。.!！]\s*$", text):
+            return False
+        mentions = re.findall(
+            r"(?:\d+|[一二两三四五六七八九十百]+)\s*分钟", text,
+        )
+        if not mentions:
+            return False
+        terminal = re.search(
+            r"(?:\d+|[一二两三四五六七八九十百]+)\s*分钟\s*[。.!！]?$", text,
+        )
+        return len(mentions) > 1 or terminal is None
+
     def _resolve_plan(
         self,
         candidate: ActionCandidate,
@@ -352,7 +383,11 @@ class BusinessResolver:
                         "可以这样说：‘把复习随机森林加入今天计划。’"
                     ),
                 )
-            if args.get("duration_minutes") in {None, ""} and title:
+            if (
+                args.get("duration_minutes") in {None, ""}
+                and title
+                and not self._prose_title_duration_is_unresolved(title)
+            ):
                 parsed_title = self.entity_parser.parse(title)
                 if parsed_title.get("duration_minutes") is not None:
                     args["duration_minutes"] = parsed_title.get("duration_minutes")
@@ -552,6 +587,12 @@ class BusinessResolver:
         del conversation_id
         if candidate.tool_name == "show_action_log":
             return BusinessResolution("resolved", candidate, candidate)
+        if candidate.subject == "other":
+            return BusinessResolution(
+                "forbidden", candidate,
+                reason_code="third_party_action_not_user_progress",
+                safe_prompt="这段描述的是他人的行动，不会记入你的行动记录。",
+            )
         content = str(candidate.arguments.get("content", "") or "").strip()
         if candidate.reference_text == "previous_user_message" or content in {
             "",
@@ -619,6 +660,8 @@ class BusinessResolver:
             )
         resolved = self._clone(candidate)
         resolved.arguments = {"content": content}
+        if candidate.arguments.get("duration_minutes") is not None:
+            resolved.arguments["duration_minutes"] = candidate.arguments["duration_minutes"]
         if candidate.requires_confirmation_hint and not candidate.explicit_command:
             return BusinessResolution(
                 "confirmation_required",
@@ -629,6 +672,48 @@ class BusinessResolver:
                 safe_prompt="要不要把这段进展记入今天的行动记录？",
             )
         return BusinessResolution("resolved", candidate, resolved)
+
+    def _resolve_saved_memory_read(
+        self, candidate: ActionCandidate, references: Mapping[str, object],
+    ) -> BusinessResolution:
+        """Bind an accepted deictic read; never manufacture a save or overview."""
+        operation = references.get("verified_memory_operation") or {}
+        last = references.get("last_tool_result") or {}
+        memory_id = operation.get("memory_id")
+        latest_target = (
+            last.get("tool") == "save_formal_memory"
+            or (last.get("tool") == "list_memories" and last.get("memory_read_ids") == [memory_id])
+        )
+        if (operation.get("tool") == "save_formal_memory" and operation.get("uid")
+                and isinstance(last.get("user_turn_index"), int)
+                and last["user_turn_index"] > 0
+                and last["user_turn_index"] == references.get("previous_user_turn_index")
+                and latest_target):
+            found = self.memory_service.get_memory(memory_id)
+            record = found.data.get("memory", {}) if found.success else {}
+            content = str(record.get("content", ""))
+            if (record.get("uid") == operation["uid"]
+                    and content == operation.get("content")
+                    and record.get("created_at") == operation.get("created_at")
+                    and content and len(content) <= 500):
+                # Existing public read arguments can express a unique full
+                # body. Duplicate bodies are ambiguous, never silently merged.
+                manager = self.memory_service.memory_manager
+                matches = [item for item in manager.working_memories()
+                           if manager.normalize_text(item.get("content", "")) == manager.normalize_text(content)]
+                if len(matches) == 1 and matches[0].get("id") == memory_id:
+                    resolved = self._clone(candidate)
+                    resolved.arguments = {"query_mode": candidate.arguments["query_mode"], "attribute": "fact", "query": content}
+                    return BusinessResolution(
+                        "resolved", candidate, resolved, candidate_objects=[record],
+                        reason_code="saved_memory_reference_bound",
+                    )
+        return BusinessResolution(
+            "missing", candidate, missing_fields=["memory_reference"],
+            reason_code="saved_memory_reference_unavailable",
+            safe_prompt=("我无法把‘刚才那条’唯一对应到仍有效的近期保存记录。"
+                         "请说明要核对的具体内容；这不表示从未保存，本轮没有新增保存。"),
+        )
 
     def _candidate_objects(self, ids: List[str]) -> List[Dict[str, object]]:
         result = []
@@ -655,6 +740,7 @@ class BusinessResolver:
             depends_on=list(candidate.depends_on),
             sequence_index=candidate.sequence_index,
             source_intent=candidate.source_intent,
+            subject=candidate.subject,
             clause_text=candidate.clause_text,
             command_text=candidate.command_text,
             payload_text=candidate.payload_text,
@@ -674,8 +760,12 @@ class BusinessResolver:
         title: str,
         features: Optional[LocalFeatures],
     ) -> bool:
-        value = str(title or "")
-        if any(term in value for term in cls.AMBIGUOUS_REFERENCE_TERMS):
+        value = str(title or "").strip()
+        if value in cls.AMBIGUOUS_REFERENCE_TERMS or re.fullmatch(
+            r"(?:刚才那些|你说的|你上面说的|上面说的|这些|那些|这个|那个|这几条|前者|后者|那件事情)"
+            r"(?:安排|计划|任务|事项|内容|建议|步骤)?(?:一下)?",
+            value,
+        ):
             return True
         # A current pending interaction may carry a concrete title while the
         # continuation sentence still contains “刚才这个”. In that case the

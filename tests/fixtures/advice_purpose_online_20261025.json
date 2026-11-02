@@ -1,0 +1,148 @@
+{
+  "origin": "Synthetic engineering v4 first API responses; not user records or new online execution",
+  "source_run": "learning-week-six-online-20261025-v4",
+  "cases": [
+    {
+      "id": "g2-d1-t02",
+      "user": "昨天的执行留在复盘里了。今天的主题是路径与文件，结合实际完成和用时给我两个可选行动；只展示，等我选。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_action_log\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.55,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"\",\"polarity\":\"\",\"modality\":\"\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2591,
+            "completion_tokens": 81,
+            "total_tokens": 2672,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 159
+          }
+        }
+      ],
+      "source_result_sha256": "5018d515bb20f3d42ab6131eb2687b3b860a03e17bd2319154a413d6146baa87"
+    },
+    {
+      "id": "g4-d1-t02",
+      "user": "我今天打算继续技术词汇。按真实学习记录建议两件小事，遵守我的偏好；没有历史就直说，不直接保存。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_action_log\",\"entities\":{},\"proposed_tool\":\"show_action_log\",\"confidence\":0.78,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"用户要求基于真实学习记录给建议，需要先读取历史行动记录；不直接保存\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2593,
+            "completion_tokens": 107,
+            "total_tokens": 2700,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 161
+          }
+        }
+      ],
+      "source_result_sha256": "3261ef3e58572b2807145d14f0ac69a7d8c3d3b4cebfb189151003455e480878"
+    },
+    {
+      "id": "g2-d5-t02",
+      "user": "昨天的执行留在复盘里了。今天的主题是目录遍历，结合实际完成和用时给我两个可选行动；只展示，等我选。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"daily_review\",\"entities\":{\"date\":\"今天\",\"topic\":\"目录遍历\"},\"proposed_tool\":\"generate_daily_review\",\"confidence\":0.72,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"用户要求仅展示两个可选行动，等待用户选择，不执行写入\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2694,
+            "completion_tokens": 112,
+            "total_tokens": 2806,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 262
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "（轻轻点头）明白，昨天的异常处理复盘先留着，今天不混进来。\n\n今天的情况是：主题是目录遍历，计划里那 1 项“学习”还没完成；计划外你已经给异常处理整理了一张概念卡，用了 20 分钟。结合这个实际用时，给你两个轻量选项：\n\n1. 用虚构文件写一段目录遍历脚本，20 分钟。只跑通“打印出所有文件名”这一件事。\n2. 看目录遍历的示例代码并逐行读懂，20 分钟。读完用自己的话写一句它怎么一层层往下走。\n\n只是展示，你选哪个我再帮你细化。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1796,
+            "completion_tokens": 136,
+            "total_tokens": 1932,
+            "prompt_cache_hit_tokens": 1152,
+            "prompt_cache_miss_tokens": 644
+          }
+        }
+      ],
+      "source_result_sha256": "1dd95bd4fa916e916a860bb6883d02291393fb440ce64529fd52581f0487c8df"
+    },
+    {
+      "id": "g3-d1-t02",
+      "user": "帮我为今天的训练与测试列两个可执行候选。请检查已有目标、昨日完成情况和计划外行动，不把未记录的用时编出来。",
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"read\",\"intent\":\"show_plan\",\"entities\":{\"date\":\"today\"},\"proposed_tool\":\"show_plan\",\"confidence\":0.78,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"用户要求基于已有目标、昨日完成情况和计划外行动生成候选，可能需要多次读取；当前仅选择最直接的今日计划读取\",\"不得编造未记录的用时\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2591,
+            "completion_tokens": 123,
+            "total_tokens": 2714,
+            "prompt_cache_hit_tokens": 2432,
+            "prompt_cache_miss_tokens": 159
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "今天没有已有计划，昨日和近期的计划与行动记录也都是空的，所以没有可核对的用时，我不会替你补出数字。按你“一次只学一个概念”的目标，两个候选可以这样安排：\n\n1. 只复习一个机器学习概念，20分钟。选一个你最近卡住的概念，用自己的话写出它的定义和一个例子。\n2. 做一道与这个概念对应的小练习或小测试，15分钟。做完后只核对这一题，把错误原因写下来。\n\n这两个都还只是候选，没有加入今天的计划。你想选一个，还是两个都加？",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2487,
+            "completion_tokens": 124,
+            "total_tokens": 2611,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 183
+          }
+        }
+      ],
+      "source_result_sha256": "77038b0aff6b04359aeb16087c4423aa25ce9a7a0810eefae003f6fda4e2d0a3"
+    }
+  ]
+}

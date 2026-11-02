@@ -1,0 +1,11 @@
+{
+  "assets": [
+    {
+      "file": "roxy_growth.png",
+      "source_archive": "RoxyPlan_UI%E8%A7%86%E8%A7%89%E7%B4%A0%E6%9D%90%E5%8C%85_V1.zip",
+      "source_entry": "RoxyPlan_UI视觉素材包_V1/01_角色素材/02_今日成长_右上角半身.png",
+      "sha256": "62c33e29e1d0668eafe5be51e0e1ec2cac191f60964d2ee64043e4918f48e8d2",
+      "usage": "详细成长面板标题旁的小型等比装饰"
+    }
+  ]
+}

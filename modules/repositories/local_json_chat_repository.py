@@ -26,15 +26,18 @@ class LocalJsonChatRepository(ChatRepository):
     def history_exists(self) -> bool:
         return self.history_file.exists()
 
-    def load_sessions(self) -> List[Dict[str, object]]:
+    def load_sessions(self, *, strict: bool = False) -> List[Dict[str, object]]:
         document = load_json_document(
             self.history_file,
             {"version": 1, "sessions": []},
             label="ChatHistory",
             lock_dir=self.lock_dir,
             backup_dir=self.backup_dir,
+            strict=strict,
         )
-        sessions = document.get("sessions", [])
+        sessions = document.get("sessions") if strict else document.get("sessions", [])
+        if strict and not isinstance(sessions, list):
+            raise ValueError("Invalid chat sessions")
         return deepcopy(sessions) if isinstance(sessions, list) else []
 
     def save_sessions(self, sessions: List[Dict[str, object]]) -> bool:

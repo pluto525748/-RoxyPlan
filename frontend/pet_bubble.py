@@ -1,7 +1,28 @@
 from __future__ import annotations
 
+from string import Template
+
 from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+from frontend.settings_dialog import SETTINGS_COLORS
+
+
+# 气泡与已验收的窗口界面共用同一套配色，避免桌面文字框自成一种风格。
+# 卡片白保持轻微透明，圆角外的桌面内容仍然可见。
+BUBBLE_QSS = Template(
+    """
+QLabel {
+    background: rgba(255, 255, 255, 246);
+    color: $text;
+    border: 1px solid $accent_border;
+    border-radius: 14px;
+    padding: 10px 14px;
+    font-family: 'Microsoft YaHei';
+    font-size: 13px;
+}
+    """
+).substitute(SETTINGS_COLORS)
 
 
 class PetBubble(QWidget):
@@ -25,21 +46,13 @@ class PetBubble(QWidget):
         self.label = QLabel()
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.label.setStyleSheet(
-            """
-            QLabel {
-                background: rgba(252, 254, 255, 238);
-                color: #263142;
-                border: 2px solid #7bb7d8;
-                border-radius: 12px;
-                padding: 9px 12px;
-                font-size: 13px;
-                line-height: 1.35;
-            }
-            """
-        )
-        self.label.setMinimumWidth(150)
-        self.label.setMaximumWidth(240)
+        self.label.setStyleSheet(BUBBLE_QSS)
+        # 这两条是气泡宽度的真实上下限；每一次排版都从这里重新算，
+        # 不能读回 label 当前的限制，否则上一条消息会把下一条挤成同样宽度。
+        self.minimum_bubble_width = 150
+        self.maximum_bubble_width = 240
+        self.label.setMinimumWidth(self.minimum_bubble_width)
+        self.label.setMaximumWidth(self.maximum_bubble_width)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -47,11 +60,27 @@ class PetBubble(QWidget):
 
     def show_message(self, text: str, pet_rect: QRect, duration_ms: int = 6000) -> None:
         self.label.setText(text)
-        self.adjustSize()
+        self._fit_to_text()
         self._move_near_pet(pet_rect)
         self.show()
         self.raise_()
         self._hide_timer.start(duration_ms)
+
+    def _fit_to_text(self) -> None:
+        """Hug the text up to the width limit, then let it wrap.
+
+        Without this the wrapped label falls back to its minimum width and a
+        long tip becomes a narrow column of five lines next to the pet.
+        """
+        self.label.ensurePolished()
+        margins = self.label.contentsMargins()
+        chrome = margins.left() + margins.right()
+        text_width = self.label.fontMetrics().horizontalAdvance(self.label.text())
+        width = text_width + chrome
+        width = max(self.minimum_bubble_width, min(self.maximum_bubble_width, width))
+        self.label.setMinimumWidth(width)
+        self.label.setMaximumWidth(width)
+        self.adjustSize()
 
     def _move_near_pet(self, pet_rect: QRect) -> None:
         screen = QApplication.screenAt(pet_rect.center()) or QApplication.primaryScreen()

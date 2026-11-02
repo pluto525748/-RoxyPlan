@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -29,7 +30,12 @@ def make_pet(root: Path, monkeypatch):
         "ChatHistoryManager",
         lambda **_kwargs: history,
     )
-    pet = DesktopPet()
+    config_file = root / "pet_config.json"
+    config_file.write_text(json.dumps({
+        "test_mode": False, "pet_position": "custom", "auto_tips_enabled": False,
+        "auto_complete_yesterday_review": False, "proactive_enabled": False,
+    }), encoding="utf-8")
+    pet = DesktopPet(config_file=config_file, tips_file=root / "pet_tips.json")
     pet.show_bubble = lambda *args, **kwargs: None
     return app, pet
 
@@ -70,9 +76,11 @@ def test_dance_frames_restore_idle(tmp_path, monkeypatch):
             assert pixmap.save(str(frame_dir / f"dance_{index}.png"))
 
         desktop_pet.DANCE_FRAMES_DIR = frame_dir
+        monkeypatch.setattr(pet, "dance_frames_dir", frame_dir)
         try:
             assert pet.action_manager.play_action("dance") is True
             assert pet.action_manager.current_state == "dancing"
+            assert len(pet._dance_frames) == 3
 
             QTimer.singleShot(1300, app.quit)
             app.exec()
@@ -87,17 +95,11 @@ def test_dance_frames_restore_idle(tmp_path, monkeypatch):
 def test_context_menu_has_only_user_facing_entries(tmp_path, monkeypatch):
     app, pet = make_pet(tmp_path, monkeypatch)
     menu, _actions = pet._create_context_menu()
-    labels = [action.text() for action in menu.actions() if not action.isSeparator()]
+    labels = [action.text() for action in menu.actions()]
 
     assert labels == [
         "打开聊天",
-        "成长面板",
-        "记忆管理",
-        "设置",
-        "跳舞一下",
-        "立即鼓励我",
-        "进入睡眠",
         "唤醒",
-        "退出 Roxy",
+        "睡眠",
     ]
     app.processEvents()

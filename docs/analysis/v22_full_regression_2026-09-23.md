@@ -26,16 +26,16 @@
 
 | 分层 | 结果 | 证据文件 |
 | --- | --- | --- |
-| production | 1218 passed, 6 failed, 1 skipped, 243 deselected | `C:\Users\16127\AppData\Local\Temp\roxy-full-production-20260923.xml` |
-| compatibility | 148 passed, 3 failed, 1317 deselected | `C:\Users\16127\AppData\Local\Temp\roxy-full-compatibility-20260923.xml` |
-| historical | 78 passed, 14 failed, 1376 deselected | `C:\Users\16127\AppData\Local\Temp\roxy-full-historical-20260923.xml` |
+| production | 1218 passed, 6 failed, 1 skipped, 243 deselected | `<USER_HOME>\AppData\Local\Temp\roxy-full-production-20260923.xml` |
+| compatibility | 148 passed, 3 failed, 1317 deselected | `<USER_HOME>\AppData\Local\Temp\roxy-full-compatibility-20260923.xml` |
+| historical | 78 passed, 14 failed, 1376 deselected | `<USER_HOME>\AppData\Local\Temp\roxy-full-historical-20260923.xml` |
 
 production 不是全绿，不能沿用旧证据声称当前工作树已经通过全量回归。historical 的旧冻结失败单独保留，不与当前生产失败混算。
 
 ### 真实 DeepSeek 链
 
-- 首轮：44 个连续回合，报告 `C:\Users\16127\AppData\Local\Temp\RoxyPlan-full-regression-20260923-154905\full_chain_results.json`。
-- 定向复核：18 个回合，报告 `C:\Users\16127\AppData\Local\Temp\RoxyPlan-full-recheck-20260923-155244\recheck_results.json`。
+- 首轮：44 个连续回合，报告 `<USER_HOME>\AppData\Local\Temp\RoxyPlan-full-regression-20260923-154905\full_chain_results.json`。
+- 定向复核：18 个回合，报告 `<USER_HOME>\AppData\Local\Temp\RoxyPlan-full-recheck-20260923-155244\recheck_results.json`。
 - 两轮都由真实 `AgentService`、当前 `deepseek/deepseek-flash`、正式计划／行动／成长／记忆／历史存储组成，不是只调用下游工具的模拟。
 - 首轮记录器错误读取了不存在的 `ToolResult.changed_resource_ids` 属性，导致 23 个实际成功的工具回合被报告脚本记成 `AttributeError`。这属于测试记录器缺陷；工具结果、开发日志和最终数据仍可核验，第二轮已用正确字段复核关键路径。
 

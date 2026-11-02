@@ -144,7 +144,7 @@ IntentRouter
 主要测试入口：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_chinese_context_matrix.py -q --basetemp C:\Users\Public\RoxyPlan-chinese-matrix
+.\.venv\Scripts\python.exe -m pytest tests\test_chinese_context_matrix.py -q --basetemp <USER_HOME>\RoxyPlan-chinese-matrix
 ```
 
 V2.2 封版收口的专项入口还包括 `tests/test_v22_release_closure.py`、`tests/test_v22_growth_closure.py`、`tests/test_contract_taxonomy.py` 与既有安全边界测试。完整回归按 `tests/contract_taxonomy.py` 分开运行 production、compatibility 和 historical；unfiltered 只是可选汇总，不能替代分轨报告。矩阵或专项通过也不能替代既有记忆、计划、状态、人格、ContextBuilder 和 Local Web 自动测试；桌面 UI 属于用户按需触发的独立验收，未实际执行时不得写成通过。
@@ -177,7 +177,7 @@ V2.2 封版收口的专项入口还包括 `tests/test_v22_release_closure.py`、
 历史复现实例（只在用户明确要求复现该历史 provider 时使用）：
 
 ```powershell
-$env:DEEPSEEK_API_KEY = "仅在当前终端设置"
+$env:DEEPSEEK_API_KEY = "<KEY>"
 .\.venv\Scripts\python.exe scripts\run_online_chinese_semantic_acceptance.py
 ```
 
@@ -202,7 +202,7 @@ Pro 改进：write_004 中文编码问题从 Flash 0/3 修复到 Pro 2/3。
 共同持续失败（4 cases，均为模型端）：multi_001（多意图分解）、read_010（意图粒度）、read_015（方言实体推断）、write_019（category 缺失）。
 
 零误触发：所有 chat 案例均未触发工具。
-报告位置：`C:\Users\16127\Projects\Roxyplan-test-runs\online-chinese-semantic-acceptance-20260804-12*.json`（Flash）和 `…-13*.json`（Pro）。
+报告位置：`<USER_HOME>\Projects\Roxyplan-test-runs\online-chinese-semantic-acceptance-20260804-12*.json`（Flash）和 `…-13*.json`（Pro）。
 
 ## 诊断日志
 

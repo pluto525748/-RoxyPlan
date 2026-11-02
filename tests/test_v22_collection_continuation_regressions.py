@@ -90,6 +90,20 @@ class RefinementPlanChatLLM(NumberedPlanChatLLM):
         )
 
 
+class OneRevisionPlanChatLLM(NumberedPlanChatLLM):
+    def __init__(self):
+        self.advice_calls = 0
+
+    def chat(self, messages):
+        prompt = str(messages[0].get("content", "")) if messages else ""
+        if "You classify one Chinese user message" in prompt:
+            return super().chat(messages)
+        self.advice_calls += 1
+        if self.advice_calls == 1:
+            return "1. 上午学习机器学习\n2. 下午学习 agent 课程"
+        return "1. 上午学习机器学习并做笔记\n2. 下午学习 agent 课程并做练习"
+
+
 class MisreadPlanSuggestionLLM(NumberedPlanChatLLM):
     """Reproduce the real provider mistake observed in desktop acceptance."""
 
@@ -324,13 +338,16 @@ def test_polite_question_in_live_selection_repeats_full_verified_list(tmp_path):
     assert len(state.last_suggestion_snapshot["objects"]) == 4
 
 
-def test_semantic_all_completion_binds_recent_read_and_confirms_once(tmp_path):
+@pytest.mark.parametrize("message", [
+    "我都完成了", "我全都完成了", "我全部做完了", "都完成了", "全部完成了",
+])
+def test_semantic_all_completion_binds_recent_read_and_confirms_once(tmp_path, message):
     service, growth, _memory, _history = _production_service(tmp_path, "complete_plan")
     targets = [growth.add_task(title) for title in ("核对目录", "整理说明", "检查依赖")]
     conversation_id = "collection-completion"
     service.handle("查看今天计划", conversation_id)
 
-    preview = service.handle("我都完成了", conversation_id)
+    preview = service.handle(message, conversation_id)
 
     assert preview.status == "clarification"
     assert all(item["title"] in preview.message for item in targets)
@@ -629,11 +646,14 @@ def test_plan_suggestion_prompt_requires_program_compatible_numbered_candidates(
         for item in messages
         if str(item.get("role", "")) == "system"
     )
-    assert "必须先直接给出二至四项单层编号候选" in system_text
+    assert "直接给出单层编号候选" in system_text
+    assert "数量由用户的明确要求和实际事项决定" in system_text
     assert "不要只用澄清问题作答" in system_text
     assert "用户信息已经足够时，不要强行追问" in system_text
     assert "不要复读固定模板" in system_text
     assert "不要把补充当成执行前置条件" in system_text
+    assert "请把学习强度、时间和不安排的时段等条件一次说完整" in system_text
+    assert "只支持重新调整一次" in system_text
     assert "不代表已经加入今日计划" in system_text
 
 
@@ -677,6 +697,104 @@ def test_answer_to_assistant_suggestion_question_refines_without_writing(tmp_pat
         "复习一个机器学习概念并写三句解释",
         "运行一个最小训练示例并观察一个参数",
         "整理一个机器学习疑问",
+    ]
+
+
+@pytest.mark.parametrize(
+    "second_change",
+    ["晚上不安排学习", "强度再低一点", "十一点后再开始"],
+)
+def test_second_suggestion_revision_stops_and_cannot_add_stale_options(
+    tmp_path, second_change,
+):
+    llm = OneRevisionPlanChatLLM()
+    service, growth, _memory, _history = build_service(tmp_path, llm)
+    runtime = service.conversation_service
+    conversation_id = "one-revision-boundary"
+
+    first = service.handle("帮我安排一下今天的学习计划", conversation_id)
+    assert "上午学习机器学习" in first.message
+    revised = service.handle("把学习强度拉高", conversation_id)
+    assert "上午学习机器学习并做笔记" in revised.message
+    assert llm.advice_calls == 2
+    before_second = runtime.interaction_coordinator.current(conversation_id)
+    assert before_second.interaction_kind == "assistant_plan_selection"
+    assert before_second.known_fields["suggestion_refinement_used"] is True
+    assert runtime._suggestion_refinement_follow_up(
+        second_change, before_second, after_refinement=True,
+    )
+
+    exceeded = service.handle(second_change, conversation_id)
+    assert "已经调整过一次" in exceeded.message
+    assert "重新" in exceeded.message
+    assert exceeded.tool_results == []
+    assert llm.advice_calls == 2
+    assert runtime._recent_suggestion_snapshot(conversation_id) is None
+
+    stale_add = service.handle("全部加入", conversation_id)
+    assert stale_add.tool_results == []
+    assert growth.tasks() == []
+
+
+def test_one_revision_batch_uses_revised_list_despite_old_overdue_topic(tmp_path):
+    llm = OneRevisionPlanChatLLM()
+    service, growth, _memory, _history = build_service(tmp_path, llm)
+    conversation_id = "one-revision-batch"
+    yesterday = (datetime.now().date() - timedelta(days=1)).isoformat()
+    overdue = growth.add_task("机器学习", date=yesterday)
+
+    service.handle("帮我安排一下今天的学习计划", conversation_id)
+    revised = service.handle("把学习强度拉高", conversation_id)
+    added = service.handle("全部加入", conversation_id)
+
+    assert "上午学习机器学习并做笔记" in revised.message
+    assert [result.tool for result in added.tool_results] == ["add_plan", "add_plan"]
+    assert all(result.success for result in added.tool_results)
+    assert [task["title"] for task in growth.tasks()] == [
+        "上午学习机器学习并做笔记",
+        "下午学习 agent 课程并做练习",
+    ]
+    assert growth.tasks(yesterday)[0]["uid"] == overdue["uid"]
+
+
+def test_asking_to_list_plan_advice_does_not_read_existing_plans(tmp_path):
+    service, growth, _memory, _history = build_service(
+        tmp_path, NumberedPlanChatLLM(),
+    )
+    advice = service.handle(
+        "我今天要进入学习状态，机器学习和 agent 课程都想推进，请先列出计划建议。",
+        "list-advice-not-read",
+    )
+
+    assert advice.tool_results == []
+    assert "阅读一个课程章节" in advice.message
+    assert service.conversation_service._recent_suggestion_snapshot(
+        "list-advice-not-read"
+    ) is not None
+    assert growth.tasks() == []
+
+
+def test_explicit_fresh_advice_after_revision_limit_can_add_new_list(tmp_path):
+    llm = OneRevisionPlanChatLLM()
+    service, growth, _memory, _history = build_service(tmp_path, llm)
+    conversation_id = "fresh-after-revision-limit"
+
+    service.handle("帮我安排一下今天的学习计划", conversation_id)
+    service.handle("把学习强度拉高", conversation_id)
+    service.handle("晚上不安排学习", conversation_id)
+    fresh = service.handle(
+        "请重新给我今天的学习计划建议：强度高，晚上不安排学习",
+        conversation_id,
+    )
+    assert "上午学习机器学习并做笔记" in fresh.message
+    assert llm.advice_calls == 3
+
+    added = service.handle("全部加入", conversation_id)
+    assert [result.tool for result in added.tool_results] == ["add_plan", "add_plan"]
+    assert all(result.success for result in added.tool_results)
+    assert [task["title"] for task in growth.tasks()] == [
+        "上午学习机器学习并做笔记",
+        "下午学习 agent 课程并做练习",
     ]
 
 

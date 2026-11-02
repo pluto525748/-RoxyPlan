@@ -24,6 +24,12 @@ class PetActionManager(QObject):
         self._failsafe_timer = QTimer(self)
         self._failsafe_timer.setSingleShot(True)
         self._failsafe_timer.timeout.connect(self._failsafe_release)
+        self._transient_timer = QTimer(self)
+        self._transient_timer.setSingleShot(True)
+        self._transient_timer.timeout.connect(self._finish_transient)
+        self._transient_restore_idle = False
+        self._timer_pauses: set[str] = set()
+        self._paused_timers = []
 
     def set_state(self, name: str) -> bool:
         if name not in VALID_STATES:
@@ -41,8 +47,12 @@ class PetActionManager(QObject):
         return False
 
     def restore_idle(self) -> None:
+        self._transient_timer.stop()
         if self._failsafe_timer.isActive():
             self._failsafe_timer.stop()
+        # End the action's timer ownership, including timers suspended by a
+        # gesture/reply. Keep those pause reasons until their real lifecycle ends.
+        self._paused_timers = []
         self.set_state("idle")
         self.is_animating = False
         self.last_reason = "completed"
@@ -57,23 +67,34 @@ class PetActionManager(QObject):
             raise ValueError(f"Unknown pet action: {name}")
         print(f"[ACTION_MANAGER] play: {name}", flush=True)
 
-        if name == "dance" and self.current_state == "dancing":
-            self.last_reason = "busy"
-            print("[ACTION_MANAGER] blocked: dance already running", flush=True)
-            return False, "busy"
-
-        if name in {"study_reminder", "scale"} and self.current_state == "dancing":
-            print("[ACTION_MANAGER] blocked: study reminder during dancing", flush=True)
+        if self._timer_pauses:
             self.last_reason = "busy"
             return False, "busy"
 
-        if name in {"jump", "shake", "scale", "study_reminder", "dance"} and self.current_state == "sleeping":
+        if name == "sleep" and self.current_state == "sleeping":
+            return self._accepted()
+
+        if name == "study_reminder" and self.current_state == "sleeping":
+            self.last_reason = "sleeping"
+            return False, "sleeping"
+
+        if name not in {"sleep", "wake"} and self.current_state == "dancing":
+            self.last_reason = "busy"
+            print("[ACTION_MANAGER] blocked: action during dancing", flush=True)
+            return False, "busy"
+
+        if name == "nod" and (self.is_animating or self.current_state == "sleeping"):
+            # Message bubbles must not replace the owning action's timer.
+            self.last_reason = "busy"
+            return False, "busy"
+
+        if name in {"jump", "shake", "scale", "dance"} and self.current_state == "sleeping":
             self.play_action("wake")
             self.last_reason = "sleeping"
             return False, "sleeping"
 
         if name == "jump":
-            self._mark_transient(450)
+            self._mark_transient(self._visual_duration("jumping", 450))
             self.pet.set_state("happy", from_manager=True)
             return self._accepted()
         if name == "nod":
@@ -81,24 +102,37 @@ class PetActionManager(QObject):
             self.pet.actions.speaking_nod()
             return self._accepted()
         if name == "shake":
-            self._mark_transient(520)
+            self._mark_transient(self._visual_duration("waiting", 520))
             self.pet.actions.thinking()
             return self._accepted()
         if name in {"scale", "study_reminder"}:
             self.set_state("reminding")
-            self._mark_transient(520, restore_idle=True)
-            self.pet.set_state("study", from_manager=True)
+            duration = self._visual_duration("review", 520) if name == "study_reminder" else 520
+            self._mark_transient(duration, restore_idle=True)
+            if name == "scale":
+                self.pet.actions.study_reminder(sprite=False)
+            else:
+                self.pet.set_state("study", from_manager=True)
             return self._accepted()
         if name == "sleep":
+            if self.current_state == "dancing":
+                self.pet._stop_dance_frames()
+            self._transient_timer.stop()
             self.set_state("sleeping")
             self.pet.set_state("sleep", from_manager=True)
             return self._accepted()
         if name == "wake":
+            if self.current_state == "dancing":
+                self.pet._stop_dance_frames()
             self.pet.wake(from_manager=True)
             self.restore_idle()
+            present = getattr(self.pet, "present_wake_animation", None)
+            if present is not None:
+                present()
             return self._accepted()
         if name == "dance":
             try:
+                self._transient_timer.stop()
                 started = self.pet._start_dance_frames()
                 if not started:
                     self.restore_idle()
@@ -146,11 +180,48 @@ class PetActionManager(QObject):
 
     def _mark_transient(self, duration_ms: int, restore_idle: bool = False) -> None:
         self.is_animating = True
-        if restore_idle:
-            QTimer.singleShot(duration_ms, self.restore_idle)
+        self._transient_restore_idle = restore_idle
+        self._transient_timer.start(duration_ms)
+
+    def _visual_duration(self, name: str, fallback: int) -> int:
+        duration = getattr(self.pet, "sprite_action_duration", None)
+        return max(fallback, duration(name)) if duration is not None else fallback
+
+    def _finish_transient(self) -> None:
+        if self._transient_restore_idle:
+            self.restore_idle()
         else:
-            QTimer.singleShot(duration_ms, self._clear_transient)
+            self._clear_transient()
+
+    def pause_timers(self, reason: str) -> None:
+        if not self._timer_pauses:
+            self._paused_timers = []
+            for timer in (self._transient_timer, self._failsafe_timer):
+                if timer.isActive():
+                    self._paused_timers.append((timer, max(1, timer.remainingTime())))
+                    timer.stop()
+        self._timer_pauses.add(reason)
+
+    def resume_timers(self, reason: str) -> None:
+        self._timer_pauses.discard(reason)
+        if not self._timer_pauses:
+            for timer, remaining in self._paused_timers:
+                if ((timer is self._failsafe_timer and self.current_state == "dancing")
+                        or (timer is self._transient_timer and self.is_animating)):
+                    timer.start(remaining)
+            self._paused_timers = []
+
+    def shutdown(self) -> None:
+        self._timer_pauses.add("closed")
+        self._transient_timer.stop()
+        self._failsafe_timer.stop()
+        self._paused_timers = []
 
     def _clear_transient(self) -> None:
         if self.current_state == "idle":
+            self._transient_timer.stop()
+            self._paused_timers = [
+                (timer, remaining) for timer, remaining in self._paused_timers
+                if timer is not self._transient_timer
+            ]
             self.is_animating = False

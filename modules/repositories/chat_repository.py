@@ -12,7 +12,7 @@ class ChatRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def load_sessions(self) -> List[Dict[str, object]]:
+    def load_sessions(self, *, strict: bool = False) -> List[Dict[str, object]]:
         raise NotImplementedError
 
     @abstractmethod

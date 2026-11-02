@@ -18,6 +18,7 @@ from modules.conversation_service import ConversationService, DEFAULT_CHAT_INSTR
 from modules.business_resolver import BusinessResolver
 from modules.contracts import AgentResponse, ToolResult
 from modules.growth_manager import GrowthManager
+from modules.learning_loop import LearningLoopService
 from modules.feature_flags import validate_feature_flags
 from modules.intent_router import IntentRouter, LLMIntentParser
 from modules.interaction_state_coordinator import InteractionStateCoordinator
@@ -183,6 +184,9 @@ class AgentService:
             max_actions=3,
         )
         self.plan_service = PlanService(self.growth_manager)
+        self.learning_loop_service = LearningLoopService(
+            self.growth_manager, now_provider=self.growth_manager.now_provider,
+        )
         self.business_resolver = BusinessResolver(
             plan_service=self.plan_service,
             memory_service=self.memory_service,
@@ -208,6 +212,7 @@ class AgentService:
             personality_context_provider=self._build_personality_context,
             persona_registry=self.persona_registry,
             context_sections_provider=self._build_context_sections,
+            learning_loop_service=self.learning_loop_service,
             memory_context_provider=self._build_memory_context,
             knowledge_context_provider=self.knowledge_manager.build_context,
             memory_governance=self.memory_governance,
@@ -604,7 +609,10 @@ class AgentService:
 
     def _build_memory_context(self, memories) -> str:
         nickname = self.memory_manager.preferred_name()
-        lines = ["长期记忆：", f"用户昵称：{nickname or '未设置'}"]
+        lines = [
+            "本轮相关长期记忆（检索子集，不代表全库）：",
+            f"独立称呼设置（不代表记忆是否存在）：{nickname or '未设置'}",
+        ]
         contents = [
             (
                 str(item.get("content", "")).strip(),
@@ -627,7 +635,7 @@ class AgentService:
                 for content, scope, location in contents
             )
         else:
-            lines.append("记忆内容：暂无")
+            lines.append("本轮未召回相关记录；不能据此判断正式记忆是否为空。")
         return "\n".join(lines)
 
     def _load_memory_example(self) -> Dict[str, object]:

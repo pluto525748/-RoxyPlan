@@ -1,0 +1,16 @@
+# Windows x64 / Python 3.10.1+ only. Install in a dedicated venv after scheduling.
+# Verified against official PyInstaller 6.22.3 docs and PyPI metadata 2026-10-13.
+# https://pyinstaller.org/en/stable/requirements.html
+# https://pyinstaller.org/en/stable/spec-files.html
+PyInstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+altgraph==0.17.5
+packaging==26.3
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+setuptools==84.0.0
+PySide6==6.4.2
+PySide6-Essentials==6.4.2
+PySide6-Addons==6.4.2
+shiboken6==6.4.2
+Pillow==12.3.0

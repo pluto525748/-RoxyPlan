@@ -7,6 +7,20 @@ from typing import Dict, List, Optional, Tuple
 from modules.chinese_entity_parser import ChineseEntityParser
 
 
+def requests_concrete_advice(text: str) -> bool:
+    """Recognize an explicit request for options, not authorization to write."""
+    for clause in re.split(r"[，。；！？,;!?\n]", re.sub(r"\s+", "", str(text or ""))):
+        if re.search(r"(?:不要|不用|别|先不).{0,8}(?:给|提供|推荐|建议|列)", clause):
+            continue
+        if re.search(
+            r"(?:给(?:我)?|帮我|列出?|想|提供|生成).{0,28}(?:建议|候选|可选行动)"
+            r"|(?:建议|推荐).{0,20}(?:学习|计划|任务|小事|行动)"
+            r"|(?:帮我|给我).{0,12}(?:想|列).{0,24}(?:任务|练习)", clause,
+        ):
+            return True
+    return False
+
+
 @dataclass
 class LocalFeatures:
     normalized_text: str

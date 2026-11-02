@@ -1,0 +1,49 @@
+{
+  "source": "274fae7 seven-day synthetic real-provider first responses; offline replay only",
+  "cases": {
+    "W01": {
+      "case": "python-d1-t04",
+      "source_path": "online-python-first/week-python/turns/python-d1-t04/result.json",
+      "source_sha256": "d256faf20c2f08f3d287755d46eb02ca7fce9e5b65073b5063f7ca5bc465719b",
+      "user": "先把编号1那项加到今天计划。",
+      "raw_contents": [],
+      "final_message": "请从刚才的安排中选择一项，例如说“第一个”“第二个”，或直接说具体事项。",
+      "advice": "近期没有可用的计划执行记录；以下按你本轮明确的条件建议。\n1. 用列表推导式写 3 个带 if 过滤条件的例子，15分钟。先自己想筛选逻辑，再运行看结果是否符合预期。\n\n2. 给其中 1 个例子换一种过滤条件，对比普通 for 循环和列表推导式的写法，10分钟。用小例子验证两种写法结果是否一致。\n\n想练哪个，或者两个都要，选好后告诉我。",
+      "advice_request": "今天想练列表推导式的过滤条件，参考我的目标和学习习惯，给两条今天可做的学习计划建议，分别15和10分钟。只展示，我选了再加。"
+    },
+    "W03": {
+      "case": "ml-d2-t01",
+      "source_path": "online-ml-first/week-ml/turns/ml-d2-t01/result.json",
+      "source_sha256": "b939e82fee7498a8c8f862962b3ad8865c4a7ce555d80b470991021279ef61fd",
+      "user": "把昨天保存的复盘给我看看，区分完成任务和真正学会。",
+      "raw_contents": [
+        "{\"mode\":\"read\",\"intent\":\"save_review\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.55,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[\"请求查看昨天保存的复盘，但可用工具中没有读取已保存复盘的接口；save_review 是写入类工具，与“给我看看”的读取意图不符\"],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"question\",\"request_mode\":\"query\",\"explicit_command\":false}",
+        "我这边没有查到可展示的昨日复盘记录，所以现在没法把“完成任务”和“真正学会”分开列给你看。也不排除是复盘没有保存成功，或者保存的位置和现在读取的不是同一处。\n\n如果你愿意，可以先告诉我昨天复盘里大致写了哪几件事，我陪你按“完成了什么”和“能讲清、能独立做出来什么”两栏一起梳理。"
+      ],
+      "final_message": "我刚才的表达不够准确。我们可以继续聊聊你真正想推进的内容。"
+    },
+    "W04": {
+      "case": "ml-d2-t03",
+      "source_path": "online-ml-first/week-ml/turns/ml-d2-t03/result.json",
+      "source_sha256": "25276beb452745995db93e1deeae956cee9e4bafdd7c272ca3a83a55884e7e66",
+      "user": "今天只有20分钟，想学过拟合。结合已保存目标和前几天实际记录，帮我想两项今天的学习计划，第一项12分钟，第二项8分钟。先给建议，不保存。",
+      "raw_contents": [
+        "{\"mode\":\"chat\",\"intent\":\"chat\",\"entities\":{},\"proposed_tool\":null,\"confidence\":0.9,\"follow_up_target\":null,\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":null,\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"desire\",\"request_mode\":\"advice\",\"explicit_command\":false}",
+        "昨天你完成了训练集和测试集的区别理解，还整理了概念卡，实际用了12分钟；另一项“说出各用在哪一步”还留着没做。今天只有20分钟，我按这个真实节奏给你两项，不保存：\n\n1. 用直观例子理解过拟合，12分钟。想象一个学生把练习册的答案全背下来，考试一换题就不会了——这就是过拟合：记住了训练数据，却没学会规律。先只体会这个画面，不急着记定义。\n\n2. 用一句话说出“过拟合为什么说明训练集表现好不等于真会了”，8分钟。可以接着昨天的训练集、测试集来想，把两件事连起来。\n\n第二项和昨天未完成的那项思路相近，如果你想，也可以把昨天那项拆到今天，替换第二项。选好告诉我，我再帮你加入计划。"
+      ],
+      "final_message": "我刚才的表达不够准确。我们可以继续聊聊你真正想推进的内容。"
+    },
+    "W01_followup": {
+      "case": "W01-v3-r1-second",
+      "source_path": "seven-day-priority-fix-20261027/online-first/W01-v3-r1/turns/W01-v3-r1-second/result.json",
+      "source_sha256": "1d0da68d112c9c9bfead2959009b71cdd384080074631124254cb8f9208cf154",
+      "user": "编号二那项也加入今天计划。",
+      "advice_request": "给我两项今天的Python学习计划建议，第一项12分钟、第二项8分钟。先只展示，不要加入。",
+      "advice": "好的，先只展示，不加入计划。\n\n今天和最近几天都没有可用的 Python 学习记录，所以我不假设你之前学到哪里，这两项按轻量起步来安排：\n\n1. 用 12 分钟复习一个 Python 基础概念，比如变量与数据类型，边看边在解释器里各敲一遍。备注：重点确认自己能否不看资料说出区别。\n2. 用 8 分钟写一小段代码，把两个变量做简单运算并打印结果。备注：只求跑通，不追求写得多。\n\n两项合起来 20 分钟，适合先找回手感。你看这样是否合适，或者想换成别的知识点？",
+      "raw_contents": [
+        "{\"mode\":\"write\",\"intent\":\"add_plan\",\"entities\":{\"title\":\"用 8 分钟写一小段代码，把两个变量做简单运算并打印结果。备注：只求跑通，不追求写得多。\",\"date\":\"今天\"},\"proposed_tool\":\"add_plan\",\"confidence\":0.95,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}"
+      ],
+      "final_message": "好，我帮你把“用写一小段代码，把两个变量做简单运算并打印结果。备注”加入今天计划了。"
+    }
+  }
+}

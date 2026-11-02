@@ -11,6 +11,7 @@ from modules.contracts import ToolResult
 from modules.capability_registry import DEFAULT_CAPABILITY_REGISTRY
 from modules.intent_router import match_plan_task
 from modules.memory_service import MemoryOperationResult, MemoryService
+from modules.growth_manager import GrowthManager
 from modules.plan_service import PlanService
 
 
@@ -386,14 +387,21 @@ def create_roxy_tool_registry(
         date: str = "",
         time_slot: str = "",
         duration_minutes: Optional[int] = None,
+        note: str = "",
     ):
+        if str(date).strip() and not isinstance(growth_manager, GrowthManager) and str(date).strip() != growth_manager.now_provider().date().isoformat():
+            return result(
+                "add_plan", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期添加计划，本次没有写入。",
+            )
         normalize_title = getattr(plan_store, "_normalize_title", None)
         if not callable(normalize_title):
             normalize_title = lambda value: str(value or "").strip().casefold()
         target_title = normalize_title(title)
         exact = [
             dict(item)
-            for item in task_list()
+            for item in task_list(date)
             if isinstance(item, dict)
             and normalize_title(item.get("title", "")) == target_title
         ]
@@ -413,6 +421,8 @@ def create_roxy_tool_registry(
             fields["time_slot"] = str(time_slot).strip()
         if duration_minutes is not None:
             fields["duration_minutes"] = int(duration_minutes)
+        if str(note).strip():
+            fields["note"] = str(note).strip()
         try:
             task = plan_store.add_task(title, **fields)
         except TypeError:
@@ -431,7 +441,7 @@ def create_roxy_tool_registry(
                 and item.get("id") == task_id
                 and item.get("title") == task_title
             )
-            for item in task_list()
+            for item in task_list(date)
             if isinstance(item, dict)
         )
         return result(
@@ -450,6 +460,12 @@ def create_roxy_tool_registry(
 
     def show_plan(date: str = ""):
         clean_date = str(date).strip()
+        if clean_date and not isinstance(growth_manager, GrowthManager) and clean_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "show_plan", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期查看计划。",
+            )
         data = {"tasks": task_list(clean_date)}
         if clean_date:
             data["date"] = clean_date
@@ -462,6 +478,12 @@ def create_roxy_tool_registry(
 
     def inspect_plan_duplicates(date: str = ""):
         clean_date = str(date).strip()
+        if clean_date and not isinstance(growth_manager, GrowthManager) and clean_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "inspect_plan_duplicates", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期检查计划。",
+            )
         groups = plan_service.find_duplicate_groups(date=clean_date or None)
         return result(
             "inspect_plan_duplicates",
@@ -737,8 +759,18 @@ def create_roxy_tool_registry(
             None if task else "not_found",
         )
 
-    def add_action_log(content: str):
-        record = action_store.add_record(content, source="chat")
+    def add_action_log(content: str, duration_minutes: Optional[int] = None, date: str = ""):
+        kwargs = {"duration_minutes": duration_minutes} if duration_minutes is not None else {}
+        selected_date = str(date).strip()
+        if selected_date and isinstance(growth_manager, GrowthManager):
+            kwargs["date"] = selected_date
+        elif selected_date and selected_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "add_action_log", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期记录这条行动，本次没有写入。",
+            )
+        record = action_store.add_record(content, source="chat", **kwargs)
         return result(
             "add_action_log",
             True,
@@ -746,29 +778,66 @@ def create_roxy_tool_registry(
             {"record": record},
         )
 
-    def show_action_log():
+    def show_action_log(date: str = ""):
+        selected_date = str(date).strip()
+        if selected_date and not isinstance(growth_manager, GrowthManager) and selected_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "show_action_log", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期读取行动记录。",
+            )
         return result(
             "show_action_log",
             True,
             "listed",
-            {"records": action_store.records_for_date()},
+            {"records": action_store.records_for_date(selected_date or None)
+             if isinstance(growth_manager, GrowthManager)
+             else action_store.records_for_date(),
+             **({"date": selected_date} if selected_date else {})},
         )
 
-    def generate_daily_review():
-        review = growth_manager.generate_review()
+    def generate_daily_review(date: str = ""):
+        selected_date = str(date).strip()
+        if selected_date and not isinstance(growth_manager, GrowthManager) and selected_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "generate_daily_review", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期生成复盘，本次没有写入。",
+            )
+        review = (
+            growth_manager.generate_review(selected_date)
+            if selected_date and isinstance(growth_manager, GrowthManager)
+            else growth_manager.generate_review()
+        )
         return result("generate_daily_review", True, "generated", {"review": review})
 
     def save_daily_review(date: str = ""):
         selected_date = str(date).strip()
+        if selected_date and not isinstance(growth_manager, GrowthManager) and selected_date != growth_manager.now_provider().date().isoformat():
+            return result(
+                "save_daily_review", False, "unsupported_date",
+                error="request_date_changed",
+                display_message="当前服务不能按请求日期保存复盘，本次没有写入。",
+            )
         # Legacy GrowthService accepts no date argument; the V2.2 manager adds
         # an optional date for explicit manual regeneration. Keep both desktop
         # composition roots compatible without weakening the new path.
         entry = (
             growth_manager.save_today_review(selected_date)
-            if selected_date
+            if selected_date and isinstance(growth_manager, GrowthManager)
             else growth_manager.save_today_review()
         )
-        return result("save_daily_review", True, "saved", {"entry": entry})
+        evidence = {"entry": entry}
+        if isinstance(growth_manager, GrowthManager):
+            saved = next(
+                (item for item in growth_manager.entries(strict_read=True)
+                 if item.get("date") == entry.get("date")),
+                None,
+            )
+            if saved != entry:
+                raise OSError("Review save verification failed")
+            evidence["postcondition_verified"] = True
+        return result("save_daily_review", True, "saved", evidence)
 
     def show_growth_log(month: str = ""):
         selected_month = str(month).strip()
@@ -1084,13 +1153,15 @@ def create_roxy_tool_registry(
                 if str(item.get("session_id", "")) != current_conversation_id
             ]
         if exclude_today:
-            today = chat_history_manager.now_provider().date().isoformat()
+            today = growth_manager.now_provider().date().isoformat()
             sessions = [
                 item
                 for item in sessions
-                if not str(
-                    item.get("updated_at") or item.get("started_at") or ""
-                ).startswith(today)
+                if not (
+                    str(item.get("business_date") or "") == today
+                    if str(item.get("session_kind") or "") == "daily_learning"
+                    else str(item.get("updated_at") or item.get("started_at") or "").startswith(today)
+                )
             ]
         bounded_limit = max(1, min(int(limit), 10))
         clean_query = str(query or "").strip()
@@ -1121,8 +1192,10 @@ def create_roxy_tool_registry(
                     or session.get("started_at")
                     or ""
                 )
-                if exclude_today and source_time.startswith(
-                    chat_history_manager.now_provider().date().isoformat()
+                if exclude_today and (
+                    str(session.get("business_date") or "") == growth_manager.now_provider().date().isoformat()
+                    if str(session.get("session_kind") or "") == "daily_learning"
+                    else source_time.startswith(growth_manager.now_provider().date().isoformat())
                 ):
                     continue
                 summary_text = str(summary.get("summary", "")).strip()
@@ -1132,7 +1205,11 @@ def create_roxy_tool_registry(
                     {
                         "session_id": session_id,
                         "title": session.get("title", "新对话"),
-                        "source_date": source_time[:10],
+                        "source_date": (
+                            str(session.get("business_date"))
+                            if str(session.get("session_kind") or "") == "daily_learning"
+                            and session.get("business_date") else source_time[:10]
+                        ),
                         "source": "local_conversation_summary",
                         "summary": summary_text,
                         "snippet": summary_text[:180].rstrip(),
@@ -1166,7 +1243,11 @@ def create_roxy_tool_registry(
                     {
                         "session_id": session_id,
                         "title": session.get("title", "新对话"),
-                        "source_date": source_time[:10],
+                        "source_date": (
+                            str(session.get("business_date"))
+                            if str(session.get("session_kind") or "") == "daily_learning"
+                            and session.get("business_date") else source_time[:10]
+                        ),
                         "source": (
                             "local_conversation_summary"
                             if summary_text
@@ -1257,6 +1338,7 @@ def create_roxy_tool_registry(
                 "date": {"type": "string", "required": False, "maxLength": 10},
                 "time_slot": {"type": "string", "required": False, "enum": ["上午", "中午", "下午", "晚上"]},
                 "duration_minutes": {"type": "integer", "required": False, "minimum": 1, "maximum": 1440},
+                "note": {"type": "string", "required": False, "maxLength": 2000},
             },
             add_plan,
             confirmation_summary=lambda arguments: (
@@ -1337,7 +1419,9 @@ def create_roxy_tool_registry(
             "add_action_log",
             "记录用户已经真实完成或推进的事情；没有匹配计划的新完成事项优先使用此工具",
             "medium",
-            {"content": {"type": "string", "required": True}},
+            {"content": {"type": "string", "required": True},
+             "duration_minutes": {"type": "integer", "required": False, "minimum": 1, "maximum": 1440},
+             "date": {"type": "string", "required": False, "maxLength": 10}},
             add_action_log,
             confirmation_summary=lambda arguments: (
                 f"把“{arguments.get('content', '')}”加入行动记录。"
@@ -1346,8 +1430,8 @@ def create_roxy_tool_registry(
             field_aliases={"text": "content", "message": "content", "description": "content", "summary": "content"},
             safe_ignorable_fields=["call_id", "_index", "_order"],
         ),
-        ToolDefinition("show_action_log", "查看今日行动记录", "low", {}, show_action_log),
-        ToolDefinition("generate_daily_review", "生成今日复盘", "low", {}, generate_daily_review, aliases=["daily_review", "review_today", "today_review"]),
+        ToolDefinition("show_action_log", "查看今日行动记录", "low", {"date": {"type": "string", "required": False, "maxLength": 10}}, show_action_log),
+        ToolDefinition("generate_daily_review", "生成今日复盘", "low", {"date": {"type": "string", "required": False, "maxLength": 10}}, generate_daily_review, aliases=["daily_review", "review_today", "today_review"]),
         ToolDefinition("save_daily_review", "保存或明确重新生成指定日期复盘", "medium", {"date": {"type": "string", "required": False, "maxLength": 10}}, save_daily_review, aliases=["save_review"]),
         ToolDefinition("show_growth_log", "按自然月查看成长日志和确定性统计", "low", {"month": {"type": "string", "required": False, "maxLength": 7, "description": "YYYY-MM；查询当前自然月时留空"}}, show_growth_log),
         ToolDefinition(

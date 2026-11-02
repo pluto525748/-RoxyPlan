@@ -104,6 +104,27 @@ def test_pending_status_modifier_does_not_negate_snapshot_batch_completion(tmp_p
     assert completed.message.count("对应计划已标记完成") <= 1
 
 
+def test_advice_about_unfinished_named_plan_never_repairs_to_completion(tmp_path):
+    service, growth, _memory, _history, _llm = _production_service(
+        tmp_path,
+        _decision(
+            "chat", mode="chat", request_mode="discuss",
+            explicit_command=False, modality="question",
+        ),
+    )
+    original = growth.add_task("验收项目文档续做")
+
+    response = service.handle(
+        "请给我一项带编号的今天学习计划建议，优先承接并缩小今日未完成的“验收项目文档续做”，先只建议。",
+        "unfinished-advice-no-completion",
+    )
+
+    assert not response.tool_results
+    task = growth.tasks()[0]
+    assert task["uid"] == original["uid"]
+    assert task["done"] is False
+
+
 def test_add_plan_command_shell_asks_only_for_missing_title(tmp_path):
     service, growth, _memory, _history, _llm = _production_service(
         tmp_path,

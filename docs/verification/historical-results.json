@@ -1,0 +1,85 @@
+{
+  "offline_batches": [
+    {
+      "batch": "20261028-092752-753-18252",
+      "associated_source_commit": "d1f7924",
+      "type": "offline_isolated",
+      "suites": [
+        {
+          "tests": "112",
+          "failures": "0",
+          "errors": "0",
+          "skipped": "0",
+          "time": "294.438"
+        }
+      ],
+      "original_junit_sha256": "01c933715aa515908fa8449806dfb1b1d3f7f1b5e5b9063d648d52d601a1d8d8"
+    },
+    {
+      "batch": "20261028-214637-740-8788",
+      "associated_source_commit": "73f520a",
+      "type": "offline_isolated",
+      "suites": [
+        {
+          "tests": "90",
+          "failures": "0",
+          "errors": "0",
+          "skipped": "2",
+          "time": "37.167"
+        }
+      ],
+      "original_junit_sha256": "db5b95f1ab2619d843f37aff5d74f4a3faabfdbe8114515c7eb40ed1372dbfe1"
+    },
+    {
+      "batch": "20261028-232311-641-20028",
+      "associated_source_commit": "71bbaea",
+      "type": "offline_isolated",
+      "suites": [
+        {
+          "tests": "46",
+          "failures": "0",
+          "errors": "0",
+          "skipped": "0",
+          "time": "130.144"
+        }
+      ],
+      "original_junit_sha256": "ed17c16d0f3623bde81d41d8d8a131e860d490c11785fedbc3c9f2b36913cab6"
+    },
+    {
+      "batch": "20261028-232628-584-20828",
+      "associated_source_commit": "71bbaea",
+      "type": "offline_isolated",
+      "suites": [
+        {
+          "tests": "1",
+          "failures": "0",
+          "errors": "0",
+          "skipped": "0",
+          "time": "3.402"
+        }
+      ],
+      "original_junit_sha256": "140fc3b75d4b4999c3e882414c6bb28bffe6fcde6f7a964d01aa4d7880a36063"
+    }
+  ],
+  "online_observations": [
+    {
+      "source_commit": "274fae7deabf096322280f7cbf94e220e4565086",
+      "type": "real_DeepSeek_with_synthetic_users_and_simulated_business_days",
+      "rounds": 177,
+      "http_requests": 211,
+      "reported_tokens": 1007430,
+      "complete_loop_pass": false,
+      "original_summary_sha256": "ac13bb84bb95d04e503d16d8af660f011707312baad624f3e7480f7c5b31fa9c"
+    },
+    {
+      "source_commit": "d1f7924a97e8ff8ae25cdebe0914e1d07f2c9e39",
+      "type": "real_DeepSeek_with_synthetic_users_and_simulated_business_days",
+      "rounds": 107,
+      "http_requests": 90,
+      "reported_tokens": 405220,
+      "complete_loop_pass": false,
+      "original_summary_sha256": "b90c391fe8156424aa82580ce73e1c30385cdd8bb2bd1fed1169107028f7114e"
+    }
+  ],
+  "note": "Independent historical batches; never sum as a current-release pass rate. Original user records and HTTP journals are not published."
+}

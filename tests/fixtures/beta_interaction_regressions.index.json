@@ -1,0 +1,127 @@
+{
+  "meta": {
+    "name": "beta_interaction_regressions.index",
+    "created": "2026-10-14",
+    "worktree": "cc-test (agent/cc-test)，公开基线 ff043a9（同步提交 2eef7a1）",
+    "purpose": "本批 Beta 交互回归语料的来源索引：来源文件清单与哈希、计数与去重口径、历史预期映射、公共数据集调研、后续运行建议。",
+    "authority": "本文件只描述语料来源与检查口径，不描述产品行为；产品交互承诺以 docs/capability_boundaries.md 与 docs/interaction_state_machine.md 为准，完成度以 docs/current_status.md 为准。",
+    "checker": "scripts/check_beta_regression_corpus.py（只读，仅标准库）",
+    "integration_review": {"source_baseline": "87004d0", "source_delivery": "833a81c", "scope": "逐项引用复核；保留原交付哈希，冻结来源文件未修改；原句与业务预期未修改", "reference_adjustment": "bt_today_add_16 引文匹配主目录同一旧兼容缺陷说明，保留原引文"},
+    "counting_rules": [
+      "计数单位是文件记录，包含模板与受控礼貌前后缀变体；不等于真实用户样本数，也不等于当前通过率。",
+      "seed_cases／generated_cases／adversarial_cases／style_coverage_cases 与 train／dev／test 分区存在来源关系，不能相加冒充独立样本总数。",
+      "本批 129 条中，迁移自既有来源的句面逐条以 source.refs 标注出处；新构造表达标为“人工变体”。",
+      "历史不适用与“计划”（未实现能力）条目单列，不进入通过率分子分母；待验证在核验前不记为通过；已知失败保留首次失败与证据，不随修复改写历史。",
+      "数量口径只作登记，不构成本轮执行结果；本批未运行任何用例。"
+    ]
+  },
+  "corpus": {
+    "path": "tests/fixtures/beta_interaction_regressions.jsonl",
+    "original_delivery_sha256": "6ee862664d3a4fd659c940f67de76247b1583c79c63f53eae06e06ee52efc3b0",
+    "sha256": "2874a2b59d41f9b1cd7579fe623ddd648004622ef161442a391b89d36e8f8ecc",
+    "counts": {
+      "single_turn": 107,
+      "multi_turn": 22,
+      "total": 129,
+      "by_family": {
+        "today_plan_add_adopt": 21,
+        "thirty_day_direction": 9,
+        "capability_howto": 12,
+        "learning_start": 13,
+        "action_vs_intention": 14,
+        "memory_display_delete": 17,
+        "negation_cancel": 13,
+        "repeated_confirmation": 8,
+        "cross_date_completed": 15,
+        "historical_expectations": 7
+      },
+      "by_status": {
+        "未执行": 81,
+        "待验证": 39,
+        "历史不适用": 6,
+        "计划": 2,
+        "已知失败": 1
+      },
+      "by_source_type": {
+        "既有测试": 101,
+        "人工变体": 27,
+        "真实反馈": 1
+      }
+    },
+    "dedupe_policy": "语料内以 规范化句面＋前置状态＋家族 为去重键；多轮首轮复用单轮句面时必须以 reuse_of 显式声明，未声明的重复由检查脚本报警告。来源文件之间只登记引用关系，不重复计数。",
+    "public_git_note": "句面与引用只使用仓库内既有文件（测试、矩阵、golden、操作说明）与产品文档；未收录私人原始聊天正文，引用路径均为仓库相对路径，不含绝对证据路径。"
+  },
+  "source_inventory": [
+    {"path": "tests/nlu_benchmark/train.jsonl", "role": "冻结单轮分区（引用来源）", "sha256": "5f1d7209113145ea5a59158936434bc9f4758e702d5238d96b043d08f3d53f30", "records": 2100, "frozen": true, "note": "48 个语义家族；只读引用，本批未改动"},
+    {"path": "tests/nlu_benchmark/dev.jsonl", "role": "冻结单轮分区（引用来源）", "sha256": "3da8f28af6b6dec72af8cabe54bdffe55ea86459b0fe46d8997a1954ff0bfc2a", "records": 700, "frozen": true, "note": "16 个家族；只读引用"},
+    {"path": "tests/nlu_benchmark/test.jsonl", "role": "冻结单轮分区（引用来源）", "sha256": "4a14b05b6e10bc565eca2bd9662c54345b7967a66c79c81874cb46e140a63e80", "records": 700, "frozen": true, "note": "受 final_test.sha256 冻结守护；本批未改动"},
+    {"path": "tests/nlu_benchmark/multi_turn_cases.jsonl", "role": "冻结多轮分区（引用来源）", "sha256": "2e99f33a438aeec78016572f83a8a38443a5d85dd5861c0f26b3320889ffad9b", "records": 400, "frozen": true, "note": "50 个家族；只读引用"},
+    {"path": "tests/nlu_benchmark/seed_cases.jsonl", "role": "派生来源（与分区有来源关系，不重复计数）", "sha256": "6d8945358682b1920da824b4ee375e0bc358747b5e29bb4b4e66a762b76bb8e1", "records": 650, "frozen": true, "note": "100 个家族"},
+    {"path": "tests/nlu_benchmark/generated_cases.jsonl", "role": "派生来源（与分区有来源关系，不重复计数）", "sha256": "a67d99b5a46490c71b6e2a042e6d0e5fffa4e169e1529f4e79300ca400901aa4", "records": 2600, "frozen": true, "note": "50 个家族"},
+    {"path": "tests/nlu_benchmark/adversarial_cases.jsonl", "role": "派生来源（对抗性表达）", "sha256": "7a04c9eab0be82ef0c8261f1d9f87cf588bf0bea72ee2399a65295ee071bd579", "records": 300, "frozen": true, "note": "30 个家族；仅 advice_request 与 ordinary_chat"},
+    {"path": "tests/nlu_benchmark/style_coverage_cases.jsonl", "role": "派生来源（礼貌前后缀风格覆盖，质量样例）", "sha256": "ab1ff7e9f5a531bf012d1243ed12c5c1f2c2550a067965d51ede6674e8a21368", "records": 50, "frozen": true, "note": "不得用于以礼貌前后缀凑数"},
+    {"path": "tests/nlu_benchmark/final_test.sha256", "role": "冻结守卫（仅冻结 test.jsonl）", "sha256": "da61e3c679f362e29821d6cde7feeecde34a1ae043366b282587c6ee6037c7f3", "records": null, "frozen": true, "note": "本批未改动；test.jsonl 实际哈希与其一致"},
+    {"path": "tests/eval/interaction_golden_cases.json", "role": "金标准表达与历史预期（含 4 条 retired 旧候选流程）", "sha256": "9c9375c46a49c7b81416b4b84fda3d5a8a9021be46aedec83f13eb422efab939", "records": 30, "frozen": true, "note": "retired 条目的旧预期不改写，按当前能力映射见 historical_map", "integration_sha256": "f110f901f8dde4cc6e9d024308ef9d0d6ca2c26f3044d36d17fff4dc4edb3308", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v21_chinese_context_matrix.json", "role": "既有中文场景矩阵（句面与故障输入来源）", "sha256": "9cafd67fd249aa8e6021630d6619789810461e278a88487002e576063090ac55", "records": 85, "frozen": true, "note": "生产契约通道；只读引用", "integration_sha256": "4a587ff4d81a901f782f5b79d5994dc38a6c66d201e3f3ded45da601eb93c420", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v21_incident_regression.json", "role": "历史故障复现（含糊肯定等）", "sha256": "39264b01faf85c32b744947082d0b9fee10271d7a5a6ac433242f1841d18e0eb", "records": 7, "frozen": true, "note": "只读引用", "integration_sha256": "1dd6d5b54a66247c8dc58db004bbb3be5f5e40fca0f39b16dd42ea5b01e63244", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v21_optimization_v2.json", "role": "V2.1 优化集（含 historical_baseline 案例）", "sha256": "d47bd3a8f118499133e9820d4c51a6bae459ebf2d5b627bba8832494e3d86e1b", "records": 15, "frozen": true, "note": "opt_v2_006 复杂改期为历史通道，不改写旧预期", "integration_sha256": "844afbd99646724a596ca0f2e75b65a12afd75ad67ae09358702c2c5436b9c7a", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v21_blind_set.json", "role": "冻结 case id 清单（盲测集）", "sha256": "f9468cc12267df53a6350d75cfb7151108b233a1b3769f8620eb64032caa7d83", "records": 45, "frozen": true, "note": "只读引用，本批未运行", "integration_sha256": "4b36220289a85ddec87ae332bf2a0c71c506253ef3339278f46d7ecee2be472b", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v21_optimization_set.json", "role": "冻结 case id 清单（优化集）", "sha256": "cc0d05b9a15c1fc3a88dee1f12c31dea641f6f9149bdf707154068c710aed9a7", "records": 33, "frozen": true, "note": "只读引用", "integration_sha256": "388c7b1df82e65f6292d1a3556c9e9854225706342772308aec1791ebfbfeedf", "integration_source_baseline": "87004d0"},
+    {"path": "tests/fixtures/v22_online_semantic_contract.json", "role": "在线语义契约字段（来源之一）", "sha256": "3c3849ab1ff55e1a94ca4b6d3e7de656b2ed66f7ea38ac30b6e020b67a578682", "records": null, "frozen": false, "note": "镜像当前契约字段；本批未改动"},
+    {"path": "tests/fixtures/beta_online_failures_20261014.json", "role": "工程合成真实API首次结果的离线回放夹具（2026-10-14 本批新增）", "sha256": "9cfa6f47fb361a8dc168940456bb90d67f2405adab6d009d2720faefc608fec4", "records": 9, "frozen": false, "note": "来源标注“工程合成真实API首次结果”；9 个用例（4 planned_change／5 control）、19 条真实返回与旧首次结果；本条按 LF 内容测量哈希，Windows CRLF 检出按原始字节比较只会给出非冻结警告"},
+    {"path": "tests/README.md", "role": "评测方法、语料维护方案与运行规范依据", "sha256": "3bec7fc2d5304e5b258784828f3dcfd86358b61c7a6b6a0e094f296d584b6198", "records": null, "frozen": false, "note": "本轮方案在 2026-10-14 持续回归语料小节"},
+    {"path": "docs/capability_boundaries.md", "role": "能力口径依据（逐条 capability_basis 指向）", "sha256": "e8a20bddb77b4fe4ed4721c80166e5359739b8de729fb11995f0b9cd7ccf9aad", "records": null, "frozen": false, "note": "本批未改动"},
+    {"path": "docs/interaction_state_machine.md", "role": "状态与快照口径依据", "sha256": "32107dd5c163d2ff42cabdd7dbfcbb4b2942da8fc18019c14f40beedfc0ba155", "records": null, "frozen": false, "note": "本批未改动"},
+    {"path": "docs/current_status.md", "role": "带日期完成度与已知失败依据", "sha256": "1f018fe43667dc6c5b3deee56f47a74ad9031e3e31e624cde1a5404b0b0c98fd", "records": null, "frozen": false, "note": "哈希为追加本批“在线失败离线回放准备”条目后的状态；旧条目未改写；按 Windows CRLF 工作区字节测量"},
+    {"path": "docs/chinese_interaction_reliability.md", "role": "中文交互评测方法与故障类型依据", "sha256": "6fc7f84ae74865a9bd23fe5881540b5d4bc77d44928e8856f7f8055b78c85e54", "records": null, "frozen": false, "note": "本批未改动"},
+    {"path": "frontend/usage_dialog.py", "role": "产品操作说明（推荐表达来源）", "sha256": "3992caa26cc6273e12e340c104748197565732960a5c221bad60b456bedb8207", "records": null, "frozen": false, "note": "静态只读文本；本批未改动"},
+    {"path": "tests/test_learning_start_interaction.py", "role": "句面与行为来源（逐条引用）", "sha256": "722cb424a385bec012070a66031e6edeb17619002668d8435a51814ad73862c0", "records": null, "frozen": false, "note": "只读引用"},
+    {"path": "tests/test_memory_management_display.py", "role": "句面与行为来源（逐条引用）", "sha256": "e42e2cc0a90f26d6eabce131713c6787fc22f4bca706f6dbd802ba777e21e53d", "records": null, "frozen": false, "note": "只读引用"},
+    {"path": "tests/test_proactive_manager.py", "role": "主动提醒行为来源（逐条引用）", "sha256": "d7a3daa0fd4bd6f974295493c105feb96c94cd952d468e6a4b8a10d7d16cc989", "records": null, "frozen": false, "note": "只读引用"},
+    {"path": "tests/eval/test_v18_real_dialogues.py", "role": "真实对话措辞来源（逐条引用）", "sha256": "d0b72193641fe9cb03943fce7c160f4efe6b65b08e531c33a356febdc5cda74e", "records": null, "frozen": false, "note": "只读引用"},
+    {"path": "tests/test_growth_logic.py", "role": "旧 TodayPlanStore 已知失败证据来源", "sha256": "90c8686b3c13c95ed1ddf8eaec71148f18338bb6c8f654fdd771b1a7689fa5f2", "records": null, "frozen": false, "note": "test_chat_growth_commands 失败链：KeyError 'date'（2026-10-13 记录，未修复）"},
+    {"path": "tests/test_advice_action_boundary.py", "role": "建议／短答选择边界来源", "sha256": "5b70639b30f7d3e8c6c5cd7844479efdab83e06f4bc227037d603957214a1969", "records": null, "frozen": false, "note": "只读引用"}
+  ],
+  "historical_map": [
+    {"old_expectation": "旧候选记忆流程：查看待审核／确认归入／清空候选（golden case[3]、case[4] 等）", "current_status_tag": "历史不适用", "current_mapping": "零工具、零写入并明确说明已停用，引导“记住：完整内容”或“查看长期记忆”", "corpus_cases": ["bt_hist_01", "bt_hist_02"]},
+    {"old_expectation": "旧复杂修改：update_plan 改时长／改时间（golden case[11]、case[12]、opt_v2_006）", "current_status_tag": "历史不适用", "current_mapping": "模型不可见复杂修改工具；执行层至少零写入诚实降级，本地兼容入口未逐句验证；historical lane 保留旧预期", "corpus_cases": ["bt_hist_03", "bt_hist_04", "btm_21"]},
+    {"old_expectation": "计划合并、重排等复杂更新族", "current_status_tag": "历史不适用", "current_mapping": "零写入诚实降级，说明替代路径", "corpus_cases": ["bt_hist_05"]},
+    {"old_expectation": "整段对话／模糊内容直存记忆", "current_status_tag": "历史不适用", "current_mapping": "零写入并引导逐条“记住：完整内容”；候选流程已停用", "corpus_cases": ["bt_hist_06"]},
+    {"old_expectation": "tests/contract_taxonomy.py 中 historical_baseline 通道的冻结失败（批量删除、重复/合并、旧直存、opt_v2_006 与 summary 等）", "current_status_tag": "历史通道（不在本语料重复实现）", "current_mapping": "由通道分类单独报告失败，不从分母消失；本语料以 bt_hist_* 与 btm_21 提供对照条目", "corpus_cases": []}
+  ],
+  "public_datasets": [
+    {
+      "name": "MASSIVE（Multilingual Amazon SLU Resource Package）",
+      "official_source": "Amazon Science；数据集页 https://huggingface.co/datasets/AmazonScience/massive",
+      "license": "CC BY 4.0（官方数据集卡声明，要求保留 NOTICE 归属）",
+      "nature": "由英文 SLURP 数据集经翻译与本地化构建的语音助手任务型单轮数据，含 intent 与 slot 标注",
+      "scale_and_languages": "官方 MASSIVE 1.1 数据集卡：52种语言，每语言19,521条；60 intents / 55 slots；zh-CN 为其中一个分区",
+      "adaptation_scope": "仅可作少量可核对的相关单轮表达参考（如计时、提醒、音乐等类别）；不能替代本产品的多轮状态、计划、记忆与确认场景",
+      "used_this_batch": "未下载、未收录任何表达式；仅登记来源、许可与限制",
+      "verification_note": "员工本轮未读取官方页面；总控此前直接读取了官方1.1数据集卡，补核语言与字段数。尚未导入任何公共表达，采样时保留具体版本与NOTICE。"
+    },
+    {
+      "name": "CLINC150（含 OOS 评估仓库）",
+      "official_source": "官方仓库 https://github.com/clinc/oos-eval（Larson et al., EMNLP 2019）",
+      "license": "CC BY 3.0（官方仓库声明；个别论文写 4.0，存在冲突，以仓库为准并在复核后确定）",
+      "nature": "英文众包单轮 intent 分类数据；23,700 句（22,500 in-scope，150 intents；1,200 out-of-scope）",
+      "adaptation_scope": "只可参考单轮意图覆盖的组织思路；无官方中文版本，不能直接用于本产品中文交互",
+      "used_this_batch": "未下载、未收录、未运行其仓库代码",
+      "verification_note": "同 MASSIVE：外网抓取受网络策略限制，许可冲突待在线复核"
+    }
+  ],
+  "execution_results": {
+    "executed": false,
+    "note": "本批只做静态整理与引用检查，未执行任何用例、未调用模型、未操作桌面；所有条目的结果列保持“未执行”，不把未执行写成通过。",
+    "result_columns": ["reply", "tools", "data_diff", "version", "tokens"],
+    "empty_value": "未执行"
+  },
+  "run_recommendations": [
+    "同族合并跑：每族先跑有既有测试支撑的原成功路径，再跑同族新变体，避免整族同时红掉无法定位第一处偏差。",
+    "较大集合低频执行；不随每次提交全量运行，分层结果按通道（生产/兼容/历史）单独报告。",
+    "在线模型只抽新失败与关键边界（三十天方向句、含糊肯定、指代链、重复确认），并预设请求数与 Token 上限；不批量重放全量语料。",
+    "统一经 scripts/run_isolated_tests.ps1 走隔离工作区（cc-test 传 -PythonExecutable 指向主目录 .venv），不手工模拟测试环境。",
+    "失败留证：首次失败运行保留在 test_workspace/runs/ 下；历史不适用与“计划”条目不进入通过率分子分母；待验证在核验前不记为通过。",
+    "语料本身的引用完整性可随时用：python -B scripts/check_beta_regression_corpus.py（--summary／--table）复核。"
+  ]
+}

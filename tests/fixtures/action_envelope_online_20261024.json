@@ -1,0 +1,88 @@
+{
+  "origin": "synthetic engineering corpus; captured DeepSeek first responses 2026-10-24, not user records or new online execution",
+  "source_run": "beta-corpus-online-20261024-supported-v2",
+  "cases": [
+    {
+      "id": "bt_conf_02",
+      "user": "今天加入三项计划：英语阅读、整理简历、复习 Python。",
+      "business_date": "2026-10-24",
+      "seed": [],
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"multi_action\",\"entities\":{\"tasks\":[{\"title\":\"英语阅读\"},{\"title\":\"整理简历\"},{\"title\":\"复习 Python\"}],\"date\":\"今天\"},\"proposed_tool\":\"add_plan\",\"confidence\":0.95,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[{\"tool\":\"add_plan\",\"args\":{\"title\":\"英语阅读\",\"date\":\"今天\"}},{\"tool\":\"add_plan\",\"args\":{\"title\":\"整理简历\",\"date\":\"今天\"}},{\"tool\":\"add_plan\",\"args\":{\"title\":\"复习 Python\",\"date\":\"今天\"}}],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2529,
+            "completion_tokens": 166,
+            "total_tokens": 2695,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 225
+          }
+        },
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "好的，我记下了你要加入的三项：英语阅读、整理简历、复习 Python。\n\n不过这一轮我没有实际写入计划的权限，所以它们还没有真正进入今天的计划记录里。你可以在计划界面里添加这三项，或者告诉我你希望每项安排多长时间，我帮你把顺序和时长排得更具体一些。",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1914,
+            "completion_tokens": 67,
+            "total_tokens": 1981,
+            "prompt_cache_hit_tokens": 1664,
+            "prompt_cache_miss_tokens": 250
+          }
+        }
+      ],
+      "source_result_sha256": "ee35be675648d7b11fe139eef60d77edfad7929f5a5d778713a86145041e591c"
+    },
+    {
+      "id": "bt_conf_04",
+      "user": "把花25分钟看完一小节机器学习内容加入今天计划。",
+      "business_date": "2026-10-24",
+      "seed": [
+        {
+          "fixture_ref": "today_plans_1",
+          "title": "花25分钟看完一小节机器学习内容",
+          "date_offset": 0,
+          "done": false
+        }
+      ],
+      "responses": [
+        {
+          "model": "deepseek-flash",
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "message": {
+                "content": "{\"mode\":\"write\",\"intent\":\"add_plan\",\"entities\":{\"title\":\"看完一小节机器学习内容\",\"duration_minutes\":25},\"proposed_tool\":\"add_plan\",\"confidence\":0.95,\"follow_up_target\":\"\",\"needs_confirmation\":false,\"warnings\":[],\"clarification_question\":\"\",\"candidate_actions\":[],\"subject\":\"self\",\"polarity\":\"positive\",\"modality\":\"commitment\",\"request_mode\":\"execute\",\"explicit_command\":true}",
+                "tool_calls": []
+              }
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 2528,
+            "completion_tokens": 100,
+            "total_tokens": 2628,
+            "prompt_cache_hit_tokens": 2304,
+            "prompt_cache_miss_tokens": 224
+          }
+        }
+      ],
+      "source_result_sha256": "0560a901acaf3cee1a1cecf39f28c826b93ea1191e96934acfd01c95d5eff658"
+    }
+  ]
+}

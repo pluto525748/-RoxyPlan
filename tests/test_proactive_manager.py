@@ -66,6 +66,73 @@ def test_plan_without_action_generates_no_action_log():
         assert "还没有行动记录" in reminder["text"]
 
 
+def test_completed_plans_get_contextual_action_hint_only_once_per_day():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, growth, proactive = build_managers(temp_dir)
+        for title in ("英语阅读", "整理文档"):
+            task = growth.add_task(title)
+            completed, changed = growth.complete_by_id(task["id"])
+            assert changed and completed["done"]
+        before = {p.name: p.read_bytes() for p in Path(temp_dir).rglob("*.json")}
+
+        first = proactive.check(idle_seconds=1800, seconds_since_interaction=121)
+
+        assert first["type"] == "no_action_log"
+        assert "今天的计划都完成了" in first["text"]
+        assert "计划之外" in first["text"]
+        assert "从一个很小的动作开始" not in first["text"]
+        for minutes in (15, 30, 30):
+            clock.value += timedelta(minutes=minutes)
+            assert proactive.check(idle_seconds=7200, seconds_since_interaction=7200) is None
+        assert growth.records_for_date() == []
+        assert {p.name: p.read_bytes() for p in Path(temp_dir).rglob("*.json")} == before
+
+
+def test_partial_completion_is_acknowledged_and_pending_plan_still_reminds():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, growth, proactive = build_managers(temp_dir)
+        task = growth.add_task("英语阅读")
+        growth.add_task("整理文档")
+        growth.complete_by_id(task["id"])
+
+        hint = proactive.check(seconds_since_interaction=121, allowed_types={"no_action_log"})
+
+        assert "今天已经完成 1 项计划" in hint["text"]
+        assert "都完成了" not in hint["text"]
+        clock.value += timedelta(minutes=2)
+        assert proactive.check(seconds_since_interaction=121, allowed_types={"no_action_log"}) is None
+        pending = proactive.check(seconds_since_interaction=121, allowed_types={"plan_pending"})
+        assert pending["type"] == "plan_pending"
+        assert "1 个计划" in pending["text"]
+
+
+def test_action_hint_is_available_on_a_new_business_day():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, growth, proactive = build_managers(temp_dir)
+        for day in range(2):
+            if day:
+                clock.value += timedelta(days=1)
+            task = growth.add_task("阅读一小节")
+            growth.complete_by_id(task["id"])
+            first = proactive.check(seconds_since_interaction=121, allowed_types={"no_action_log"})
+            assert first["type"] == "no_action_log"
+            assert "都完成了" in first["text"]
+            clock.value += timedelta(minutes=2)
+            assert proactive.check(seconds_since_interaction=121, allowed_types={"no_action_log"}) is None
+
+
+def test_completed_day_keeps_evening_review_reminder():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, growth, proactive = build_managers(temp_dir, hour=21)
+        task = growth.add_task("复习算法")
+        growth.complete_by_id(task["id"])
+
+        reminder = proactive.check(seconds_since_interaction=121)
+
+        assert reminder["type"] == "review_time"
+        assert growth.records_for_date() == []
+
+
 def test_evening_generates_review_time_once_per_day():
     with tempfile.TemporaryDirectory() as temp_dir:
         clock, growth, proactive = build_managers(temp_dir, hour=21)
@@ -125,7 +192,8 @@ def test_progress_encouragement_after_completion():
         reminder = proactive.task_completed_reminder()
 
         assert reminder["type"] == "progress_encourage"
-        assert "顺手记录" in reminder["text"]
+        assert "推进了一步" in reminder["text"]
+        assert "记录" not in reminder["text"]
 
 
 def test_idle_nudge_requires_pending_plan_and_idle_time():

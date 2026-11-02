@@ -1,0 +1,26 @@
+{
+  "source": "用户指定的 assets/pet/source；头像与底纹取自 UI 视觉素材包 V1，其余为包外透明原图。",
+  "runtime_usage": "仅加载本目录四张 PNG。头像在 UI 内裁切为圆形；装饰保持原比例。",
+  "assets": [
+    {
+      "file": "roxy_avatar.png",
+      "original": "RoxyPlan_UI视觉素材包_V1/01_角色素材/03_聊天头像_方形源图.png",
+      "sha256": "bf11f4caab1eedae07528704cf85f786f551b1be7d53efafd423b6fc76bf8c83"
+    },
+    {
+      "file": "chat_texture.png",
+      "original": "RoxyPlan_UI视觉素材包_V1/02_背景素材/07_聊天区域_超淡底纹.png",
+      "sha256": "5dedf0e6145baa76865f20cc27defade8e1de2a807520c375ff20f6ccfce3081"
+    },
+    {
+      "file": "roxy_cat_header.png",
+      "original": "15ed2a6e-383e-4815-b6ab-f8be8e7c3ad0.png",
+      "sha256": "979d3bfcabb8e4a359f5f3796fd95c9d41a968e332fb2e8498764cffe3f7d57e"
+    },
+    {
+      "file": "lantern_footer.png",
+      "original": "790573f9-59e7-4ddd-94a8-e551e6f87756.png",
+      "sha256": "38fd53d9360901ce543e7b20bf1e099b0d71aafb0051caadd7b503a0bd29d908"
+    }
+  ]
+}

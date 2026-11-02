@@ -50,6 +50,75 @@ _QUERY_FILLERS = {
 }
 
 
+def is_memory_management_display(text: object) -> bool:
+    """Recognize only explicit whole-list management display requests."""
+    value = re.sub(r"[\s，,。.!！?？；;：:]", "", str(text or ""))
+    return bool(re.fullmatch(
+        r"(?:请|请你|麻烦|麻烦你|帮我)?"
+        r"(?:展示|查看|列出|看看)(?:一下)?(?:我的)?(?:长期)?记忆",
+        value,
+    ))
+
+
+def explicit_memory_read_attributes(text: object) -> tuple[str, ...]:
+    """Resolve a closed category list in an explicit stored-memory read clause.
+
+    The existing query string carries the user's scope; no extra tool argument
+    or new category is introduced. A generic business goal is not a memory read.
+    """
+    names = {"长期目标": "goal", "目标": "goal", "梦想": "goal",
+             "偏好": "preference", "喜好": "preference", "习惯": "habit",
+             "项目": "project"}
+    kind = "(?:" + "|".join(names) + ")"
+    clauses = re.split(r"[，,。.!！?？；;]", re.sub(r"\s+", "", str(text or "")))
+    # A compound request containing an actual mutation must retain its original
+    # semantic path, rather than executing only the read part and losing a write.
+    if any(re.match(
+        r"(?:并|然后|同时|接着)?(?:请|请你|帮我|帮忙|麻烦你)?(?:现在|重新|再|接下来)?"
+        r"(?:保存|记住|更新|删除|更正|忘记|撤销|取消)", clause,
+    ) for clause in clauses):
+        return ()
+    attributes = []
+    for clause in clauses:
+        match = re.fullmatch(
+            r"(?:请|请你|帮我|麻烦|麻烦你)?(?:核对|核实|查看|看看|列出|展示)"
+            r"(?:一下)?(?:我的)?(?:已保存的?|已经保存的?|正式(?:长期)?记忆(?:中的?|里的?)?)"
+            rf"(?P<categories>{kind}(?:(?:和|与|及|、){kind})*)"
+            r"(?:的?(?:长期)?记忆)?",
+            clause,
+        )
+        if match:
+            attributes.extend(names[name] for name in re.split(r"和|与|及|、", match["categories"]))
+        elif not re.match(r"(?:请)?(?:不要|别|无需|不用)", clause):
+            # Only inspect clauses outside the closed read grammar. Object-
+            # first imperatives ("然后把...保存") must go back to the existing
+            # semantic chain, not lose their mutation to this read shortcut.
+            command = re.sub(r"(?:已经|已)保存(?:的)?", "既存记录", clause)
+            if re.match(
+                r"(?:然后|再|请|帮我|帮忙|麻烦|并|接着|现在|把|将|我(?:想|希望)(?:让|请)?你)"
+                r".*(?:保存|记住|更新|删除|更正|忘记|撤销|取消)",
+                command,
+            ):
+                return ()
+    return tuple(dict.fromkeys(attributes))
+
+
+def is_memory_save_reference_question(text: object) -> bool:
+    """Recognize only a deictic question inside an already validated read.
+
+    This predicate does not route user input or authorize any operation.
+    BusinessResolver must still bind it to a live same-conversation record.
+    """
+    value = re.sub(r"\s+", "", str(text or "")).strip("。！!")
+    past = r"(?:刚才|刚刚|之前|上一轮)?"
+    record = r"(?:那|这)(?:条|项)(?:记忆|记录|内容)?"
+    return bool(re.fullmatch(
+        r"(?:你|洛琪希|Roxy)?" + rf"(?:{past}{record}|{record}{past})"
+        r"(?:已经|已)?(?:保存|记住)(?:了)?(?:吗|么|没|没有|了没有)[？?]?",
+        value, re.IGNORECASE,
+    ))
+
+
 @dataclass(frozen=True)
 class MemoryReadRequest:
     query_mode: str = "overview"
@@ -82,6 +151,13 @@ class MemoryReadRequest:
         value = re.sub(r"[\s，,。.!！?？；;：:]", "", raw)
         if not value:
             return None
+        if is_memory_management_display(raw):
+            return cls("overview", query=raw)
+        attributes = explicit_memory_read_attributes(raw)
+        if attributes and attributes == explicit_memory_read_attributes(raw[:500]):
+            # `fact` is an existing legal attribute. Only this closed query
+            # shape narrows it to a category union inside the typed reader.
+            return cls("attribute", attributes[0] if len(attributes) == 1 else "fact", query=raw)
         # Typed memory reads answer questions about the user. Questions about
         # Roxy herself ("你叫什么/你喜欢什么") must remain ordinary chat.
         if re.match(
@@ -127,13 +203,13 @@ class MemoryReadRequest:
             )
             return cls(mode, "preferred_name", query=raw)
 
-        preference_subject = bool(re.search(r"(?:喜欢|偏好|爱好|口味)", value))
+        preference_subject = bool(re.search(r"(?:喜欢|偏好|爱好|口味|更适合|更愿意)", value))
         preference_existence = bool(
             re.search(r"^(?:我)?(?:是不是|是否)(?:喜欢|偏好|爱)(?:吃|喝)?.{1,30}$", value)
         )
         preference_question = bool(
             re.search(r"(?:什么|哪些|有什么|还记得|知道|吗)$", value)
-        ) or preference_existence
+        ) or preference_existence or bool(re.search(r"(?:更适合|更愿意).+还是", value))
         if preference_subject and preference_question:
             topic = "food" if re.search(r"(?:吃|喝|口味|饮食|食物|菜)", value) else ""
             if re.search(r"(?:学习|读书|阅读)", value):
@@ -192,6 +268,13 @@ class MemoryReadRequest:
                 mode = "existence" if generic.group("ending") == "吗" else "attribute"
                 return cls(mode, "fact", topic=topic, query=raw)
         return None
+
+    @property
+    def requested_attributes(self) -> tuple[str, ...]:
+        attributes = explicit_memory_read_attributes(self.query)
+        if self.query_mode == "attribute" and self.attribute == "fact" and len(attributes) > 1:
+            return attributes
+        return (self.attribute,) if self.attribute else ()
 
     def to_tool_arguments(self) -> Dict[str, object]:
         result: Dict[str, object] = {"query_mode": self.query_mode}
@@ -270,6 +353,7 @@ class TypedMemoryReader:
         category: str = "",
     ) -> MemoryReadSnapshot:
         memories = self._working_memories(category=category)
+        attributes = request.requested_attributes or ("",)
         facts: List[MemoryReadFact]
         if request.query_mode == "overview" and not request.attribute:
             facts = [self._fact(item) for item in memories]
@@ -280,11 +364,13 @@ class TypedMemoryReader:
             selected = [
                 item
                 for item in memories
-                if self._matches_attribute(item, request.attribute)
+                if any(self._matches_attribute(item, attribute) for attribute in attributes)
                 and self._matches_topic(item, request.topic)
             ]
             if request.query_mode in {"existence", "provenance"} and request.query:
-                selected = [
+                exact = [item for item in selected if self.memory_manager.normalize_text(item.get("content", ""))
+                         == self.memory_manager.normalize_text(request.query)]
+                selected = exact or [
                     item for item in selected if self._matches_query(item, request.query)
                 ]
             facts = [self._fact(item, attribute=request.attribute) for item in selected]
@@ -330,6 +416,13 @@ class TypedMemoryReader:
     def _matches_topic(memory: Mapping[str, object], topic: str) -> bool:
         if not topic:
             return True
+        # Model topics may name a facet of the same built-in domain. Use the
+        # existing domain reader instead of requiring the label itself to be
+        # quoted verbatim in a user's saved sentence (e.g. 学习时间 vs 晚上学习).
+        domain = re.fullmatch(r"(饮食|食物|学习|工作|地点)(?:时间|时段|习惯|偏好|方面)?", topic)
+        if domain:
+            topic = {"饮食": "food", "食物": "food", "学习": "learning",
+                     "工作": "work", "地点": "location"}[domain.group(1)]
         content = str(memory.get("content", ""))
         if topic == "food":
             return bool(re.search(r"(?:吃|喝|口味|饮食|食物|菜)", content))

@@ -47,6 +47,26 @@ def test_reflective_today_review_remains_read_only(tmp_path):
     ]
     assert growth.entries() == []
 
+    viewed = service.handle("查看今日复盘", "v22-review-preview")
+    assert [item.tool for item in viewed.tool_results] == ["generate_daily_review"]
+    assert growth.entries() == []
+
+
+def test_today_review_saves_without_confirmation_and_keeps_full_fallback(tmp_path):
+    service, growth, _memory, _history = build_service(tmp_path, NoCallLLM())
+    growth.add_task("尚待整理的项目笔记")
+    growth.add_record("完成了课程例题")
+
+    response = service.handle("今日复盘", "v22-review-panel-sync")
+
+    assert response.status == "completed"
+    assert response.pending_confirmation is None
+    assert [item.tool for item in response.tool_results] == ["save_daily_review"]
+    entry = growth.entries(strict_read=True)[0]
+    assert response.message == entry["review"]["text"]
+    assert "尚待整理的项目笔记" in entry["review"]["panel_summary"]
+    assert "未完成" in entry["review"]["panel_summary"]
+
 
 @pytest.mark.parametrize(
     "utterance",

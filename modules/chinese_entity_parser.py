@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
+from modules.request_boundary import current_request_boundary
+
 
 CHINESE_DIGITS = {
     "零": 0,
@@ -52,15 +54,32 @@ class ChineseEntityParser:
             )
             return result
 
+        boundary = current_request_boundary()
         now = self.now_provider()
-        if "后天" in value:
-            result["date"] = (now.date() + timedelta(days=2)).isoformat()
+        base_date = datetime.fromisoformat(boundary.business_date).date() if boundary else now.date()
+        absolute = re.search(
+            r"(?<!\d)(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})(?:日)?(?!\d)",
+            value,
+        )
+        if absolute:
+            try:
+                result["date"] = datetime(
+                    *(int(part) for part in absolute.groups())
+                ).date().isoformat()
+            except ValueError:
+                result["ambiguous"] = True
+                result["clarification_question"] = "这个日期无效，请给出完整的年月日。"
+                return result
+        elif "前天" in value:
+            result["date"] = (base_date - timedelta(days=2)).isoformat()
+        elif "后天" in value:
+            result["date"] = (base_date + timedelta(days=2)).isoformat()
         elif "明天" in value or "明日" in value or "明早" in value:
-            result["date"] = (now.date() + timedelta(days=1)).isoformat()
+            result["date"] = (base_date + timedelta(days=1)).isoformat()
         elif "昨天" in value or "昨日" in value:
-            result["date"] = (now.date() - timedelta(days=1)).isoformat()
+            result["date"] = (base_date - timedelta(days=1)).isoformat()
         elif "今天" in value or "今晚" in value:
-            result["date"] = now.date().isoformat()
+            result["date"] = base_date.isoformat()
 
         if any(term in value for term in ("明早", "早上", "上午")):
             result["time_period"] = "上午"

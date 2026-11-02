@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -19,20 +18,25 @@ from PySide6.QtWidgets import (
 from modules.chat_history_manager import ChatHistoryManager
 
 
+def session_display_title(session: dict) -> str:
+    """Name a daily journal for display without changing stored titles."""
+    if session.get("session_kind") == "daily_learning" and session.get("business_date"):
+        return f"魔法修行日记 · {session['business_date']}"
+    return str(session.get("title", "新对话"))
+
+
 class ChatHistoryDialog(QDialog):
     """Compact local session browser for the chat window."""
 
     def __init__(
         self,
         history_manager: ChatHistoryManager,
-        open_callback: Callable[[str], None],
-        delete_callback: Callable[[str], bool],
+        open_callback: Callable[[str], bool],
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.history_manager = history_manager
         self.open_callback = open_callback
-        self.delete_callback = delete_callback
         self.setWindowTitle("RoxyPlan · 历史对话")
         self.resize(680, 430)
         self.setMinimumSize(580, 340)
@@ -46,7 +50,7 @@ class ChatHistoryDialog(QDialog):
 
         title = QLabel("本地历史对话")
         title.setObjectName("historyTitle")
-        subtitle = QLabel("聊天记录只保存在 data/private/，不会进入长期记忆。")
+        subtitle = QLabel("历史对话仅供只读回看。")
         subtitle.setObjectName("historySubtitle")
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -103,7 +107,7 @@ class ChatHistoryDialog(QDialog):
         for session in sessions:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(str(session.get("title", "新对话"))))
+            self.table.setItem(row, 0, QTableWidgetItem(session_display_title(session)))
             self.table.setItem(row, 1, QTableWidgetItem(self._format_time(session.get("started_at"))))
             self.table.setItem(row, 2, QTableWidgetItem(self._format_time(session.get("updated_at"))))
             self.table.setItem(row, 3, QTableWidgetItem(str(session.get("message_count", 0))))
@@ -121,37 +125,20 @@ class ChatHistoryDialog(QDialog):
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(5)
-        open_button = QPushButton("打开")
+        open_button = QPushButton("只读回看")
         open_button.setObjectName("openButton")
         open_button.setAccessibleName(f"打开会话 {session_id}")
         open_button.clicked.connect(
             lambda checked=False, value=session_id: self._open(value)
         )
-        delete_button = QPushButton("删除")
-        delete_button.setAccessibleName(f"删除会话 {session_id}")
-        delete_button.clicked.connect(
-            lambda checked=False, value=session_id: self._delete(value)
-        )
         layout.addWidget(open_button)
-        layout.addWidget(delete_button)
         return widget
 
     def _open(self, session_id: str) -> None:
-        self.open_callback(session_id)
-        self.accept()
-
-    def _delete(self, session_id: str) -> None:
-        answer = QMessageBox.question(
-            self,
-            "删除对话",
-            "确定删除这个本地会话吗？此操作不会删除长期记忆。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.delete_callback(session_id)
-        self.refresh_sessions()
+        if self.open_callback(session_id):
+            self.accept()
+        else:
+            self.status_label.setText("会话读取失败，请刷新后重试。")
 
     @staticmethod
     def _format_time(value) -> str:
